@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { boundsOf } from "../../domain/geo.ts";
+import { filterCrossingMarks, type CrossingMark } from "../../domain/crossing-marks.ts";
 import type {
   CrossingPlan,
   LocalMetersPoint,
@@ -17,6 +18,7 @@ type MapRendererProps = {
   destination?: PlaceRef | null;
   waypoints?: PlaceRef[];
   crossings?: CrossingPlan[];
+  marks?: CrossingMark[];
   runner?: LocalMetersPoint | null;
   selectedCrossingId?: string | null;
   onSelectPoint?: (point: LocalMetersPoint) => void;
@@ -28,6 +30,8 @@ type MapRendererProps = {
   framed?: boolean;
   showControls?: boolean;
   showBadge?: boolean;
+  showRouteSignals?: boolean;
+  showNearbySignals?: boolean;
 };
 
 function splitAccent(route: LocalMetersPoint[]): {
@@ -55,6 +59,7 @@ export function MapRenderer({
   destination,
   waypoints = [],
   crossings = [],
+  marks,
   runner,
   selectedCrossingId,
   onSelectPoint,
@@ -66,6 +71,8 @@ export function MapRenderer({
   framed = false,
   showControls,
   showBadge,
+  showRouteSignals = true,
+  showNearbySignals = false,
 }: MapRendererProps) {
   const controls = showControls ?? (!thumbnail && !framed);
   const badge = showBadge ?? !thumbnail;
@@ -278,27 +285,67 @@ export function MapRenderer({
             ) : null}
           </>
         ) : null}
-        {!thumbnail &&
-          crossings.map((c) => {
-            const p = toScreen(c.point);
-            const selected = c.crossingId === selectedCrossingId;
-            return (
-              <g
-                key={c.crossingId}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectCrossing?.(c.crossingId);
-                }}
-              >
-                <circle
-                  cx={p.x}
-                  cy={p.y}
-                  r={selected ? 3.4 : 2.2}
-                  fill={selected ? "var(--text)" : "#6d7176"}
-                />
-              </g>
-            );
-          })}
+        {!thumbnail
+          ? filterCrossingMarks(
+              marks ??
+                crossings.map((plan) => ({
+                  plan,
+                  onRoute: true,
+                  info: "unknown" as const,
+                  waitSec: null,
+                  next: false,
+                })),
+              {
+                showRouteSignals,
+                showNearbySignals,
+                selectedCrossingId,
+                viewSpanM: Math.max(view.maxX - view.minX, view.maxY - view.minY),
+              },
+            ).map((mark) => {
+              const p = toScreen(mark.plan.point);
+              const selected = mark.plan.crossingId === selectedCrossingId;
+              const compact = size.w < 280;
+              const label = mark.next
+                ? "다음 횡단"
+                : mark.info === "location-only"
+                  ? "예측 없음"
+                  : mark.info === "predictable" && mark.waitSec !== null && mark.waitSec > 0 && selected
+                    ? `${Math.round(mark.waitSec)}초`
+                    : "";
+              return (
+                <g
+                  key={mark.plan.crossingId}
+                  opacity={mark.onRoute ? 1 : 0.28}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectCrossing?.(mark.plan.crossingId);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${mark.plan.label}, ${mark.info === "location-only" ? "예측 정보 없음" : "보행신호"}`}
+                >
+                  <circle cx={p.x} cy={p.y} r={14} fill="transparent" />
+                  <rect
+                    x={p.x - 5}
+                    y={p.y - 8}
+                    width={10}
+                    height={14}
+                    rx={2}
+                    fill={selected || mark.next ? "#f5f5f5" : "#8a8e93"}
+                    stroke="#111"
+                    strokeWidth={1}
+                  />
+                  <rect x={p.x - 2.4} y={p.y - 5} width={2} height={3} fill="#111" />
+                  <rect x={p.x + 0.4} y={p.y - 5} width={2} height={3} fill="#111" />
+                  {!compact && label ? (
+                    <text x={p.x + 10} y={p.y + 4} fill="#d4d6d8" fontSize="10">
+                      {label}
+                    </text>
+                  ) : null}
+                </g>
+              );
+            })
+          : null}
         {origin && !thumbnail ? (
           <Marker p={toScreen(origin.point)} label="출발" kind="start" />
         ) : null}

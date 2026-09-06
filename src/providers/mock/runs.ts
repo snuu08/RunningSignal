@@ -128,6 +128,17 @@ export function createMockRuns(store: LocalStore): RunRepository {
       store.write(`demoRouteSeeded:${accountId}`, true);
       return seeded;
     },
+    listAllSessions(accountId) {
+      return sessionsOf(accountId)
+        .filter((s) => s.saveState === "saved")
+        .sort((a, b) => b.createdAt - a.createdAt);
+    },
+    deleteAllRuns(accountId) {
+      store.write(`routes:${accountId}`, []);
+      store.write(`sessions:${accountId}`, []);
+      store.write(`demoRouteSeeded:${accountId}`, true);
+      store.remove(`runSnapshot:${accountId}`);
+    },
     writeSnapshot(accountId, session) {
       if (!session) {
         store.remove(`runSnapshot:${accountId}`);

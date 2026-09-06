@@ -13,9 +13,11 @@ import type {
   RunSession,
   SavedRoute,
   SignalCapability,
+  UserAppSettings,
   UserProfile,
   WalkingNetwork,
 } from "../../domain/models.ts";
+import type { RoutingPolicyConfig } from "../../domain/routing-policy.ts";
 
 export type AuthProvider = {
   listAccounts(): AuthAccount[];
@@ -34,6 +36,11 @@ export type ProfileStore = {
   save(profile: Partial<UserProfile> & { accountId: string }): void;
 };
 
+export type SettingsStore = {
+  get(accountId: string): UserAppSettings;
+  save(accountId: string, patch: Partial<UserAppSettings>): UserAppSettings | null;
+};
+
 export type PlaceProvider = {
   search(regionId: RegionId, query: string): PlaceRef[];
   getNetwork(regionId: RegionId): WalkingNetwork;
@@ -43,7 +50,15 @@ export type PlaceProvider = {
 };
 
 export type RouteProvider = {
-  plan(request: RouteRequest): Recommendation | { error: string };
+  plan(
+    request: RouteRequest,
+    policy?: RoutingPolicyConfig,
+  ): Recommendation | { error: string };
+  planAsync(
+    request: RouteRequest,
+    signal?: AbortSignal,
+    policy?: RoutingPolicyConfig,
+  ): Promise<Recommendation | { error: string }>;
 };
 
 export type SignalProvider = {
@@ -54,16 +69,29 @@ export type SignalProvider = {
   list(regionId: RegionId): CrossingPlan[];
 };
 
+export type LocationFix =
+  | { ok: true; point: LocalMetersPoint; atMs: number; source: "simulation" | "device" }
+  | { ok: false; error: string; atMs: number };
+
+export type LocationSubscription = {
+  unsubscribe(): void;
+};
+
 export type LocationProvider = {
   kind: "simulation" | "device";
   note: string;
+  subscribe(onFix: (fix: LocationFix) => void): LocationSubscription;
 };
 
 export type RouteCatalogProvider = {
   list(regionId: RegionId): PopularRouteCard[];
+  get(cardId: string): PopularRouteCard | null;
   liked(accountId: string, cardId: string): boolean;
   toggleLike(accountId: string, cardId: string): { liked: boolean; displayCount: number };
   displayCount(accountId: string, card: PopularRouteCard): number;
+  publish(card: PopularRouteCard): PopularRouteCard;
+  renameCard(accountId: string, cardId: string, title: string): PopularRouteCard | null;
+  findBySourceRoute(routeId: string): PopularRouteCard | null;
 };
 
 export type RunRepository = {
@@ -79,6 +107,8 @@ export type RunRepository = {
   deleteRoute(accountId: string, routeId: string): void;
   setRouteAveragePace(accountId: string, routeId: string, paceSeconds: number | null): SavedRoute | null;
   ensureDemoSample(accountId: string, regionId: RegionId): SavedRoute | null;
+  listAllSessions(accountId: string): RunSession[];
+  deleteAllRuns(accountId: string): void;
   writeSnapshot(accountId: string, session: RunSession | null): void;
   readSnapshot(accountId: string): RunSession | null;
 };
@@ -86,6 +116,7 @@ export type RunRepository = {
 export type ProviderBundle = {
   auth: AuthProvider;
   profiles: ProfileStore;
+  settings: SettingsStore;
   places: PlaceProvider;
   routes: RouteProvider;
   signals: SignalProvider;

@@ -17,10 +17,13 @@ import type {
   RouteRequest,
   RunSession,
   SavedRoute,
+  UserAppSettings,
   UserProfile,
 } from "../domain/models.ts";
 import { emptyPaceBook, normalizePaceBook, secondsToPaceParts, validatePace } from "../domain/pace.ts";
+import { defaultAppSettings, routingPolicyFromSettings } from "../domain/settings.ts";
 import { validateNickname } from "../domain/validation.ts";
+import type { RoutingPolicyConfig } from "../domain/routing-policy.ts";
 import { createProviders } from "../providers/mock/bundle.ts";
 import { readDemoInbox } from "../providers/mock/auth.ts";
 import { createBrowserStore } from "../storage/local-store.ts";
@@ -56,6 +59,7 @@ type AppContextValue = {
   modeError: string | null;
   account: AuthAccount | null;
   profile: UserProfile | null;
+  settings: UserAppSettings;
   refresh: () => void;
   providers: ReturnType<typeof createProviders>;
   store: ReturnType<typeof createBrowserStore>;
@@ -88,6 +92,9 @@ export function AppProviders({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState(
     account ? providers.profiles.get(account.id) : null,
   );
+  const [settings, setSettings] = useState<UserAppSettings>(
+    account ? providers.settings.get(account.id) : defaultAppSettings(),
+  );
   const [draft, setDraft] = useState<PlanDraft>(emptyPlanDraft);
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [seenCandidateIds, setSeenCandidateIds] = useState<string[]>([]);
@@ -101,6 +108,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     const next = providers.auth.currentAccount();
     setAccount(next);
     setProfile(next ? providers.profiles.get(next.id) : null);
+    setSettings(next ? providers.settings.get(next.id) : defaultAppSettings());
   };
 
   return (
@@ -111,6 +119,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
         modeError,
         account,
         profile,
+        settings,
         refresh,
         providers,
         store,
@@ -171,6 +180,22 @@ export function saveProfile(
   ctx.providers.profiles.save(next);
   ctx.refresh();
   return null;
+}
+
+export function saveSettings(
+  ctx: AppContextValue,
+  patch: Partial<UserAppSettings>,
+): string | null {
+  const account = ctx.account ?? ctx.providers.auth.currentAccount();
+  if (!account) return "로그인이 필요합니다.";
+  const saved = ctx.providers.settings.save(account.id, patch);
+  if (!saved) return ctx.store.error ?? "설정을 저장하지 못했습니다.";
+  ctx.refresh();
+  return null;
+}
+
+export function currentRoutingPolicy(ctx: AppContextValue): RoutingPolicyConfig {
+  return routingPolicyFromSettings(ctx.settings);
 }
 
 export function planStopsFromDraft(draft: PlanDraft): {

@@ -42,11 +42,10 @@ export class JustRunTracker {
   private lastSampleM = 0;
   private readonly loop: LocalMetersPoint[];
   private readonly lapM: number;
+  private readonly paceSecondsPerKm: number;
 
-  constructor(
-    private paceSecondsPerKm: number,
-    center: LocalMetersPoint,
-  ) {
+  constructor(paceSecondsPerKm: number, center: LocalMetersPoint) {
+    this.paceSecondsPerKm = paceSecondsPerKm;
     this.loop = justRunLoopGeometry(center);
     this.lapM = polylineLength(this.loop);
     this.track = [this.loop[0]];
@@ -184,6 +183,7 @@ export function buildJustRunPlan(
     waitSec: { kind: "exact", seconds: 0 },
     totalSec: { kind: "unknown" },
     stopCount: 0,
+    signalCrossingCount: 0,
     knownCrossingCount: 0,
     unknownCrossingCount: 0,
     crossings: [],
@@ -192,7 +192,9 @@ export function buildJustRunPlan(
     sharpTurns: 0,
     zigzagPairs: 0,
     maxExactWaitSec: 0,
-    complete: true,
+    complete: false,
+    paceAvailable: true,
+    signalComparisonReady: false,
   };
   return { request, evaluation };
 }

@@ -16,7 +16,14 @@ import { MyRoutesScreen } from "../features/history/MyRoutesScreen.tsx";
 import { HomeScreen } from "../features/home/HomeScreen.tsx";
 import { PopularListScreen } from "../features/home/PopularListScreen.tsx";
 import { ProfileSetupScreen, RegionScreen } from "../features/onboarding/screens.tsx";
+import { AccountScreen } from "../features/settings/AccountScreen.tsx";
+import { AppInfoScreen } from "../features/settings/AppInfoScreen.tsx";
+import { GuidanceSettingsScreen } from "../features/settings/GuidanceSettingsScreen.tsx";
+import { LocationSettingsScreen } from "../features/settings/LocationSettingsScreen.tsx";
+import { NicknameScreen } from "../features/settings/NicknameScreen.tsx";
 import { PaceSettingsScreen } from "../features/settings/PaceSettingsScreen.tsx";
+import { RecordsSettingsScreen } from "../features/settings/RecordsSettingsScreen.tsx";
+import { RoutingSettingsScreen } from "../features/settings/RoutingSettingsScreen.tsx";
 import {
   LoadingScreen,
   PopularDetailScreen,
@@ -104,6 +111,62 @@ export function App() {
             element={
               <Guard>
                 <PaceSettingsScreen />
+              </Guard>
+            }
+          />
+          <Route
+            path="/settings/nickname"
+            element={
+              <Guard>
+                <NicknameScreen />
+              </Guard>
+            }
+          />
+          <Route
+            path="/settings/account"
+            element={
+              <Guard>
+                <AccountScreen />
+              </Guard>
+            }
+          />
+          <Route
+            path="/settings/routing"
+            element={
+              <Guard>
+                <RoutingSettingsScreen />
+              </Guard>
+            }
+          />
+          <Route
+            path="/settings/guidance"
+            element={
+              <Guard>
+                <GuidanceSettingsScreen />
+              </Guard>
+            }
+          />
+          <Route
+            path="/settings/records"
+            element={
+              <Guard>
+                <RecordsSettingsScreen />
+              </Guard>
+            }
+          />
+          <Route
+            path="/settings/location"
+            element={
+              <Guard>
+                <LocationSettingsScreen />
+              </Guard>
+            }
+          />
+          <Route
+            path="/settings/about"
+            element={
+              <Guard>
+                <AppInfoScreen />
               </Guard>
             }
           />

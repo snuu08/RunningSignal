@@ -119,11 +119,13 @@ export function BottomNav({ active }: { active: "home" | "routes" | "settings" }
 
 export function MetricStrip({
   items,
+  className,
 }: {
   items: { label: string; value: string }[];
+  className?: string;
 }) {
   return (
-    <div className="stat-strip">
+    <div className={className ? `stat-strip ${className}` : "stat-strip"}>
       {items.map((item) => (
         <div className="stat" key={item.label}>
           <div className="val">{item.value}</div>

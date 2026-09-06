@@ -122,6 +122,7 @@ export function ProfileSetupScreen() {
       {calcOpen ? (
         <Sheet title="달린 거리와 시간으로 계산하기" onClose={() => setCalcOpen(false)}>
           <PaceCalculator
+            applyLabel="계산값 넣기"
             onCancel={() => setCalcOpen(false)}
             onApply={(paceSeconds) => {
               const next = secondsToPaceParts(paceSeconds);

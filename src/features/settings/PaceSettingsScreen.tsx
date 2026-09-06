@@ -18,6 +18,7 @@ import {
   validateDurationParts,
   validatePace,
 } from "../../domain/pace.ts";
+import { recordPaceChoices } from "../../domain/records-export.ts";
 import { DurationFields, PaceMinSecFields, parseOptionalNumber } from "../pace/inputs.tsx";
 import { PaceCalculator } from "../pace/PaceCalculator.tsx";
 
@@ -45,7 +46,7 @@ export function PaceSettingsScreen() {
             ? hasAnySavedPace(book ?? emptyPaceBook())
               ? "불러올 페이스를 하나 선택한 뒤 오른쪽 아래 선택을 눌러 주세요."
               : "등록된 페이스가 없습니다. 설정에서 먼저 저장해 주세요."
-            : "거리 페이스는 1km 평균으로 환산해 저장하고, 평균 러닝 페이스를 다시 계산합니다."}
+            : "홈에서 기본으로 사용하는 페이스예요. 이번 러닝에서 바꾼 값은 자동 저장되지 않아요. 각 칸은 서로 따로 저장되며, 거리별 값을 고쳐도 평소 페이스는 바뀌지 않습니다."}
         </p>
         {PACE_SLOTS.map((slot) => {
           const value = book?.[slot.id] ?? null;
@@ -151,11 +152,19 @@ function PaceSlotEditor({
   const parts = value ? secondsToPaceParts(value) : null;
   const [mode, setMode] = useState<"direct" | "finish">("direct");
   const [calcOpen, setCalcOpen] = useState(false);
+  const [recordsOpen, setRecordsOpen] = useState(false);
   const [minutes, setMinutes] = useState(parts ? String(parts.minutes) : "");
   const [seconds, setSeconds] = useState(parts ? String(parts.seconds) : "");
   const [hours, setHours] = useState("");
   const [finishMin, setFinishMin] = useState("");
   const [finishSec, setFinishSec] = useState("");
+  const ctx = useApp();
+  const recordChoices = ctx.account
+    ? recordPaceChoices(
+        ctx.providers.runs.listAllSessions(ctx.account.id),
+        ctx.providers.runs.listRoutes(ctx.account.id),
+      )
+    : [];
 
   if (!slot) return null;
 
@@ -201,10 +210,61 @@ function PaceSlotEditor({
     onSave(merge(paceSeconds));
   };
 
+  if (recordsOpen) {
+    return (
+      <Sheet title="내 기록에서 가져오기" onClose={() => setRecordsOpen(false)}>
+        {recordChoices.length === 0 ? (
+          <p className="tiny muted">가져올 러닝 기록이 없습니다.</p>
+        ) : (
+          <div className="stack">
+            {recordChoices.map((row) => (
+              <div key={row.sessionId} className="stack" style={{ gap: 4 }}>
+                <p className="tiny muted">
+                  {row.title}
+                  {row.source === "demo" ? " · 데모" : ""} · {new Date(row.createdAt).toLocaleDateString("ko-KR")}
+                </p>
+                {row.movingPaceSeconds !== null ? (
+                  <Button
+                    onClick={() => {
+                      const next = secondsToPaceParts(row.movingPaceSeconds!);
+                      setMinutes(String(next.minutes));
+                      setSeconds(String(next.seconds));
+                      setMode("direct");
+                      setRecordsOpen(false);
+                    }}
+                  >
+                    이동 페이스 {formatPaceSpoken(row.movingPaceSeconds)}
+                  </Button>
+                ) : (
+                  <p className="tiny muted">이동시간이 없어 이동 페이스를 쓰지 않습니다.</p>
+                )}
+                {row.overallPaceSeconds !== null ? (
+                  <Button
+                    onClick={() => {
+                      const next = secondsToPaceParts(row.overallPaceSeconds!);
+                      setMinutes(String(next.minutes));
+                      setSeconds(String(next.seconds));
+                      setMode("direct");
+                      setRecordsOpen(false);
+                    }}
+                  >
+                    전체 평균 페이스 {formatPaceSpoken(row.overallPaceSeconds)}
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+        <Button onClick={() => setRecordsOpen(false)}>닫기</Button>
+      </Sheet>
+    );
+  }
+
   if (calcOpen) {
     return (
       <Sheet title="달린 거리와 시간으로 계산하기" onClose={() => setCalcOpen(false)}>
         <PaceCalculator
+          applyLabel="계산값 넣기"
           onCancel={() => setCalcOpen(false)}
           onApply={(paceSeconds) => {
             const next = secondsToPaceParts(paceSeconds);
@@ -263,12 +323,14 @@ function PaceSlotEditor({
           {slot.distanceKm ? (
             <>
               <p className="sec">이 거리의 1km 평균 페이스를 알려주세요.</p>
-              <p className="tiny muted">풀·하프·5km를 골라도 1km당 시간으로 환산해 평균 러닝 페이스를 계산합니다.</p>
+              <p className="tiny muted">페이스는 1km를 달리는 데 걸리는 시간이에요. 이 값은 평소 페이스와 따로 저장됩니다.</p>
             </>
           ) : (
             <>
               <p className="sec">평균적으로 달릴 때의 페이스를 알려주세요.</p>
-              <p className="tiny muted">페이스는 1km를 달리는 데 걸리는 시간이에요.</p>
+              <p className="tiny muted">
+                홈에서 기본으로 사용하는 페이스예요. 이번 러닝에서 바꾼 값은 자동 저장되지 않아요.
+              </p>
             </>
           )}
           <PaceMinSecFields
@@ -278,9 +340,8 @@ function PaceSlotEditor({
             onSeconds={setSeconds}
           />
           <p className="tiny muted">예: 6분 30초/km</p>
-          {slot.distanceKm ? null : (
-            <Button onClick={() => setCalcOpen(true)}>페이스를 모르겠어요</Button>
-          )}
+          <Button onClick={() => setCalcOpen(true)}>거리와 시간으로 계산</Button>
+          <Button onClick={() => setRecordsOpen(true)}>내 기록에서 가져오기</Button>
         </div>
       )}
 

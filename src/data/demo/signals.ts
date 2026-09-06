@@ -1,6 +1,27 @@
+import { parseDirectedEdgeId } from "../../domain/fingerprint.ts";
+import { pointAlongPolyline, polylineLength, reverseGeometry } from "../../domain/geo.ts";
 import { asDirected } from "../../domain/pathfinding.ts";
-import type { CrossingPlan, RegionId, WalkingNetwork } from "../../domain/models.ts";
+import type { CrossingPlan, LocalMetersPoint, RegionId, WalkingNetwork } from "../../domain/models.ts";
 import { NETWORKS } from "./networks.ts";
+
+function crossingPointOnEdge(
+  network: WalkingNetwork,
+  directedEdgeId: string,
+  fallbackNodeId: string,
+): LocalMetersPoint | null {
+  const parsed = parseDirectedEdgeId(directedEdgeId);
+  const edge = network.edges[parsed.edgeId];
+  const geom = edge?.geometry?.length
+    ? parsed.forward
+      ? edge.geometry
+      : reverseGeometry(edge.geometry)
+    : [];
+  if (geom.length > 1) {
+    const length = polylineLength(geom);
+    return length > 0 ? pointAlongPolyline(geom, length * 0.88) : geom[geom.length - 1];
+  }
+  return network.nodes[fallbackNodeId]?.point ?? null;
+}
 
 function findDirected(
   network: WalkingNetwork,
@@ -22,13 +43,14 @@ function plan(
   nodeId: string,
   referenceTimeSec: number,
   extras?: Partial<CrossingPlan>,
-): CrossingPlan {
-  const node = network.nodes[nodeId];
+): CrossingPlan | null {
+  const point = crossingPointOnEdge(network, directedEdgeId, nodeId);
+  if (!point) return null;
   return {
     crossingId,
     directedEdgeId,
     label,
-    point: node.point,
+    point,
     crossingWidthM: 18,
     cycleSeconds: 90,
     referenceTimeSec,
@@ -59,24 +81,20 @@ function buildPlans(regionId: RegionId): CrossingPlan[] {
 
   const plans: CrossingPlan[] = [];
   if (south) {
-    plans.push(
-      plan(`${regionId}-hall-s`, south, "시청 앞 횡단", network, "n:1600:160", phase),
-    );
+    const item = plan(`${regionId}-hall-s`, south, "시청 앞 횡단", network, "n:1600:160", phase);
+    if (item) plans.push(item);
   }
   if (east) {
-    plans.push(
-      plan(`${regionId}-cafe-e`, east, "카페거리 동쪽 횡단", network, "n:1240:160", 0),
-    );
+    const item = plan(`${regionId}-cafe-e`, east, "카페거리 동쪽 횡단", network, "n:1240:160", 0);
+    if (item) plans.push(item);
   }
   if (bridgeS) {
-    plans.push(
-      plan(`${regionId}-bridge`, bridgeS, "강변 다리 횡단", network, "n:520:800", 12),
-    );
+    const item = plan(`${regionId}-bridge`, bridgeS, "강변 다리 횡단", network, "n:520:800", 12);
+    if (item) plans.push(item);
   }
   if (hallWest) {
-    plans.push(
-      plan(`${regionId}-hall-w`, hallWest, "시청 서쪽 횡단", network, "n:1240:480", 8),
-    );
+    const item = plan(`${regionId}-hall-w`, hallWest, "시청 서쪽 횡단", network, "n:1240:480", 8);
+    if (item) plans.push(item);
   }
   return plans;
 }

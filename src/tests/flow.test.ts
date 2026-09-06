@@ -4,6 +4,7 @@ import { createMockAuth } from "../providers/mock/auth.ts";
 import { createMockCatalog } from "../providers/mock/catalog.ts";
 import { createMockRuns } from "../providers/mock/runs.ts";
 import { createProfileStore } from "../providers/mock/runs.ts";
+import { createSettingsStore } from "../providers/mock/settings.ts";
 import { LocalStore, MemoryStorage } from "../storage/local-store.ts";
 import { NETWORKS } from "../data/demo/networks.ts";
 import { planRoutes } from "../domain/routing-policy.ts";
@@ -166,6 +167,46 @@ describe("likes and routes", () => {
     expect(runs.ensureDemoSample("edit-acc", "seoul")).toBeNull();
     expect(runs.listRoutes("edit-acc")).toHaveLength(0);
   });
+
+  it("publishes a saved route to popular list with author and rename", () => {
+    const db = store();
+    const runs = createMockRuns(db);
+    const catalog = createMockCatalog(db);
+    const seeded = runs.ensureDemoSample("pub-acc", "seoul");
+    expect(seeded).toBeTruthy();
+    const origin = NETWORKS.seoul.places[0];
+    const destination = NETWORKS.seoul.places[1];
+    const published = catalog.publish({
+      cardId: `upload:${seeded!.routeId}`,
+      regionId: "seoul",
+      title: seeded!.title,
+      sampleLikeBase: 0,
+      directedEdgeIds: seeded!.directedEdgeIds,
+      lengthM: seeded!.lengthM,
+      signalCount: 0,
+      origin,
+      destination,
+      source: "demo",
+      sampleLabel: "올린 루트",
+      authorName: "새벽러너",
+      authorAccountId: "pub-acc",
+      sourceRouteId: seeded!.routeId,
+      averagePaceSeconds: seeded!.averagePaceSeconds ?? null,
+      elapsedSeconds:
+        seeded!.averagePaceSeconds && seeded!.lengthM > 0
+          ? Math.round((seeded!.lengthM / 1000) * seeded!.averagePaceSeconds)
+          : null,
+    });
+    expect(catalog.get(published.cardId)?.averagePaceSeconds).toBe(360);
+    expect(catalog.get(published.cardId)?.elapsedSeconds).toBeGreaterThan(0);
+    expect(catalog.list("seoul").some((card) => card.cardId === published.cardId)).toBe(true);
+    expect(catalog.get(published.cardId)?.authorName).toBe("새벽러너");
+    expect(catalog.renameCard("other", published.cardId, "해킹")).toBeNull();
+    expect(catalog.renameCard("pub-acc", published.cardId, "출근 인기 코스")?.title).toBe(
+      "출근 인기 코스",
+    );
+    expect(catalog.findBySourceRoute(seeded!.routeId)?.title).toBe("출근 인기 코스");
+  });
 });
 
 describe("storage safety", () => {
@@ -219,6 +260,44 @@ describe("storage safety", () => {
     const profiles = createProfileStore(db);
     expect(profiles.get("old").profileSetupCompleted).toBe(true);
     expect(profiles.get("old").paces.usual).toBeNull();
+  });
+
+  it("keeps settings per account and fills new fields without dropping old ones", () => {
+    const db = store();
+    const settings = createSettingsStore(db);
+    settings.save("a", { recommendStyle: "min-stops", detourAllowance: "tight" });
+    expect(settings.get("a").recommendStyle).toBe("min-stops");
+    expect(settings.get("a").avoidStairs).toBe(true);
+    expect(settings.get("b").recommendStyle).toBe("balanced");
+    db.write("settings:a", { recommendStyle: "min-stops", detourAllowance: "generous" });
+    expect(settings.get("a").detourAllowance).toBe("generous");
+    expect(settings.get("a").showRouteSignals).toBe(true);
+    expect(settings.get("a").recommendStyle).toBe("min-stops");
+  });
+
+  it("deletes only the current user's run records", () => {
+    const db = store();
+    const runs = createMockRuns(db);
+    const profiles = createProfileStore(db);
+    const settings = createSettingsStore(db);
+    profiles.save({
+      accountId: "acc1",
+      regionId: "seoul",
+      nickname: "러너",
+      onboarded: true,
+      profileSetupCompleted: true,
+      paces: { usual: 390, fiveK: 360, tenK: null, half: null, full: null },
+    });
+    settings.save("acc1", { recommendStyle: "min-stops" });
+    runs.ensureDemoSample("acc1", "seoul");
+    runs.ensureDemoSample("acc2", "seoul");
+    expect(runs.listRoutes("acc1").length).toBeGreaterThan(0);
+    runs.deleteAllRuns("acc1");
+    expect(runs.listRoutes("acc1")).toHaveLength(0);
+    expect(runs.listAllSessions("acc1")).toHaveLength(0);
+    expect(runs.listRoutes("acc2").length).toBeGreaterThan(0);
+    expect(profiles.get("acc1").paces.usual).toBe(390);
+    expect(settings.get("acc1").recommendStyle).toBe("min-stops");
   });
 });
 

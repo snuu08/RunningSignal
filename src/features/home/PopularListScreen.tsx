@@ -7,6 +7,7 @@ import { MapThumb } from "../../components/map/MapRenderer.tsx";
 import { geometryFromDirectedIds } from "../../domain/pathfinding.ts";
 import { formatDistanceKm } from "../../domain/pace.ts";
 import type { PlaceRef, PopularRouteCard } from "../../domain/models.ts";
+import { popularCardSubtitle, refreshOwnerPopularStats, sortPopularByLikes } from "../../domain/popular.ts";
 
 function matchesPlace(card: PopularRouteCard, place: PlaceRef): boolean {
   return card.origin.nodeId === place.nodeId || card.destination.nodeId === place.nodeId;
@@ -15,7 +16,7 @@ function matchesPlace(card: PopularRouteCard, place: PlaceRef): boolean {
 function matchesQuery(card: PopularRouteCard, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [card.title, card.origin.label, card.destination.label, card.sampleLabel].some((text) =>
+  return [card.title, card.origin.label, card.destination.label, card.sampleLabel, card.authorName].some((text) =>
     text.toLowerCase().includes(q),
   );
 }
@@ -35,9 +36,22 @@ export function PopularListScreen() {
   );
 
   const visible = useMemo(() => {
-    if (picked) return cards.filter((card) => matchesPlace(card, picked));
-    return cards.filter((card) => matchesQuery(card, query));
-  }, [cards, picked, query]);
+    const hydrated = cards.map((card) =>
+      refreshOwnerPopularStats(
+        card,
+        ctx.account?.id,
+        card.sourceRouteId && ctx.account
+          ? ctx.providers.runs.getRoute(ctx.account.id, card.sourceRouteId)
+          : null,
+      ),
+    );
+    const filtered = picked
+      ? hydrated.filter((card) => matchesPlace(card, picked))
+      : hydrated.filter((card) => matchesQuery(card, query));
+    return sortPopularByLikes(filtered, (card) =>
+      ctx.account ? ctx.providers.catalog.displayCount(ctx.account.id, card) : card.sampleLikeBase,
+    );
+  }, [cards, picked, query, ctx.account, ctx.providers.catalog, ctx.providers.runs]);
 
   return (
     <div className="app-page">
@@ -97,10 +111,17 @@ export function PopularListScreen() {
                 />
                 <div className="popular-card-meta">
                   <strong>{card.title}</strong>
+                  <span>{popularCardSubtitle(card)}</span>
                   <span>
                     {card.origin.label} → {card.destination.label}
                   </span>
-                  <span>{formatDistanceKm(card.lengthM)}</span>
+                  <span>
+                    {formatDistanceKm(card.lengthM)}
+                    {" · 하트 "}
+                    {ctx.account
+                      ? ctx.providers.catalog.displayCount(ctx.account.id, card)
+                      : card.sampleLikeBase}
+                  </span>
                 </div>
               </button>
             ))}

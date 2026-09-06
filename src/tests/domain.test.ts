@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { INITIAL_DETOUR_RATIO, WAIT_DETOUR_THRESHOLD_SEC } from "../config/app.ts";
+import {
+  DETOUR_PRESETS,
+  INITIAL_DETOUR_MAX_M,
+  INITIAL_DETOUR_RATIO,
+  WAIT_DIFF_NEGLIGIBLE_SEC,
+  WAIT_DETOUR_THRESHOLD_SEC,
+} from "../config/app.ts";
+import { SAMPLE_CARDS } from "../data/demo/catalog.ts";
 import { NETWORKS } from "../data/demo/networks.ts";
 import { DEMO_PLANS, createSignalLookup } from "../data/demo/signals.ts";
 import { DemoSimClock, fixedClock } from "../domain/clock.ts";
@@ -10,6 +17,8 @@ import type {
   DirectedEdge,
   GraphEdge,
   PathCandidate,
+  PathEvaluation,
+  RunSession,
   SignalLookup,
   WalkingNetwork,
 } from "../domain/models.ts";
@@ -33,7 +42,17 @@ import {
 import { asDirected, dijkstra, enumeratePaths, pathThroughStops } from "../domain/pathfinding.ts";
 import { countLaps, JustRunTracker, justRunLoopGeometry, summarizeJustRun } from "../domain/just-run.ts";
 import { RunSimulator } from "../domain/run-simulation.ts";
-import { defaultRoutingPolicy, planRoutes } from "../domain/routing-policy.ts";
+import { filterCrossingMarks } from "../domain/crossing-marks.ts";
+import { pacesFromSession } from "../domain/records-export.ts";
+import { normalizeAppSettings, routingPolicyFromSettings } from "../domain/settings.ts";
+import {
+  allowedExtraMeters,
+  buildReason,
+  defaultRoutingPolicy,
+  pickPreferredPath,
+  planRoutes,
+  withinDetourLimits,
+} from "../domain/routing-policy.ts";
 import {
   evaluatePath,
   needsDetourSearch,
@@ -41,6 +60,7 @@ import {
   waitAtCrossing,
 } from "../domain/signals.ts";
 import { evaluateTurns } from "../domain/turns.ts";
+import { formatPopularElapsed, popularRunSummary } from "../domain/popular.ts";
 
 const pace = 360;
 
@@ -295,12 +315,175 @@ describe("routing policy", () => {
       },
       network,
       lookup,
-      { detourRatio: 0.02, waitThresholdSec: 15 },
+      { ...defaultRoutingPolicy, detourRatio: 0.02, waitThresholdSec: 15 },
     );
     expect("error" in result).toBe(false);
     if (!("error" in result)) {
       expect(result.chosen.candidate.fingerprint).toBe(result.baseline.candidate.fingerprint);
     }
+  });
+
+  it("ranks by fewer stops, not a shorter max wait, and applies both detour caps", () => {
+    expect(defaultRoutingPolicy.detourMaxM).toBe(INITIAL_DETOUR_MAX_M);
+    expect(defaultRoutingPolicy.waitDiffNegligibleSec).toBe(WAIT_DIFF_NEGLIGIBLE_SEC);
+    expect(withinDetourLimits(5000, 5200)).toBe(true);
+    expect(withinDetourLimits(5000, 6200)).toBe(false);
+
+    const sample = (id: string, lengthM: number, stopCount: number, wait: number): PathEvaluation => ({
+      candidate: {
+        id,
+        directedEdges: [],
+        nodeIds: [],
+        lengthM,
+        geometry: [],
+        fingerprint: id,
+        viaLabel: id,
+      },
+      travelSec: { kind: "exact", seconds: travelSeconds(lengthM, 360) },
+      waitSec: { kind: "exact", seconds: wait },
+      totalSec: { kind: "exact", seconds: travelSeconds(lengthM, 360) + wait },
+      stopCount,
+      signalCrossingCount: stopCount,
+      knownCrossingCount: stopCount,
+      unknownCrossingCount: 0,
+      crossings: [],
+      turnScore: 1,
+      walkScore: 1,
+      sharpTurns: 0,
+      zigzagPairs: 0,
+      maxExactWaitSec: wait,
+      complete: true,
+      paceAvailable: true,
+      signalComparisonReady: true,
+    });
+
+    const a = sample("A", 5000, 1, 30);
+    const b = sample("B", 5100, 3, 60);
+    const c = sample("C", 5200, 0, 0);
+    const d = sample("D", 6200, 0, 0);
+    expect(pickPreferredPath(a, [b, c, d]).candidate.id).toBe("C");
+    expect(buildReason(a, c, 360)).toBe(
+      "200m 더 달리는 대신 예상 정지 1회를 줄여요. 총 소요시간은 약 42초 늘어나요.",
+    );
+    expect(buildReason(a, c, 360)).not.toMatch(/더 빠른/);
+  });
+
+  it("applies both detour ratio and max meters, and styles pick differently", () => {
+    expect(allowedExtraMeters(2000, DETOUR_PRESETS.tight.ratio, DETOUR_PRESETS.tight.maxM)).toBe(100);
+    expect(withinDetourLimits(2000, 2200, { ...defaultRoutingPolicy, ...DETOUR_PRESETS.tight, detourRatio: DETOUR_PRESETS.tight.ratio, detourMaxM: DETOUR_PRESETS.tight.maxM })).toBe(false);
+    expect(withinDetourLimits(2000, 2090, { ...defaultRoutingPolicy, detourRatio: DETOUR_PRESETS.tight.ratio, detourMaxM: DETOUR_PRESETS.tight.maxM })).toBe(true);
+
+    const sample = (id: string, lengthM: number, stopCount: number, wait: number): PathEvaluation => ({
+      candidate: {
+        id,
+        directedEdges: [],
+        nodeIds: [],
+        lengthM,
+        geometry: [],
+        fingerprint: id,
+        viaLabel: id,
+      },
+      travelSec: { kind: "exact", seconds: travelSeconds(lengthM, 360) },
+      waitSec: { kind: "exact", seconds: wait },
+      totalSec: { kind: "exact", seconds: travelSeconds(lengthM, 360) + wait },
+      stopCount,
+      signalCrossingCount: stopCount,
+      knownCrossingCount: stopCount,
+      unknownCrossingCount: 0,
+      crossings: [],
+      turnScore: 1,
+      walkScore: 1,
+      sharpTurns: 0,
+      zigzagPairs: 0,
+      maxExactWaitSec: wait,
+      complete: true,
+      paceAvailable: true,
+      signalComparisonReady: true,
+    });
+    const baseline = sample("base", 4000, 2, 40);
+    const costly = sample("costly", 4280, 1, 40);
+    expect(
+      pickPreferredPath(baseline, [costly], { ...defaultRoutingPolicy, recommendStyle: "balanced" }).candidate.id,
+    ).toBe("base");
+    expect(
+      pickPreferredPath(baseline, [costly], { ...defaultRoutingPolicy, recommendStyle: "min-stops" }).candidate.id,
+    ).toBe("costly");
+  });
+
+  it("prefers avoiding stairs when the setting is on, but can still include them", () => {
+    const edge = (stairs: boolean) => ({
+      directedEdgeId: stairs ? "s>" : "w>",
+      edgeId: "e",
+      from: "a",
+      to: "b",
+      lengthM: 20,
+      geometry: [],
+      walkKind: stairs ? ("stairs" as const) : ("sidewalk" as const),
+      isStairs: stairs,
+      isOverpass: false,
+      walkable: true,
+      geometryVersion: 1,
+    });
+    const sample = (id: string, stairs: boolean, stopCount: number): PathEvaluation => ({
+      candidate: {
+        id,
+        directedEdges: [edge(stairs)],
+        nodeIds: [],
+        lengthM: 4000,
+        geometry: [],
+        fingerprint: id,
+        viaLabel: id,
+      },
+      travelSec: { kind: "exact", seconds: 400 },
+      waitSec: { kind: "exact", seconds: 0 },
+      totalSec: { kind: "exact", seconds: 400 },
+      stopCount,
+      signalCrossingCount: stopCount,
+      knownCrossingCount: stopCount,
+      unknownCrossingCount: 0,
+      crossings: [],
+      turnScore: 1,
+      walkScore: 1,
+      sharpTurns: 0,
+      zigzagPairs: 0,
+      maxExactWaitSec: 0,
+      complete: true,
+      paceAvailable: true,
+      signalComparisonReady: true,
+    });
+    const base = sample("flat", false, 2);
+    const stairs = sample("up", true, 0);
+    expect(
+      pickPreferredPath(base, [stairs], { ...defaultRoutingPolicy, recommendStyle: "min-stops", avoidStairs: true })
+        .candidate.id,
+    ).toBe("flat");
+    expect(
+      pickPreferredPath(base, [stairs], { ...defaultRoutingPolicy, recommendStyle: "min-stops", avoidStairs: false })
+        .candidate.id,
+    ).toBe("up");
+  });
+
+  it("keeps signal markers independent from route ranking", () => {
+    const plan = planOf("e>", 0);
+    const marks = [
+      { plan, onRoute: true, info: "predictable" as const, waitSec: 8, next: true },
+      { plan: { ...plan, crossingId: "near" }, onRoute: false, info: "unknown" as const, waitSec: null, next: false },
+    ];
+    expect(filterCrossingMarks(marks, { showRouteSignals: false, showNearbySignals: true, selectedCrossingId: plan.crossingId })).toHaveLength(2);
+    expect(filterCrossingMarks(marks, { showRouteSignals: false, showNearbySignals: false }).map((m) => m.plan.crossingId)).toEqual([]);
+    const policy = routingPolicyFromSettings(normalizeAppSettings({ showRouteSignals: false }));
+    expect(policy.recommendStyle).toBe("balanced");
+    expect(policy.detourRatio).toBe(INITIAL_DETOUR_RATIO);
+  });
+
+  it("does not invent a moving pace without moving time", () => {
+    const session = {
+      progressM: 1000,
+      times: { movingSec: 0, signalWaitSec: 0, manualPauseSec: 0, totalElapsedSec: 360 },
+    } as RunSession;
+    const paces = pacesFromSession(session, 1000);
+    expect(paces.movingPaceSeconds).toBeNull();
+    expect(paces.overallPaceSeconds).toBe(360);
   });
 
   it("does not turn unknown signals into zero wait or a confirmed total", () => {
@@ -309,6 +492,19 @@ describe("routing policy", () => {
     const ev = evaluatePath(candidate([ab]), pace, 0, { get: () => "unknown" });
     expect(ev.waitSec.kind).toBe("unknown");
     expect(ev.totalSec.kind).not.toBe("exact");
+    expect(ev.complete).toBe(false);
+    expect(ev.signalCrossingCount).toBe(1);
+    expect(ev.unknownCrossingCount).toBe(1);
+    expect(ev.signalComparisonReady).toBe(false);
+  });
+
+  it("does not confirm signal waits when pace is missing", () => {
+    const network = fixtureNetwork();
+    const ab = asDirected(network.edges.ab, true);
+    const ev = evaluatePath(candidate([ab]), null, 0, { get: () => planOf(ab.directedEdgeId, 0) });
+    expect(ev.paceAvailable).toBe(false);
+    expect(ev.signalComparisonReady).toBe(false);
+    expect(ev.waitSec.kind).toBe("unknown");
     expect(ev.complete).toBe(false);
   });
 
@@ -453,18 +649,17 @@ describe("pace calculator", () => {
     ).toBe(360);
   });
 
-  it("derives usual pace per km from saved distance slots", () => {
-    const fullOnly = applyPaceSlot(emptyPaceBook(), "full", 420);
-    expect(fullOnly.full).toBe(420);
-    expect(fullOnly.usual).toBe(420);
-    expect(averagePaceSecondsFromDistanceSlots(fullOnly)).toBe(420);
-
-    const withFive = applyPaceSlot(fullOnly, "fiveK", 300);
-    expect(withFive.usual).toBe(360);
-
+  it("keeps usual pace independent from distance slots", () => {
+    const withUsual = applyPaceSlot(emptyPaceBook(), "usual", 390);
+    const withFull = applyPaceSlot(withUsual, "full", 420);
+    expect(withFull.usual).toBe(390);
+    expect(withFull.full).toBe(420);
+    const withFive = applyPaceSlot(withFull, "fiveK", 300);
+    expect(withFive.usual).toBe(390);
     const removedFive = applyPaceSlot(withFive, "fiveK", null);
     expect(removedFive.fiveK).toBeNull();
-    expect(removedFive.usual).toBe(420);
+    expect(removedFive.usual).toBe(390);
+    expect(averagePaceSecondsFromDistanceSlots(withFive)).toBe(360);
   });
 
   it("does not invent distance records from a usual pace", () => {
@@ -535,5 +730,24 @@ describe("just run", () => {
     const none = summarizeJustRun([loop[0]], 0);
     expect(none.distanceM).toBe(0);
     expect(none.paceSeconds).toBeNull();
+  });
+});
+
+describe("popular run stats", () => {
+  it("formats breakthrough time in minutes", () => {
+    expect(formatPopularElapsed(null)).toBe("정보 없음");
+    expect(formatPopularElapsed(45)).toBe("45초");
+    expect(formatPopularElapsed(180)).toBe("3분");
+    expect(formatPopularElapsed(272)).toBe("4분 32초");
+  });
+
+  it("shows sample author, elapsed, and pace on downtown daegu card", () => {
+    const card = SAMPLE_CARDS.find((item) => item.cardId === "daegu:downtown");
+    expect(card).toBeTruthy();
+    const summary = popularRunSummary(card!);
+    expect(summary.author).toBe("샘플");
+    expect(summary.elapsed).not.toBe("정보 없음");
+    expect(summary.pace).toBe("6′00″");
+    expect(summary.recordNote).toContain("샘플 기록");
   });
 });

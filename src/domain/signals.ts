@@ -84,16 +84,19 @@ export function waitAtCrossing(
 }
 
 function walkScore(edges: DirectedEdge[]): number {
-  let score = 1;
-  for (const e of edges) {
-    if (!e.walkable) return 0;
-    if (e.isStairs || e.walkKind === "stairs") score *= 0.25;
-    if (e.isOverpass || e.walkKind === "overpass") score *= 0.35;
-    if (e.walkKind === "alley") score *= 0.86;
-    if (e.walkKind === "park_path") score *= 1.04;
-    if (e.walkKind === "sidewalk" || e.walkKind === "bridge") score *= 1.02;
+  if (edges.some((edge) => !edge.walkable)) return 0;
+  const length = edges.reduce((sum, edge) => sum + edge.lengthM, 0) || 1;
+  let stairsM = 0;
+  let overpassM = 0;
+  for (const edge of edges) {
+    if (edge.isStairs || edge.walkKind === "stairs") stairsM += edge.lengthM;
+    if (edge.isOverpass || edge.walkKind === "overpass") overpassM += edge.lengthM;
   }
-  return score;
+  let score = 1 - (stairsM / length) * 0.75 - (overpassM / length) * 0.65;
+  const kinds = new Set(edges.map((edge) => edge.walkKind));
+  if (kinds.has("alley")) score *= 0.9;
+  if (kinds.has("park_path")) score *= 1.04;
+  return Math.max(0.05, score);
 }
 
 function viaLabel(edges: DirectedEdge[]): string {
@@ -106,38 +109,59 @@ function viaLabel(edges: DirectedEdge[]): string {
 
 export function evaluatePath(
   candidate: PathCandidate,
-  paceSecondsPerKm: number,
+  paceSecondsPerKm: number | null,
   startSec: number,
   signals: SignalLookup,
 ): PathEvaluation {
   const turns = evaluateTurns(candidate.geometry);
   const crossings: CrossingOnPath[] = [];
-  let cursor: TimeEstimate = { kind: "exact", seconds: startSec };
-  let waitTotal: TimeEstimate = { kind: "exact", seconds: 0 };
+  const paceAvailable = paceSecondsPerKm !== null && paceSecondsPerKm > 0;
+  let cursor: TimeEstimate = paceAvailable
+    ? { kind: "exact", seconds: startSec }
+    : { kind: "unknown" };
+  let waitTotal: TimeEstimate = paceAvailable ? { kind: "exact", seconds: 0 } : { kind: "unknown" };
   let stopCount = 0;
+  let signalCrossingCount = 0;
   let knownCrossingCount = 0;
   let unknownCrossingCount = 0;
   let maxExactWaitSec: number | null = null;
   let travelOnly = 0;
 
   for (const edge of candidate.directedEdges) {
-    const move = travelSeconds(edge.lengthM, paceSecondsPerKm);
-    travelOnly += move;
-    cursor = addEstimates(cursor, { kind: "exact", seconds: move });
+    if (paceAvailable) {
+      const move = travelSeconds(edge.lengthM, paceSecondsPerKm);
+      travelOnly += move;
+      cursor = addEstimates(cursor, { kind: "exact", seconds: move });
+    }
 
     const plan = signals.get(edge.directedEdgeId);
     if (plan === null) continue;
+    signalCrossingCount += 1;
+
+    if (!paceAvailable) {
+      unknownCrossingCount += 1;
+      crossings.push({
+        directedEdgeId: edge.directedEdgeId,
+        arrival: { kind: "unknown" },
+        wait: {
+          kind: "unknown",
+          crossingId: plan === "unknown" ? undefined : plan.crossingId,
+          reason: "페이스가 없어 도착 시각을 확정하지 않습니다.",
+        },
+        departure: { kind: "unknown" },
+      });
+      continue;
+    }
 
     if (plan === "unknown" || cursor.kind !== "exact") {
       unknownCrossingCount += 1;
-      const wait: WaitEstimate = {
-        kind: "unknown",
-        reason: "이전 구간이 불확실하거나 신호 데이터가 없습니다.",
-      };
       crossings.push({
         directedEdgeId: edge.directedEdgeId,
         arrival: cursor,
-        wait,
+        wait: {
+          kind: "unknown",
+          reason: "이전 구간이 불확실하거나 신호 데이터가 없습니다.",
+        },
         departure: { kind: "unknown" },
       });
       cursor = { kind: "unknown" };
@@ -146,7 +170,6 @@ export function evaluatePath(
     }
 
     const wait = waitAtCrossing(cursor.seconds, plan, plan.crossingWidthM, paceSecondsPerKm);
-    knownCrossingCount += 1;
     if (wait.kind === "unknown") {
       unknownCrossingCount += 1;
       crossings.push({
@@ -160,6 +183,7 @@ export function evaluatePath(
       continue;
     }
 
+    knownCrossingCount += 1;
     if (wait.seconds > 0) stopCount += 1;
     if (maxExactWaitSec === null || wait.seconds > maxExactWaitSec) {
       maxExactWaitSec = wait.seconds;
@@ -176,8 +200,17 @@ export function evaluatePath(
     waitTotal = addEstimates(waitTotal, { kind: "exact", seconds: wait.seconds });
   }
 
-  const travelSec: TimeEstimate = { kind: "exact", seconds: travelOnly };
-  const totalSec = addEstimates(travelSec, waitTotal);
+  const travelSec: TimeEstimate = paceAvailable
+    ? { kind: "exact", seconds: travelOnly }
+    : { kind: "unknown" };
+  const totalSec: TimeEstimate = paceAvailable
+    ? addEstimates(travelSec, waitTotal)
+    : { kind: "unknown" };
+  const complete =
+    paceAvailable &&
+    unknownCrossingCount === 0 &&
+    waitTotal.kind === "exact" &&
+    totalSec.kind === "exact";
 
   return {
     candidate: { ...candidate, viaLabel: candidate.viaLabel || viaLabel(candidate.directedEdges) },
@@ -185,6 +218,7 @@ export function evaluatePath(
     waitSec: waitTotal,
     totalSec,
     stopCount,
+    signalCrossingCount,
     knownCrossingCount,
     unknownCrossingCount,
     crossings,
@@ -193,7 +227,9 @@ export function evaluatePath(
     sharpTurns: turns.sharpTurns,
     zigzagPairs: turns.zigzagPairs,
     maxExactWaitSec,
-    complete: unknownCrossingCount === 0 && waitTotal.kind === "exact" && totalSec.kind === "exact",
+    complete,
+    paceAvailable,
+    signalComparisonReady: complete,
   };
 }
 

@@ -137,7 +137,7 @@ export type RouteRequest = {
   origin: PlaceRef;
   destination: PlaceRef;
   waypoints: PlaceRef[];
-  paceSecondsPerKm: number;
+  paceSecondsPerKm: number | null;
   departure: DepartureBasis;
   seed: number;
   nowSec: number;
@@ -166,6 +166,7 @@ export type PathEvaluation = {
   waitSec: TimeEstimate;
   totalSec: TimeEstimate;
   stopCount: number;
+  signalCrossingCount: number;
   knownCrossingCount: number;
   unknownCrossingCount: number;
   crossings: CrossingOnPath[];
@@ -175,6 +176,8 @@ export type PathEvaluation = {
   zigzagPairs: number;
   maxExactWaitSec: number | null;
   complete: boolean;
+  paceAvailable: boolean;
+  signalComparisonReady: boolean;
 };
 
 export type Recommendation = {
@@ -262,6 +265,11 @@ export type PopularRouteCard = {
   destination: PlaceRef;
   source: DataSource;
   sampleLabel: string;
+  authorName: string;
+  authorAccountId: string | null;
+  sourceRouteId: string | null;
+  averagePaceSeconds: number | null;
+  elapsedSeconds: number | null;
 };
 
 export type AuthAccount = {
@@ -282,6 +290,22 @@ export type PaceBook = {
 };
 
 export type PaceSlotId = keyof PaceBook;
+
+export type RecommendStyle = "min-stops" | "balanced";
+export type DetourAllowance = "tight" | "normal" | "generous";
+
+export type UserAppSettings = {
+  schemaVersion: number;
+  recommendStyle: RecommendStyle;
+  detourAllowance: DetourAllowance;
+  avoidStairs: boolean;
+  avoidOverpass: boolean;
+  showRouteSignals: boolean;
+  showNearbySignals: boolean;
+  voiceGuidance: boolean;
+  vibrationGuidance: boolean;
+  keepScreenOn: boolean;
+};
 
 export type UserProfile = {
   accountId: string;

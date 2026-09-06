@@ -6,6 +6,8 @@ import { IconTurn } from "../../components/Icons.tsx";
 import { MapRenderer } from "../../components/map/MapRenderer.tsx";
 import { Sheet } from "../../components/Sheet.tsx";
 import { Button } from "../../components/ui.tsx";
+import { DEMO_OPEN_PACE_SECONDS } from "../../config/app.ts";
+import { marksForEvaluation } from "../../domain/crossing-marks.ts";
 import { DemoSimClock } from "../../domain/clock.ts";
 import type { RouteRequest, RunSession } from "../../domain/models.ts";
 import {
@@ -19,6 +21,7 @@ import {
 import { RunSimulator } from "../../domain/run-simulation.ts";
 import { evaluatePath, remainingToNextCrossing } from "../../domain/signals.ts";
 import { RouteDistancePaceSheet } from "../pace/SaveAccountPace.tsx";
+import { useRunAids } from "./useRunAids.ts";
 
 export function RunScreen() {
   const ctx = useApp();
@@ -39,13 +42,14 @@ export function RunScreen() {
     if (!ev || !ctx.lastRequest) return;
     const clock = new DemoSimClock(ctx.lastRequest.departure.atSec, 1);
     clock.freeze();
+    const simPace = ctx.lastRequest.paceSecondsPerKm ?? DEMO_OPEN_PACE_SECONDS;
     const startEv = evaluatePath(
       ev.candidate,
       ctx.lastRequest.paceSecondsPerKm,
       clock.nowSec(),
       ctx.providers.signals.lookup(regionId),
     );
-    const sim = new RunSimulator(startEv, clock, ctx.lastRequest.paceSecondsPerKm);
+    const sim = new RunSimulator(startEv, clock, simPace);
     if (ctx.account) {
       const snap = ctx.providers.runs.readSnapshot(ctx.account.id);
       if (snap && snap.planned.evaluation.candidate.fingerprint === ev.candidate.fingerprint) {
@@ -97,6 +101,20 @@ export function RunScreen() {
     ctx.setPendingSession(session);
   };
 
+  const sim = simRef.current;
+  const phase = sim?.phase ?? "ready";
+  const waiting = sim?.runningSub === "waitingAtSignal";
+  const nextM = ev ? remainingToNextCrossing(ev, sim?.progressM ?? 0) : null;
+  const nextMark = ev
+    ? marksForEvaluation(ev, ctx.providers.signals.list(regionId), sim?.progressM ?? 0).find((mark) => mark.next)
+    : undefined;
+  const aids = useRunAids(
+    phase,
+    nextMark?.plan.crossingId ?? null,
+    nextMark?.plan.label ?? null,
+    nextM,
+  );
+
   if (!ev || !ctx.lastRequest) {
     return (
       <div className="app-page">
@@ -108,11 +126,6 @@ export function RunScreen() {
       </div>
     );
   }
-
-  const sim = simRef.current;
-  const phase = sim?.phase ?? "ready";
-  const waiting = sim?.runningSub === "waitingAtSignal";
-  const nextM = remainingToNextCrossing(ev, sim?.progressM ?? 0);
   const statusLabel =
     phase === "ready" ? "준비" : waiting ? "신호 대기" : phase === "paused" ? "일시정지" : "러닝 중";
   void tick;
@@ -131,7 +144,9 @@ export function RunScreen() {
           origin={ctx.lastRequest.origin}
           destination={ctx.lastRequest.destination}
           runner={sim?.position() ?? ev.candidate.geometry[0]}
-          crossings={ctx.providers.signals.list(regionId)}
+          marks={marksForEvaluation(ev, ctx.providers.signals.list(regionId), sim?.progressM ?? 0)}
+          showRouteSignals={ctx.settings.showRouteSignals}
+          showNearbySignals={ctx.settings.showNearbySignals}
           camera={camera}
           height="100%"
         />
@@ -139,9 +154,11 @@ export function RunScreen() {
       <div className="page-body" style={{ paddingTop: 8 }}>
         <div className="pace-hero">
           <div className="num">
-            {ctx.draft.paceSkipped ? "그냥 달리기" : formatPaceMarks(ctx.lastRequest.paceSecondsPerKm)}
+            {ctx.lastRequest.paceSecondsPerKm === null
+              ? "미입력"
+              : formatPaceMarks(ctx.lastRequest.paceSecondsPerKm)}
           </div>
-          <div className="cap">평균 페이스</div>
+          <div className="cap">이동 페이스</div>
         </div>
         <div className="dual-stats" style={{ marginTop: 16 }}>
           <div className="stat">
@@ -161,6 +178,9 @@ export function RunScreen() {
           </span>
         </div>
         {waiting ? <p className="tiny muted">신호 대기 중 · 이동거리는 늘지 않습니다</p> : null}
+        {aids.wakeRequested && phase === "running" && !aids.wakeApplied ? (
+          <p className="tiny muted">화면 켜짐 유지를 요청했으나 허용되지 않았습니다.</p>
+        ) : null}
         {phase === "paused" ? (
           <p className="tiny muted">
             {sim?.pauseReason === "manual" ? "시뮬레이션 일시정지" : "이어달리기를 눌러 계속하세요"}

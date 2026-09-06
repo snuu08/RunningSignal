@@ -1,11 +1,27 @@
 export const APP_NAME = "FLOW RUN";
+export const APP_VERSION = "0.0.0";
 
 export const STORAGE_PREFIX = "flowrun:";
 export const STORAGE_SCHEMA_VERSION = 1;
+export const SETTINGS_SCHEMA_VERSION = 1;
 
 export const WAIT_DETOUR_THRESHOLD_SEC = 15;
-/** Initial demo detour cap versus the baseline path. Tunable, not a user-confirmed product value. */
-export const INITIAL_DETOUR_RATIO = 0.1;
+/** Extra-wait gap treated as a tie; then shorter extra distance and fewer turns win. Tunable. */
+export const WAIT_DIFF_NEGLIGIBLE_SEC = 10;
+/** Extra meters one avoided stop is worth when balancing distance vs stops. */
+export const BALANCED_STOP_VALUE_M = 120;
+/** Extra meters one saved wait-second is worth in the balanced style. */
+export const BALANCED_WAIT_VALUE_M_PER_SEC = 4;
+
+/** Initial demo detour presets. Tunable product values, not user-confirmed science. */
+export const DETOUR_PRESETS = {
+  tight: { ratio: 0.05, maxM: 150 },
+  normal: { ratio: 0.1, maxM: 300 },
+  generous: { ratio: 0.15, maxM: 500 },
+} as const;
+
+export const INITIAL_DETOUR_RATIO = DETOUR_PRESETS.normal.ratio;
+export const INITIAL_DETOUR_MAX_M = DETOUR_PRESETS.normal.maxM;
 
 /** Demo engine only when the runner skipped a goal pace. Not a stored user record. */
 export const DEMO_OPEN_PACE_SECONDS = 360;

@@ -35,10 +35,11 @@ export function RouteDistancePaceSheet({
   return (
     <Sheet title="평균 페이스 계정에 저장" onClose={onClose}>
       <p className="tiny muted">
-        경로 {formatDistance(distanceM)} 기준 · 평균 러닝 페이스로 저장
+        경로 {formatDistance(distanceM)} 기준 · 평소 러닝 페이스로 저장
         {usual ? ` · 현재 ${formatPaceSpoken(usual)}` : ""}
       </p>
       <PaceCalculator
+        applyLabel="내 페이스에 저장"
         fixedDistanceKm={distanceM / 1000}
         initialTotalSeconds={initialTotalSeconds}
         onCancel={onClose}

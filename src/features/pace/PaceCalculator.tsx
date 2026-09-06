@@ -32,6 +32,7 @@ export function PaceCalculator({
   onApply,
   onCancel,
   onSkipPace,
+  applyLabel = "이번 러닝에 적용",
 }: {
   fixedDistanceKm?: number | null;
   currentRoute?: CurrentRoutePick | null;
@@ -39,6 +40,7 @@ export function PaceCalculator({
   onApply: (paceSeconds: number) => void;
   onCancel: () => void;
   onSkipPace?: () => void;
+  applyLabel?: string;
 }) {
   const ctx = useApp();
   const regionId = (ctx.profile?.regionId ?? "seoul") as RegionId;
@@ -143,7 +145,13 @@ export function PaceCalculator({
     asLoop = loop,
   ) => {
     const built = resolvePath(stops, asLoop);
-    if (!built) return;
+    if (!built) {
+      if (nextSource === "map" || nextSource === "current") {
+        setPreciseKm(null);
+        setDistanceStr("");
+      }
+      return;
+    }
     const km = built.lengthM / 1000;
     setPreciseKm(km);
     setDistanceStr(String(Number(km.toFixed(3))));
@@ -197,8 +205,8 @@ export function PaceCalculator({
                     현재 경로
                   </button>
                 ) : null}
-                <button type="button" className="pace-link-btn">
-                  연동하기
+                <button type="button" className="pace-link-btn" disabled>
+                  지도 연동 준비 중
                 </button>
               </div>
             </div>
@@ -291,13 +299,18 @@ export function PaceCalculator({
       <Button
         type="button"
         variant="primary"
-        disabled={paceSeconds === null || Boolean(paceError)}
+        disabled={
+          paceSeconds === null ||
+          Boolean(paceError) ||
+          Boolean(pathError && (source === "map" || source === "current"))
+        }
         onClick={() => {
           if (paceSeconds === null || paceError) return;
+          if (pathError && (source === "map" || source === "current")) return;
           onApply(paceSeconds);
         }}
       >
-        이 페이스 사용하기
+        {applyLabel}
       </Button>
       {onSkipPace ? (
         <Button type="button" onClick={onSkipPace}>

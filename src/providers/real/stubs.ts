@@ -60,6 +60,9 @@ export const realRouteProvider: RouteProvider = {
   plan: () => {
     throw new RealAdapterNotReadyError("route");
   },
+  planAsync: async () => {
+    throw new RealAdapterNotReadyError("route");
+  },
 };
 
 export const realSignalProvider: SignalProvider = {
@@ -75,10 +78,21 @@ export const realSignalProvider: SignalProvider = {
 export const realLocationProvider: LocationProvider = {
   kind: "device",
   note: "실제 GPS 어댑터는 이번 범위에 없습니다. 사용자 일시정지로 실제 신호 시계를 동결할 수 없습니다.",
+  subscribe(onFix) {
+    onFix({
+      ok: false,
+      error: "실제 위치 공급이 연결되어 있지 않습니다.",
+      atMs: Date.now(),
+    });
+    return { unsubscribe() {} };
+  },
 };
 
 export const realCatalogProvider: RouteCatalogProvider = {
   list: () => {
+    throw new RealAdapterNotReadyError("catalog");
+  },
+  get: () => {
     throw new RealAdapterNotReadyError("catalog");
   },
   liked: () => false,
@@ -86,4 +100,13 @@ export const realCatalogProvider: RouteCatalogProvider = {
     throw new RealAdapterNotReadyError("catalog");
   },
   displayCount: () => 0,
+  publish: () => {
+    throw new RealAdapterNotReadyError("catalog");
+  },
+  renameCard: () => {
+    throw new RealAdapterNotReadyError("catalog");
+  },
+  findBySourceRoute: () => {
+    throw new RealAdapterNotReadyError("catalog");
+  },
 };

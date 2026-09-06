@@ -5,17 +5,15 @@ import { Brand, SoftPill } from "../../components/chrome.tsx";
 import { MapRenderer } from "../../components/map/MapRenderer.tsx";
 import { Button } from "../../components/ui.tsx";
 import { Sheet } from "../../components/Sheet.tsx";
-import { effectiveRunPaceSeconds, formatDuration } from "../../domain/pace.ts";
+import { DEMO_OPEN_PACE_SECONDS } from "../../config/app.ts";
+import { formatDuration } from "../../domain/pace.ts";
 import { buildJustRunPlan, JustRunTracker } from "../../domain/just-run.ts";
+import { useRunAids } from "./useRunAids.ts";
 
 export function JustRunScreen() {
   const ctx = useApp();
   const navigate = useNavigate();
-  const pace = effectiveRunPaceSeconds(
-    ctx.draft.paceSeconds,
-    ctx.draft.paceSkipped,
-    ctx.profile?.paces,
-  );
+  const pace = ctx.draft.paceSeconds ?? DEMO_OPEN_PACE_SECONDS;
   const regionId = ctx.profile?.regionId ?? "seoul";
   const start = ctx.providers.places.demoStart(regionId);
   const network = ctx.providers.places.getNetwork(regionId);
@@ -73,24 +71,9 @@ export function JustRunScreen() {
     navigate("/result");
   };
 
-  if (!pace) {
-    return (
-      <div className="app-page">
-        <header className="app-header">
-          <Brand onClick={() => navigate("/home")} />
-        </header>
-        <div className="page-body stack" style={{ paddingTop: 16 }}>
-          <p className="error">이번 러닝 목표 페이스를 입력하거나, 시간을 입력하지 않고 그냥 달릴래요를 눌러 주세요.</p>
-          <Button variant="primary" onClick={() => navigate("/home")}>
-            홈으로
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   const tracker = trackerRef.current;
   const phase = tracker?.phase ?? "ready";
+  const aids = useRunAids(phase, null, null, null);
   void tick;
 
   return (
@@ -101,7 +84,7 @@ export function JustRunScreen() {
         <SoftPill>데모</SoftPill>
       </header>
       <div className="page-body stack" style={{ paddingTop: 12 }}>
-        <p className="tiny muted">지금은 가상 GPS만 기록합니다. 거리·바퀴·페이스는 종료 후에 계산합니다.</p>
+        <p className="tiny muted">체험용 가상 이동입니다. 실제 GPS 측정이 아니며, 내부 속도는 기록에 저장하지 않습니다.</p>
         <div style={{ height: 180 }}>
           <MapRenderer
             network={network}
@@ -120,6 +103,9 @@ export function JustRunScreen() {
             {formatDuration(tracker?.times.totalElapsedSec ?? 0)}
           </div>
           <div className="cap">{phase === "ready" ? "기록 대기" : phase === "paused" ? "일시정지" : "기록 중"}</div>
+        {aids.wakeRequested && phase === "running" && !aids.wakeApplied ? (
+          <p className="tiny muted">화면 켜짐 유지를 요청했으나 허용되지 않았습니다.</p>
+        ) : null}
         </div>
         {phase === "ready" ? (
           <Button
@@ -155,7 +141,14 @@ export function JustRunScreen() {
           </Button>
         ) : null}
         {phase !== "ready" ? (
-          <Button variant="secondary" onClick={() => setConfirmEnd(true)}>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              trackerRef.current?.pause("manual");
+              setTick((n) => n + 1);
+              setConfirmEnd(true);
+            }}
+          >
             종료
           </Button>
         ) : (

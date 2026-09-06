@@ -1,5 +1,7 @@
+import { DEMO_OPEN_PACE_SECONDS } from "../../config/app.ts";
 import { enumeratePaths } from "../../domain/pathfinding.ts";
 import type { PopularRouteCard, RegionId } from "../../domain/models.ts";
+import { travelSeconds } from "../../domain/pace.ts";
 import { NETWORKS } from "./networks.ts";
 import { DEMO_PLANS } from "./signals.ts";
 
@@ -35,6 +37,12 @@ function card(
     destination,
     source: "demo",
     sampleLabel: "샘플 인기 루트",
+    authorName: "샘플",
+    authorAccountId: null,
+    sourceRouteId: null,
+    averagePaceSeconds: DEMO_OPEN_PACE_SECONDS,
+    elapsedSeconds:
+      path && path.lengthM > 0 ? Math.round(travelSeconds(path.lengthM, DEMO_OPEN_PACE_SECONDS)) : null,
   };
 }
 

@@ -15,7 +15,7 @@ export const PACE_SLOTS: {
   shortLabel: string;
   distanceKm: number | null;
 }[] = [
-  { id: "usual", label: "평균 러닝 페이스", shortLabel: "평균", distanceKm: null },
+  { id: "usual", label: "평소 러닝 페이스", shortLabel: "평소", distanceKm: null },
   { id: "fiveK", label: "5km 페이스", shortLabel: "5km", distanceKm: 5 },
   { id: "tenK", label: "10km 페이스", shortLabel: "10km", distanceKm: 10 },
   { id: "half", label: "하프마라톤 페이스", shortLabel: "하프마라톤", distanceKm: 21.0975 },
@@ -109,14 +109,10 @@ export function applyPaceSlot(
   slotId: PaceSlotId,
   value: number | null,
 ): PaceBook {
-  const next = normalizePaceBook({
+  return normalizePaceBook({
     ...book,
     [slotId]: value,
   });
-  if (slotId === "usual") return next;
-  const derived = averagePaceSecondsFromDistanceSlots(next);
-  if (derived !== null) next.usual = derived;
-  return next;
 }
 
 export function defaultGoalPaceSeconds(book?: PaceBook | null): number | null {

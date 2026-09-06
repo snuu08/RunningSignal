@@ -21,7 +21,6 @@ import {
   formatDistanceKm,
   formatPaceMarks,
   formatPaceSpoken,
-  canRunWithoutPace,
   defaultGoalPaceSeconds,
   emptyPaceBook,
   hasAnySavedPace,
@@ -29,7 +28,15 @@ import {
   validatePace,
 } from "../../domain/pace.ts";
 import type { PlaceRef, RegionId, SavedRoute } from "../../domain/models.ts";
+import {
+  cardFromSavedRoute,
+  popularCardSubtitle,
+  refreshOwnerPopularStats,
+  resolveRouteEnds,
+  sortPopularByLikes,
+} from "../../domain/popular.ts";
 import { PaceCalculator } from "../pace/PaceCalculator.tsx";
+import { saveUsualPaceToAccount } from "../pace/SaveAccountPace.tsx";
 import { PaceMinSecFields } from "../pace/inputs.tsx";
 
 export function HomeScreen() {
@@ -61,13 +68,17 @@ export function HomeScreen() {
   const [paceError, setPaceError] = useState<string | null>(null);
 
   const sortedCards = useMemo(() => {
-    if (!account) return cards;
-    return [...cards].sort(
-      (a, b) =>
-        providers.catalog.displayCount(account.id, b) -
-        providers.catalog.displayCount(account.id, a),
+    const hydrated = cards.map((card) =>
+      refreshOwnerPopularStats(
+        card,
+        account?.id,
+        card.sourceRouteId && account ? providers.runs.getRoute(account.id, card.sourceRouteId) : null,
+      ),
     );
-  }, [cards, account, providers.catalog]);
+    return sortPopularByLikes(hydrated, (card) =>
+      account ? providers.catalog.displayCount(account.id, card) : card.sampleLikeBase,
+    );
+  }, [cards, account, providers.catalog, providers.runs]);
 
   const results = providers.places.search(regionId, query);
 
@@ -89,10 +100,6 @@ export function HomeScreen() {
   };
 
   const findRoute = () => {
-    if (!canRunWithoutPace(draft.paceSeconds, draft.paceSkipped)) {
-      setPaceError("이번 러닝 목표 페이스를 입력하거나, 시간을 입력하지 않고 그냥 달릴래요를 눌러 주세요.");
-      return;
-    }
     if (draft.paceSeconds !== null) {
       const parts = secondsToPaceParts(draft.paceSeconds);
       const err = validatePace(parts);
@@ -140,10 +147,6 @@ export function HomeScreen() {
             <Button
               variant="primary"
               onClick={() => {
-                if (!canRunWithoutPace(draft.paceSeconds, draft.paceSkipped)) {
-                  setPaceError("이번 러닝 목표 페이스를 입력하거나, 시간을 입력하지 않고 그냥 달릴래요를 눌러 주세요.");
-                  return;
-                }
                 setPaceError(null);
                 ctx.setJustRun(true);
                 navigate("/just-run");
@@ -201,9 +204,13 @@ export function HomeScreen() {
                 <div className="preview-meta">
                   <div className="preview-top">
                     <span>{card.title}</span>
-                    <span>{formatDistanceKm(card.lengthM)}</span>
+                    <span>
+                      {formatDistanceKm(card.lengthM)}
+                      {" · "}
+                      {account ? providers.catalog.displayCount(account.id, card) : card.sampleLikeBase}
+                    </span>
                   </div>
-                  <div className="preview-sub">{card.sampleLabel}</div>
+                  <div className="preview-sub">{popularCardSubtitle(card)}</div>
                 </div>
               </button>
             ))}
@@ -482,6 +489,7 @@ function HomePaceSheet({
   const [minutes, setMinutes] = useState(parts ? String(parts.minutes) : "");
   const [seconds, setSeconds] = useState(parts ? String(parts.seconds) : "");
   const [error, setError] = useState<string | null>(null);
+  const [usualSaved, setUsualSaved] = useState(false);
   const currentRoute =
     draft.origin && draft.destination
       ? {
@@ -530,6 +538,7 @@ function HomePaceSheet({
             setView("edit");
           }}
           onSkipPace={skipGoalPace}
+          applyLabel="이번 러닝에 적용"
         />
       ) : null}
 
@@ -573,7 +582,7 @@ function HomePaceSheet({
                 }}
               >
                 <span>{route.title}</span>
-                <span className="tiny muted">{formatPaceSpoken(pace)}</span>
+                <span className="tiny muted">{pace === null ? "미등록" : formatPaceSpoken(pace)}</span>
               </button>
             ))
           )}
@@ -588,7 +597,7 @@ function HomePaceSheet({
             {draft.paceTouched
               ? "이번 러닝에만 적용됩니다. 저장된 기록은 바뀌지 않습니다."
               : defaultGoalPaceSeconds(book)
-                ? "설정하지 않으면 평균 러닝 페이스가 미리 들어갑니다. 이번 러닝에만 적용됩니다."
+                ? "설정하지 않으면 평소 러닝 페이스가 미리 들어갑니다. 이번 러닝에만 적용됩니다."
                 : "이번 러닝에만 적용됩니다. 저장된 기록은 바뀌지 않습니다."}
           </p>
           <PaceMinSecFields
@@ -631,6 +640,18 @@ function HomePaceSheet({
           >
             확인
           </Button>
+          {draft.paceSeconds !== null ? (
+            <Button
+              onClick={() => {
+                const err = saveUsualPaceToAccount(ctx, draft.paceSeconds!);
+                setError(err);
+                setUsualSaved(!err);
+              }}
+            >
+              평소 페이스로 저장
+            </Button>
+          ) : null}
+          {usualSaved ? <p className="tiny muted">평소 페이스에 저장했습니다.</p> : null}
         </div>
       ) : null}
     </Sheet>
@@ -774,6 +795,37 @@ export function MyRouteRow({ route }: { route: SavedRoute }) {
               }}
             >
               이름 수정
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!account) return;
+                const existing = providers.catalog.findBySourceRoute(route.routeId);
+                if (existing) {
+                  setMenuOpen(false);
+                  navigate(`/popular/card/${encodeURIComponent(existing.cardId)}?edit=1`);
+                  return;
+                }
+                const ends = resolveRouteEnds(providers.places, route);
+                if (!ends) {
+                  setMenuOpen(false);
+                  return;
+                }
+                const published = providers.catalog.publish(
+                  cardFromSavedRoute(
+                    route,
+                    ends.origin,
+                    ends.destination,
+                    ctx.profile?.nickname?.trim() || "러너",
+                    account.id,
+                  ),
+                );
+                refresh();
+                setMenuOpen(false);
+                navigate(`/popular/card/${encodeURIComponent(published.cardId)}?edit=1`);
+              }}
+            >
+              유행하는 루트에 업로드
             </button>
             <button
               type="button"
