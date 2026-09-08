@@ -125,6 +125,11 @@ export function enumeratePaths(
   waypoints: string[],
   seed: number,
 ): PathCandidate[] {
+  // A round trip explicitly requests returning to the start; ordinary routes still reject U-turns.
+  if (start === goal && waypoints.length > 0) {
+    const path = pathThroughStops(network, [start, ...waypoints, goal]);
+    return path ? [candidateFromEdges(path.directedEdges, `p-loop-${seed}`)] : [];
+  }
   const adj = adjacency(network);
   const started = Date.now();
   const found: PathCandidate[] = [];

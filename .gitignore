@@ -24,3 +24,8 @@ captures
 *.njsproj
 *.sln
 *.sw?
+
+# Credentials belong in local/runtime environment only.
+.env
+.env.*
+!.env.example

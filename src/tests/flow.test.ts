@@ -316,7 +316,7 @@ describe("home draft stops", () => {
     expect(stops!.waypoints.map((w) => w.nodeId)).toEqual([via.nodeId]);
   });
 
-  it("ignores waypoints when loop is off", () => {
+  it("preserves mandatory waypoints when loop is off", () => {
     const [origin, dest, via] = NETWORKS.seoul.places;
     const stops = planStopsFromDraft({
       ...emptyPlanDraft(),
@@ -328,6 +328,6 @@ describe("home draft stops", () => {
     expect(stops).not.toBeNull();
     expect(stops!.origin.nodeId).toBe(origin.nodeId);
     expect(stops!.destination.nodeId).toBe(dest.nodeId);
-    expect(stops!.waypoints).toEqual([]);
+    expect(stops!.waypoints).toEqual([via]);
   });
 });

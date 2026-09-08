@@ -108,6 +108,7 @@ export function runFitAcceptable(baseline: PathEvaluation, candidate: PathEvalua
   if (candidate.walkScore <= 0) return false;
   if (candidate.walkScore + 1e-9 < baseline.walkScore * 0.72) return false;
   if (candidate.sharpTurns > baseline.sharpTurns + 2) return false;
+  if (candidate.zigzagPairs > baseline.zigzagPairs) return false;
   return true;
 }
 
@@ -189,6 +190,7 @@ export function pickPreferredPath(
   config: RoutingPolicyConfig = defaultRoutingPolicy,
 ): PathEvaluation {
   if (!baseline.paceAvailable || !baseline.signalComparisonReady) return baseline;
+  if (baseline.maxExactWaitSec === null || baseline.maxExactWaitSec < config.waitThresholdSec) return baseline;
   const viable = alternatives.filter(
     (item) =>
       item.paceAvailable &&
@@ -207,6 +209,7 @@ export function buildReason(
   baseline: PathEvaluation,
   chosen: PathEvaluation,
   paceSecondsPerKm: number | null,
+  thresholdSec = WAIT_DETOUR_THRESHOLD_SEC,
 ): string {
   if (!baseline.paceAvailable) {
     return "페이스가 없어 기본 보행 경로만 보여 줍니다. 도착 시점 기반 신호 예측은 확정하지 않습니다.";
@@ -215,7 +218,7 @@ export function buildReason(
     return "신호 정보가 부족해 기본 보행 경로를 유지합니다. 정보가 없는 횡단을 대기 0초로 보지 않습니다.";
   }
   if (chosen.candidate.fingerprint === baseline.candidate.fingerprint) {
-    if (baseline.maxExactWaitSec !== null && needsDetourSearch(baseline.maxExactWaitSec)) {
+    if (baseline.maxExactWaitSec !== null && needsDetourSearch(baseline.maxExactWaitSec, thresholdSec)) {
       return `기준 경로에서 ${Math.round(baseline.maxExactWaitSec)}초 대기가 예상되지만, 우회 제한과 달리기 적합성을 만족하는 대체 경로가 없습니다.`;
     }
     return "보행 가능한 연결망에서 방향 전환이 적은 길을 골랐어요. 입력한 페이스는 그대로 유지합니다.";
@@ -277,7 +280,7 @@ export function planRoutes(
   signals: SignalLookup,
   config: RoutingPolicyConfig = defaultRoutingPolicy,
 ): Recommendation | { error: string } {
-  if (request.origin.nodeId === request.destination.nodeId) {
+  if (request.origin.nodeId === request.destination.nodeId && request.waypoints.length === 0) {
     return { error: "출발과 도착이 같습니다. 다른 지점을 골라 주세요." };
   }
 
@@ -303,13 +306,16 @@ export function planRoutes(
   const baseline = ordered[0];
   const alts = ordered.filter((e) => e.candidate.fingerprint !== baseline.candidate.fingerprint);
   const chosen = pickPreferredPath(baseline, alts, config);
-  const alternatives = ordered.filter((e) => e.candidate.fingerprint !== chosen.candidate.fingerprint);
+  const alternatives = ordered.filter((e) =>
+    e.candidate.fingerprint !== chosen.candidate.fingerprint &&
+    withinDetourLimits(baseline.candidate.lengthM, e.candidate.lengthM, config) &&
+    runFitAcceptable(baseline, e) && obstaclePenalty(e, config) <= obstaclePenalty(baseline, config));
 
   return {
     chosen,
     baseline,
     alternatives,
-    reason: buildReason(baseline, chosen, request.paceSecondsPerKm),
+    reason: buildReason(baseline, chosen, request.paceSecondsPerKm, config.waitThresholdSec),
     detourRatioUsed: config.detourRatio,
     waitThresholdSec: config.waitThresholdSec,
   };

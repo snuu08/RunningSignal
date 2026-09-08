@@ -451,7 +451,7 @@ describe("routing policy", () => {
       paceAvailable: true,
       signalComparisonReady: true,
     });
-    const base = sample("flat", false, 2);
+    const base = { ...sample("flat", false, 2), maxExactWaitSec: 20, waitSec: { kind: "exact" as const, seconds: 40 } };
     const stairs = sample("up", true, 0);
     expect(
       pickPreferredPath(base, [stairs], { ...defaultRoutingPolicy, recommendStyle: "min-stops", avoidStairs: true })
