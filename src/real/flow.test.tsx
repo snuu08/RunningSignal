@@ -135,7 +135,7 @@ describe("real-mode screen flow", () => {
       target: { value: "25" },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "내 평균 페이스로 저장" }),
+      screen.getByRole("button", { name: "선택한 칸에 저장" }),
     );
     await waitFor(() =>
       expect(

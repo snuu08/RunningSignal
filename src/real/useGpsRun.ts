@@ -76,6 +76,10 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
           coord: [p.coords.longitude, p.coords.latitude],
           accuracy: p.coords.accuracy,
           at: p.timestamp,
+          heading: (() => {
+            const h = p.coords.heading;
+            return h != null && Number.isFinite(h) && h >= 0 ? h : undefined;
+          })(),
         };
         setFix(next);
         const r = ref.current;
@@ -167,6 +171,11 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
       const ended = { ...r, phase: "ended" as const };
       replace(ended);
       return ended;
+    },
+    updateRoute(route: Route) {
+      const r = ref.current;
+      if (!r || r.phase === "ended") return;
+      replace({ ...r, route });
     },
     recover(r: LiveRun) {
       // Time while the app was closed is unrecorded, not claimed as running.

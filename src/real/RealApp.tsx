@@ -13,45 +13,94 @@ import {
   type PublicRoute,
 } from "./backend.ts";
 import {
+  bearingDeg,
+  cueEtaSec,
+  crossingCount,
   meters,
+  nextPoi,
   paceLabel,
-  rankRoutes,
+  progressOnRoute,
   routeKey,
   routeCompleted,
   trackSegments,
   timeLabel,
   validPace,
+  withGeometry,
+  validCoord,
   type Coord,
+  type Forecast,
   type Place,
   type Route,
 } from "./core.ts";
-import { RealMap } from "./RealMap.tsx";
+import {
+  candidateIndex,
+  waitDisplay,
+  type RoutesResponse,
+  type StatusResponse,
+} from "./api-contract.ts";
+import { policyFromProfile } from "./routing-policy.ts";
+import {
+  nextInstruction,
+  persistLoginEnabled,
+  setPersistLogin,
+  speak,
+  staticMapUrl,
+  vibrate,
+} from "./guidance.ts";
 import {
   clearState,
   defaultProfile,
   deleteRun,
   downloadJson,
   listRuns,
+  normalizeProfile,
   readState,
   saveRun,
   saveState,
   type Profile,
   type RunRecord,
 } from "./storage.ts";
+import { RealMap } from "./RealMap.tsx";
+import {
+  applyPaceSlot,
+  formatPaceSpoken,
+  PACE_SLOTS,
+  computeAveragePaceSeconds,
+  durationPartsToSeconds,
+} from "../domain/pace.ts";
+import type { PaceSlotId } from "../domain/models.ts";
 import { locate, useGpsRun, type LiveRun } from "./useGpsRun.ts";
+import {
+  LIVE_SIGNAL_UI,
+  realPage,
+  suggestedUsualFromRecords,
+  sustainedOffRoute,
+  TRIAL_OFF_ROUTE,
+} from "./running.ts";
 import "./real.css";
 import { RunnerLogo } from "../components/Logo.tsx";
-type Status = {
-  places: boolean;
-  routes: boolean;
-  seoulSignals: boolean;
-  signalPrediction: boolean;
-  signalDetail: string;
-};
 const regions = ["서울", "인천", "대구", "성남"];
 const emptyCoords: Coord[] = [];
 function Thumbnail({ route }: { route: Route | null }) {
   const points = route?.coordinates;
+  const [fail, setFail] = useState(false);
+  const url =
+    points && points.length > 1 && !fail
+      ? staticMapUrl(
+          points,
+          import.meta.env.VITE_MAPTILER_KEY,
+          import.meta.env.VITE_MAPTILER_STYLE,
+        )
+      : null;
+  if (url)
+    return (
+      <img
+        className="real-thumb"
+        src={url}
+        alt="경로 미리보기"
+        onError={() => setFail(true)}
+      />
+    );
   if (!points?.length) return <div className="real-thumb">↗</div>;
   const xs = points.map((p) => p[0]),
     ys = points.map((p) => p[1]),
@@ -83,10 +132,12 @@ function PlaceInput({
   label,
   value,
   onChange,
+  near,
 }: {
   label: string;
   value: Place | null;
   onChange: (p: Place | null) => void;
+  near?: Coord | null;
 }) {
   const [query, setQuery] = useState(value?.name ?? ""),
     [items, setItems] = useState<Place[]>([]),
@@ -107,8 +158,9 @@ function PlaceInput({
     const ctrl = new AbortController();
     const timer = setTimeout(() => {
       setBusy(true);
+      const bias = near && validCoord(near) ? `&x=${near[0]}&y=${near[1]}` : "";
       api<{ places: Place[] }>(
-        `places?q=${encodeURIComponent(query.trim())}`,
+        `places?q=${encodeURIComponent(query.trim())}${bias}`,
         undefined,
         ctrl.signal,
       )
@@ -131,7 +183,7 @@ function PlaceInput({
       clearTimeout(timer);
       ctrl.abort();
     };
-  }, [query, value?.name]);
+  }, [query, value?.name, near]);
   return (
     <div className="real-field">
       <label>
@@ -170,6 +222,20 @@ function PlaceInput({
     </div>
   );
 }
+async function namedPlace(coord: Coord, fallback: string): Promise<Place> {
+  try {
+    const response = await api<{ place: Place }>(
+      `places/reverse?x=${coord[0]}&y=${coord[1]}`,
+    );
+    return response.place;
+  } catch {
+    return {
+      id: `map:${coord.join(",")}`,
+      name: fallback,
+      coord,
+    };
+  }
+}
 function Auth({
   onGuest,
   notice,
@@ -185,7 +251,8 @@ function Auth({
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [agree, setAgree] = useState(false),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [keepLogin, setKeepLogin] = useState(persistLoginEnabled());
   useEffect(() => {
     const sub = cloud?.auth.onAuthStateChange((e) => {
       if (e === "PASSWORD_RECOVERY") setMode("reset");
@@ -206,6 +273,7 @@ function Auth({
       );
     if (!agree)
       return notice("소셜 로그인 전에 약관·개인정보처리방침에 동의해 주세요.");
+    setPersistLogin(keepLogin);
     setBusy(true);
     try {
       const { error } = await cloud.auth.signInWithOAuth({
@@ -225,6 +293,7 @@ function Auth({
       );
     if (mode === "signup" && !agree)
       return notice("약관·개인정보처리방침 동의가 필요합니다.");
+    setPersistLogin(keepLogin);
     setBusy(true);
     try {
       const redirect = oauthRedirect();
@@ -255,7 +324,7 @@ function Auth({
               ? "비밀번호를 변경했습니다."
               : "로그인했습니다.",
       );
-      if (mode === "reset") location.assign("/real/home");
+      if (mode === "login" || mode === "reset") location.assign("/real/home");
     } catch (e) {
       notice(e instanceof Error ? e.message : "인증에 실패했습니다.");
     } finally {
@@ -315,6 +384,16 @@ function Auth({
                 mode === "login" ? "current-password" : "new-password"
               }
             />
+          </label>
+        )}
+        {(mode === "signup" || mode === "login") && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={keepLogin}
+              onChange={(e) => setKeepLogin(e.target.checked)}
+            />
+            <span>이 기기에서 로그인 유지</span>
           </label>
         )}
         {(mode === "signup" || mode === "login") && (
@@ -382,19 +461,23 @@ function Auth({
 export function RealApp() {
   const navigate = useNavigate(),
     locationState = useLocation(),
-    page = locationState.pathname.replace("/real/", "") || "home";
+    page = realPage(locationState.pathname);
   const [user, setUser] = useState<User | null>(null),
     [authReady, setAuthReady] = useState(!cloud),
     [recovering, setRecovering] = useState(recoveryRequested),
     [guest, setGuest] = useState(
       () => sessionStorage.getItem("flow-real-guest") === "yes",
-    );
+    ),
+    [greenOk, setGreenOk] = useState(false),
+    [follow, setFollow] = useState(true),
+    [persistOn, setPersistOn] = useState(persistLoginEnabled());
+  const spoken = useRef("");
   const owner = user?.id ?? "guest",
     ownerRef = useRef(owner);
   ownerRef.current = owner;
   const [profile, setProfile] = useState<Profile>(defaultProfile),
     [loaded, setLoaded] = useState(false),
-    [status, setStatus] = useState<Status | null>(null),
+    [status, setStatus] = useState<StatusResponse | null>(null),
     [message, setMessage] = useState(""),
     [busy, setBusy] = useState(false);
   const [origin, setOrigin] = useState<Place | null>(null),
@@ -406,6 +489,11 @@ export function RealApp() {
   const [pace, setPace] = useState(360),
     [routes, setRoutes] = useState<Route[]>([]),
     [candidate, setCandidate] = useState(0),
+    [forecasts, setForecasts] = useState<Record<string, Forecast>>({}),
+    [recommendReason, setRecommendReason] = useState<
+      "walking-baseline" | "signal-compare"
+    >("walking-baseline"),
+    [departureMs, setDepartureMs] = useState<number | null>(null),
     [position, setPosition] = useState<Coord | null>(null),
     [fit, setFit] = useState(0);
   const [records, setRecords] = useState<RunRecord[]>([]),
@@ -413,8 +501,11 @@ export function RealApp() {
     [selectedKey, setSelectedKey] = useState<string | null>(null),
     [publicItems, setPublicItems] = useState<PublicRoute[]>([]),
     [recovery, setRecovery] = useState<LiveRun | null>(null);
-  const [calcKm, setCalcKm] = useState("5"),
+  const     [calcKm, setCalcKm] = useState("5"),
+    [calcHour, setCalcHour] = useState("0"),
     [calcMin, setCalcMin] = useState("30"),
+    [calcSec, setCalcSec] = useState("0"),
+    [paceSlot, setPaceSlot] = useState<PaceSlotId>("usual"),
     [nickname, setNickname] = useState(""),
     [signalId, setSignalId] = useState(""),
     [signalResult, setSignalResult] = useState<unknown>(null);
@@ -432,6 +523,72 @@ export function RealApp() {
     }
   });
   const route = routes[candidate] ?? null;
+  const wait = waitDisplay(LIVE_SIGNAL_UI ? (route ? forecasts[route.id] : null) : null);
+  const travelSec = route ? (route.distanceM / 1000) * pace : 0;
+  const here =
+    run.fix?.coord ?? run.live?.track.fixes.at(-1)?.coord ?? position;
+  const along =
+    run.live?.route && here
+      ? progressOnRoute(run.live.route.coordinates, here)
+      : null;
+  const upcoming = along
+    ? nextPoi(run.live?.route?.nearbyPois, along.traveledM)
+    : null;
+  const turn =
+    along && run.live?.route
+      ? nextInstruction(run.live.route, along.traveledM)
+      : null;
+  const heading =
+    run.fix?.heading ??
+    (run.live && run.live.track.fixes.length >= 2
+      ? bearingDeg(
+          run.live.track.fixes.at(-2)!.coord,
+          run.live.track.fixes.at(-1)!.coord,
+        )
+      : null);
+  const [offSamples, setOffSamples] = useState<
+    { offRouteM: number; accuracy: number }[]
+  >([]);
+  useEffect(() => {
+    const fix = run.fix;
+    if (run.live?.phase !== "running" || !along || !fix) {
+      if (run.live?.phase !== "running") setOffSamples([]);
+      return;
+    }
+    setOffSamples((prev) =>
+      [...prev, { offRouteM: along.offRouteM, accuracy: fix.accuracy }].slice(-8),
+    );
+  }, [along?.offRouteM, run.fix?.accuracy, run.fix?.at, run.live?.phase]);
+  const offRouteNow = sustainedOffRoute(offSamples, TRIAL_OFF_ROUTE);
+  const paceSuggest = suggestedUsualFromRecords(records);
+  const calcDuration = durationPartsToSeconds(
+    Number(calcHour) || 0,
+    Number(calcMin) || 0,
+    Number(calcSec) || 0,
+  );
+  const calcPace = computeAveragePaceSeconds(Number(calcKm), calcDuration ?? 0);
+  useEffect(() => {
+    if (run.live?.phase !== "running" || !along) return;
+    const cue = turn
+      ? { id: `${turn.text}:${Math.round(turn.atM)}`, text: turn.text, atM: turn.atM }
+      : upcoming
+        ? { id: upcoming.id, text: upcoming.name, atM: upcoming.atM }
+        : null;
+    if (!cue) return;
+    const remain = cue.atM - along.traveledM;
+    if (remain < 8 || remain > 55) return;
+    if (spoken.current === cue.id) return;
+    spoken.current = cue.id;
+    if (profile.voice) speak(cue.text);
+    if (profile.vibration) vibrate(180);
+  }, [
+    along,
+    turn,
+    upcoming,
+    run.live?.phase,
+    profile.voice,
+    profile.vibration,
+  ]);
   const go = (next: string) => {
     if (run.live && run.live.phase !== "ended" && next !== "run") {
       notice("진행 중인 러닝을 종료한 뒤 이동해 주세요.");
@@ -440,6 +597,11 @@ export function RealApp() {
     navigate(`/real/${next}`);
     setMessage("");
   };
+  useEffect(() => {
+    const path = locationState.pathname;
+    if (path === "/" || path === "/real" || path === "/real/")
+      navigate("/real/home", { replace: true });
+  }, [locationState.pathname, navigate]);
   useEffect(() => {
     if (user && !recovering && page === "auth")
       navigate("/real/home", { replace: true });
@@ -460,7 +622,7 @@ export function RealApp() {
     return () => sub.data.subscription.unsubscribe();
   }, []);
   useEffect(() => {
-    void api<Status>("status")
+    void api<StatusResponse>("status")
       .then(setStatus)
       .catch(() =>
         notice("API 서버 연결을 확인해 주세요. GPS 기록은 사용할 수 있어요."),
@@ -480,9 +642,9 @@ export function RealApp() {
     ])
       .then(async ([p, rows, active, savedResult]) => {
         if (cancelled) return;
-        setProfile(p ?? defaultProfile);
+        setProfile(normalizeProfile(p));
         setNickname(p?.nickname ?? "");
-        setPace(p?.pace ?? 360);
+        setPace(normalizeProfile(p).paces.usual ?? p?.pace ?? 360);
         setRecords(rows);
         if (savedResult) setResult(savedResult);
         if (active) setRecovery(active);
@@ -498,16 +660,20 @@ export function RealApp() {
           const fromOauth = [meta.full_name, meta.name, meta.nickname].find(
             (v) => typeof v === "string" && v.trim().length >= 2,
           );
-          const seeded =
-            remote ??
-            p ??
-            (typeof fromOauth === "string"
-              ? { ...defaultProfile, nickname: fromOauth.trim().slice(0, 20) }
-              : null);
+          const seeded = remote
+            ? normalizeProfile(remote)
+            : p
+              ? null
+              : typeof fromOauth === "string"
+                ? {
+                    ...defaultProfile,
+                    nickname: fromOauth.trim().slice(0, 20),
+                  }
+                : null;
           if (!cancelled && seeded && !p) {
             setProfile(seeded);
             setNickname(seeded.nickname);
-            setPace(seeded.pace);
+            setPace(seeded.paces.usual ?? seeded.pace);
           }
         }
       })
@@ -600,7 +766,7 @@ export function RealApp() {
   async function usePosition() {
     const f = await locate();
     setPosition(f.coord);
-    setOrigin({ id: "gps", name: "현재 위치", coord: f.coord });
+    setOrigin(await namedPlace(f.coord, "현재 위치"));
     if (f.accuracy > 30)
       notice(
         `현재 위치 오차 약 ${Math.round(f.accuracy)}m · 출발 전 위치를 확인해 주세요.`,
@@ -620,6 +786,9 @@ export function RealApp() {
     request.current = ctrl;
     setRoutes([]);
     setCandidate(0);
+    setForecasts({});
+    setRecommendReason("walking-baseline");
+    setDepartureMs(null);
     navigate("/real/loading");
     try {
       const stops = loop
@@ -627,36 +796,40 @@ export function RealApp() {
         : via
           ? [via]
           : [];
+      const policy = policyFromProfile(profile);
       const [response] = await Promise.all([
-        api<{ routes: Route[]; partial: boolean }>(
+        api<RoutesResponse>(
           "routes",
           {
             origin,
             destination: loop ? origin : destination,
             waypoints: stops,
             pace,
+            policy,
           },
           ctrl.signal,
         ),
         new Promise((resolve) => setTimeout(resolve, 1000)),
       ]);
       if (ctrl.signal.aborted) return;
-      const raw = profile.avoidStairs
-        ? response.routes.filter((r) => r.option === "30")
-        : response.routes;
-      const next = rankRoutes(raw, profile.detour, 500);
-      if (!next.length)
-        throw new Error(
-          profile.avoidStairs
-            ? "계단 제외 경로를 확인하지 못했어요. 설정을 변경하거나 다시 시도해 주세요."
-            : "조건에 맞는 보행 경로가 없어요.",
-        );
-      setRoutes(
-        next.map((r) => ({
+      if (
+        response.recommendedId &&
+        !response.routes.some((r) => r.id === response.recommendedId)
+      )
+        throw new Error("추천 경로가 반환 후보에 없습니다. 다시 검색해 주세요.");
+      const next = response.routes.map((r) =>
+        withGeometry({
           ...r,
           name: `${origin.name} → ${destination.name}${loop ? " → 출발지" : ""}`,
-        })),
+        }),
       );
+      if (!next.length)
+        throw new Error("조건에 맞는 보행 경로가 없어요.");
+      setRoutes(next);
+      setForecasts(response.forecasts ?? {});
+      setRecommendReason(response.recommendationReason ?? "walking-baseline");
+      setDepartureMs(response.departureMs ?? null);
+      setCandidate(candidateIndex(next, response.recommendedId));
       navigate("/real/recommend");
       if (response.partial)
         notice("일부 후보 요청이 실패해 확인된 경로만 보여드려요.");
@@ -667,17 +840,58 @@ export function RealApp() {
       }
     }
   }
+  async function rerouteFromHere() {
+    const here = run.fix?.coord ?? run.live?.track.fixes.at(-1)?.coord;
+    const active = run.live?.route;
+    if (!here || !active)
+      throw new Error("경로 러닝 중에만 현재 위치에서 다시 찾을 수 있어요.");
+    const dest =
+      destination ??
+      (active.coordinates.at(-1)
+        ? await namedPlace(active.coordinates.at(-1)!, "목적지")
+        : null);
+    if (!dest) throw new Error("목적지를 확인할 수 없어요.");
+    const orig = await namedPlace(here, "현재 위치");
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    const stops = loop ? [dest, ...(via ? [via] : [])] : via ? [via] : [];
+    const response = await api<RoutesResponse>("routes", {
+      origin: orig,
+      destination: loop ? orig : dest,
+      waypoints: stops,
+      pace,
+      policy: policyFromProfile(profile),
+    }, ctrl.signal);
+    if (ctrl.signal.aborted) return;
+    const next = response.routes.map((r) =>
+      withGeometry({
+        ...r,
+        name: `${orig.name} → ${dest.name}${loop ? " → 출발지" : ""}`,
+      }),
+    );
+    if (!next.length) throw new Error("조건에 맞는 보행 경로가 없어요.");
+    setOrigin(orig);
+    setDestination(dest);
+    setRoutes(next);
+    setForecasts({});
+    setRecommendReason("walking-baseline");
+    setCandidate(candidateIndex(next, response.recommendedId));
+    run.updateRoute(next[candidateIndex(next, response.recommendedId)]);
+    setOffSamples([]);
+    notice("목적지·경유·계단 제외를 유지한 새 보행 경로로 바꿨어요.");
+  }
   async function startRun(selected: Route | null) {
+    if (LIVE_SIGNAL_UI && selected && !greenOk)
+      throw new Error("출발 전 실제 보행 신호가 녹색인지 확인해 주세요.");
     runOwner.current = owner;
     await run.start(selected);
+    setFollow(profile.followCam);
+    setOffSamples([]);
+    spoken.current = "";
     navigate("/real/run");
-    if (profile.voice && "speechSynthesis" in window)
-      speechSynthesis.speak(
-        new SpeechSynthesisUtterance(
-          "러닝을 시작합니다. 실제 보행 신호를 확인해 주세요.",
-        ),
-      );
-    if (profile.vibration) navigator.vibrate?.(100);
+    if (profile.voice) speak("러닝을 시작합니다.");
+    if (profile.vibration) vibrate(100);
   }
   async function finish() {
     if (!confirm("러닝을 종료하고 기록을 확인할까요?")) return;
@@ -790,7 +1004,7 @@ export function RealApp() {
       ].map(([p, icon, label]) => (
         <button
           key={p}
-          aria-current={page === p ? "page" : undefined}
+          aria-current={page === p || (p === "settings" && page === "diagnostics") ? "page" : undefined}
           onClick={() => go(p)}
         >
           <span>{icon}</span>
@@ -805,8 +1019,8 @@ export function RealApp() {
       <section>
         <h1>이용약관·개인정보 안내</h1>
         <p>
-          현재 배포본은 개발 검증용입니다. 정식 공개 전 운영자 정보, 보관·파기
-          기간, 처리위탁과 국외 이전 등 실제 운영에 맞는 정책을 게시해야 합니다.
+          FLOW RUN 베타는 러닝 경로 찾기와 GPS 기록을 제공합니다. 보행 신호 대기
+          예측은 아직 제공하지 않습니다.
         </p>
         <p>
           기기 기록은 이 브라우저에 저장됩니다. 계정 동기화를 누르면 위치 경로와
@@ -814,8 +1028,8 @@ export function RealApp() {
           경로만 공개합니다.
         </p>
         <p>
-          신호 예측은 통행 허가가 아닙니다. 횡단할 때 실제 보행신호와 현장을
-          확인하세요.
+          정식 서비스 전에 운영자 정보, 보관·파기 기간, 처리위탁을 이 페이지에
+          맞게 고지해야 합니다. 위치 권한은 운동 기록에만 쓰입니다.
         </p>
         <button onClick={() => go("home")}>돌아가기</button>
       </section>
@@ -862,7 +1076,7 @@ export function RealApp() {
           </select>
         </label>
         <p className="muted">
-          지역은 코스 분류에 사용해요. 신호 예측 지원 여부는 별도로 확인합니다.
+          지역은 공개 코스 분류에 사용해요. 신호 대기 예측은 아직 제공하지 않습니다.
         </p>
         <label>
           닉네임
@@ -874,25 +1088,47 @@ export function RealApp() {
           />
         </label>
         <label>
-          평균 페이스 (초/km)
-          <input
-            type="number"
-            min={120}
-            max={1800}
-            value={pace}
-            onChange={(e) => setPace(Number(e.target.value))}
-          />
+          평균 페이스
+          <div className="pace-input">
+            <input
+              aria-label="온보딩 페이스 분"
+              type="number"
+              min={2}
+              max={30}
+              value={Math.floor(pace / 60)}
+              onChange={(e) =>
+                setPace(Number(e.target.value) * 60 + (pace % 60))
+              }
+            />
+            <span>분</span>
+            <input
+              aria-label="온보딩 페이스 초"
+              type="number"
+              min={0}
+              max={59}
+              value={pace % 60}
+              onChange={(e) =>
+                setPace(
+                  Math.floor(pace / 60) * 60 +
+                    Math.min(59, Math.max(0, Number(e.target.value))),
+                )
+              }
+            />
+            <span>초 /km</span>
+          </div>
         </label>
-        <p>{paceLabel(pace)}/km</p>
+        <p>{paceLabel(pace)}/km · 평소 칸에 저장됩니다.</p>
         <button
           className="primary"
           disabled={busy}
           onClick={() =>
             void action(async () => {
+              const paces = applyPaceSlot(profile.paces, "usual", pace);
               await updateProfile({
                 ...profile,
                 nickname: nickname.trim(),
                 pace,
+                paces,
                 onboarded: true,
               });
               go("home");
@@ -909,8 +1145,8 @@ export function RealApp() {
         <div className="runner-mark">
           <RunnerLogo />
         </div>
-        <h2>루트를 구상하고 있어요.</h2>
-        <p>실제 보행 경로와 방향 전환을 비교하고 있어요.</p>
+        <h2>루트를 찾고 있어요.</h2>
+        <p>실제 보행 경로와 직선 거리, 방향 전환을 비교하고 있어요.</p>
         <button
           onClick={() => {
             request.current?.abort();
@@ -930,30 +1166,83 @@ export function RealApp() {
           <br />
           가시겠어요?
         </h1>
-        <RealMap coordinates={route.coordinates} fitToken={fit} />
+        <RealMap
+          coordinates={route.coordinates}
+          fitToken={fit}
+          straight={
+            route.coordinates.length > 1
+              ? [route.coordinates[0], route.coordinates.at(-1)!]
+              : null
+          }
+          pois={(route.nearbyPois ?? []).map((p) => ({
+            coord: p.coord,
+            name: p.name,
+          }))}
+        />
         <div className="stats">
           <div>
             <strong>{(route.distanceM / 1000).toFixed(2)}</strong>
-            <small>km</small>
+            <small>보행 km</small>
           </div>
           <div>
-            <strong>{paceLabel(pace)}</strong>
-            <small>입력 페이스 /km</small>
+            <strong>
+              {((route.straightM ?? meters(route.coordinates[0], route.coordinates.at(-1)!)) / 1000).toFixed(2)}
+            </strong>
+            <small>직선 km</small>
           </div>
           <div>
-            <strong>{timeLabel((route.distanceM / 1000) * pace)}</strong>
-            <small>대기 제외 예상</small>
+            <strong>
+              {timeLabel(
+                wait.known && wait.totalSec !== null ? wait.totalSec : travelSec,
+              )}
+            </strong>
+            <small>
+              {LIVE_SIGNAL_UI && wait.known && wait.totalSec !== null
+                ? "대기 포함 예상"
+                : "페이스 기준 예상"}
+            </small>
           </div>
         </div>
         <article>
           <h2>{route.name}</h2>
-          <p>방향 전환 약 {route.sharpTurns}회 · 신호 대기 예측 불가</p>
+          <p>
+            우회 약 {Math.round(route.extraM ?? Math.max(0, route.distanceM - (route.straightM ?? 0)))}m · 직선에서 최대 {Math.round(route.maxOffLineM ?? 0)}m · 방향 전환 약 {route.sharpTurns}회
+          </p>
+          <p>
+            경로 안내상 횡단 {crossingCount(route)}곳
+            {LIVE_SIGNAL_UI && recommendReason === "signal-compare"
+              ? " · 확인된 대기 예측으로 보행 후보를 비교했어요."
+              : " · 보행 조건과 우회 제한을 적용한 기본 추천입니다."}
+          </p>
+          {LIVE_SIGNAL_UI ? (
+            <>
+              <p>
+                {wait.known
+                  ? `확인된 대기 ${Math.round(wait.waitSec ?? 0)}초 · 정지 ${wait.stops ?? 0}회`
+                  : "대기 미확인 · 정보 없음을 0초로 보지 않습니다."}
+              </p>
+              <p>
+                대기 제외 이동 {timeLabel(travelSec)}
+                {wait.known && wait.totalSec !== null
+                  ? ` · 대기 포함 ${timeLabel(wait.totalSec)}`
+                  : ""}
+              </p>
+            </>
+          ) : (
+            <p>
+              예상 시간 {timeLabel(travelSec)} · 입력 페이스 기준 · 신호 대기는
+              포함하지 않습니다.
+            </p>
+          )}
+          {departureMs !== null && LIVE_SIGNAL_UI && (
+            <p className="muted">검색 시각 기준 예상입니다. 출발 시 다시 계산하지는 않습니다.</p>
+          )}
           <p className="muted">
-            실제 보행 후보 중 거리 증가와 급격한 방향 전환을 비교했어요.
-            횡단보도 방향과 신호계획을 검증하기 전에는 ‘신호가 없다’고 판단하지
-            않아요.
+            노란 점은 보행 안내·장소 위치입니다.
           </p>
           {profile.avoidStairs && <p>계단 제외 옵션으로 조회했어요.</p>}
+          {profile.avoidOverpass && <p>육교·고가 안내가 있는 후보는 걸렀어요.</p>}
+          {profile.avoidAlley && <p>큰길 우선 후보를 먼저 썼어요.</p>}
         </article>
         <button className="primary" onClick={() => go("ready")}>
           예, 이 루트로 갈게요
@@ -991,12 +1280,22 @@ export function RealApp() {
           시간을 기록해요.
         </p>
         <p className="muted">
-          횡단보도 앞에서 출발한다면 실제 보행신호를 확인한 뒤 시작하세요. 다른
-          신호가 자동으로 맞춰지는 것은 아니에요.
+          횡단보도 앞에서는 실제 보행신호를 직접 확인하세요. 앱이 신호를 대신
+          보지 않습니다.
         </p>
+        {LIVE_SIGNAL_UI && route && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={greenOk}
+              onChange={(e) => setGreenOk(e.target.checked)}
+            />
+            지금 보는 보행 신호가 녹색인 것을 확인했습니다
+          </label>
+        )}
         <button
           className="primary"
-          disabled={busy || !route}
+          disabled={busy || !route || (LIVE_SIGNAL_UI && !greenOk)}
           onClick={() => void action(() => startRun(route))}
         >
           러닝 시작
@@ -1022,8 +1321,38 @@ export function RealApp() {
           }
           position={run.fix?.coord ?? run.live.track.fixes.at(-1)?.coord}
           fitToken={fit}
+          follow={follow}
+          heading={heading}
+          onUserPan={() => setFollow(false)}
+          straight={
+            run.live.route && run.live.route.coordinates.length > 1
+              ? [
+                  run.live.route.coordinates[0],
+                  run.live.route.coordinates.at(-1)!,
+                ]
+              : null
+          }
+          pois={(run.live.route?.nearbyPois ?? []).map((p) => ({
+            coord: p.coord,
+            name: p.name,
+          }))}
         />
-        <button onClick={() => setFit(fit + 1)}>전체 경로 보기</button>
+        <button
+          onClick={() => {
+            setFollow(false);
+            setFit((n) => n + 1);
+          }}
+        >
+          전체 경로 보기
+        </button>
+        <button onClick={() => setFollow(true)}>
+          내 위치 따라가기
+        </button>
+        {follow ? (
+          <small>지도를 움직이면 추적을 잠시 끕니다.</small>
+        ) : (
+          <small>전체 보기 · 따라가기로 내 위치를 다시 중심에 둘 수 있어요.</small>
+        )}
         {run.error && <p role="status">{run.error}</p>}
         <div className="stats">
           <div>
@@ -1031,18 +1360,14 @@ export function RealApp() {
             <small>기록 거리 km</small>
           </div>
           <div>
-            <strong>{timeLabel(run.live.activeSec)}</strong>
-            <small>운동 시간 · 대기 포함</small>
+            <strong>
+              {along ? (along.remainM / 1000).toFixed(2) : "—"}
+            </strong>
+            <small>남은 경로 km</small>
           </div>
           <div>
-            <strong>
-              {paceLabel(
-                run.live.track.distanceM >= 50
-                  ? run.live.activeSec / (run.live.track.distanceM / 1000)
-                  : null,
-              )}
-            </strong>
-            <small>평균 페이스 /km</small>
+            <strong>{timeLabel(run.live.activeSec)}</strong>
+            <small>운동 시간</small>
           </div>
         </div>
         <article>
@@ -1051,9 +1376,47 @@ export function RealApp() {
             GPS 정지 추정 {Math.round(run.live.track.stoppedSec)}초 · 수신 공백{" "}
             {Math.round(run.live.track.gapSec)}초
           </p>
+          {along && along.offRouteM > TRIAL_OFF_ROUTE.distanceM && (
+            <p>
+              경로에서 약 {Math.round(along.offRouteM)}m 벗어나 있어요. GPS를
+              경로에 붙이지 않습니다.
+            </p>
+          )}
+          {offRouteNow && run.live.route && (
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => void action(rerouteFromHere)}
+            >
+              현재 위치에서 경로 다시 찾기
+            </button>
+          )}
+          {upcoming ? (
+            <p>
+              다음 안내까지 약 {Math.max(0, Math.round(upcoming.atM - (along?.traveledM ?? 0)))}m
+              {cueEtaSec(
+                upcoming.atM - (along?.traveledM ?? 0),
+                pace,
+              ) !== null
+                ? ` · 입력 페이스면 약 ${Math.round(cueEtaSec(upcoming.atM - (along?.traveledM ?? 0), pace)!)}초`
+                : ""}
+              · {upcoming.name}
+            </p>
+          ) : (
+            <p>다음 턴·장소 안내가 없으면 입력 페이스를 유지하면 됩니다.</p>
+          )}
+          {turn && (
+            <p>
+              다음 안내: {turn.text}
+              {along
+                ? ` · ${Math.max(0, Math.round(turn.atM - along.traveledM))}m`
+                : ""}
+            </p>
+          )}
+          <p>권장 페이스는 입력한 {paceLabel(pace)}/km입니다.</p>
           <small>
-            정지 추정은 신호 대기와 구분됩니다. 신호 정보·다음 횡단 지점은 아직
-            검증되지 않았어요.
+            GPS 정지 추정은 신호 대기와 다른 값입니다. 화면을 끄면 웹은 연속
+            GPS를 보장하지 않습니다.
           </small>
         </article>
         <div className="button-row">
@@ -1119,8 +1482,8 @@ export function RealApp() {
             {timeLabel(result.manualPauseSec)}
           </p>
           <p>
-            GPS 정지 추정 {Math.round(result.track.stoppedSec)}초 · 신호 대기
-            확인 불가
+            GPS 정지 추정 {Math.round(result.track.stoppedSec)}초
+            {LIVE_SIGNAL_UI ? " · 신호 대기 확인 불가" : ""}
           </p>
           {best !== null && result.complete && (
             <p>
@@ -1256,6 +1619,9 @@ export function RealApp() {
                   if (!r.route)
                     return notice("자유 러닝은 고정 경로가 없어요.");
                   setRoutes([r.route]);
+                  setForecasts({});
+                  setRecommendReason("walking-baseline");
+                  setDepartureMs(null);
                   setCandidate(0);
                   go("recommend");
                 }}
@@ -1341,7 +1707,10 @@ export function RealApp() {
             <div className="button-row">
               <button
                 onClick={() => {
-                  setRoutes([p.route]);
+                  setRoutes([withGeometry(p.route)]);
+                  setForecasts({});
+                  setRecommendReason("walking-baseline");
+                  setDepartureMs(null);
                   setCandidate(0);
                   go("recommend");
                 }}
@@ -1415,48 +1784,221 @@ export function RealApp() {
           />
         </label>
         <label>
-          걸린 시간 (분)
-          <input
-            type="number"
-            min="0.1"
-            step="0.1"
-            value={calcMin}
-            onChange={(e) => setCalcMin(e.target.value)}
-          />
+          걸린 시간
+          <div className="pace-input">
+            <input
+              aria-label="걸린 시간 (시)"
+              type="number"
+              min="0"
+              value={calcHour}
+              onChange={(e) => setCalcHour(e.target.value)}
+            />
+            <span>시</span>
+            <input
+              aria-label="걸린 시간 (분)"
+              type="number"
+              min="0"
+              max="59"
+              value={calcMin}
+              onChange={(e) => setCalcMin(e.target.value)}
+            />
+            <span>분</span>
+            <input
+              aria-label="걸린 시간 (초)"
+              type="number"
+              min="0"
+              max="59"
+              value={calcSec}
+              onChange={(e) => setCalcSec(e.target.value)}
+            />
+            <span>초</span>
+          </div>
         </label>
         <div className="hero-number">
-          {paceLabel(
-            Number(calcKm) > 0 ? (Number(calcMin) * 60) / Number(calcKm) : null,
-          )}
+          {paceLabel(calcPace)}
           <small>/km</small>
         </div>
+        <p className="muted">
+          페이스 = 시간(초) ÷ 거리(km). 여러 기록을 합칠 때는 총시간 ÷ 총거리입니다.
+        </p>
+        {paceSuggest.paceSec !== null && (
+          <article>
+            <p>내 기록 평균 {paceLabel(paceSuggest.paceSec)}/km</p>
+            <small>{paceSuggest.reason}</small>
+            <button
+              onClick={() =>
+                void action(async () => {
+                  const p = paceSuggest.paceSec!;
+                  const paces = applyPaceSlot(profile.paces, "usual", p);
+                  setPace(p);
+                  setPaceSlot("usual");
+                  await updateProfile({ ...profile, paces, pace: p });
+                  notice("평소 페이스에 기록 평균을 넣었어요.");
+                })
+              }
+            >
+              평소 페이스로 쓰기
+            </button>
+          </article>
+        )}
+        {paceSuggest.paceSec === null && (
+          <p className="muted">{paceSuggest.reason}</p>
+        )}
         <div className="button-row">
-          {[5, 10, 21.0975, 42.195].map((km) => (
-            <button key={km} onClick={() => setCalcKm(String(km))}>
-              {km}km
+          {PACE_SLOTS.filter((s) => s.distanceKm).map((s) => (
+            <button
+              key={s.id}
+              onClick={() => {
+                setCalcKm(String(s.distanceKm));
+                setPaceSlot(s.id);
+              }}
+            >
+              {s.shortLabel}
             </button>
           ))}
         </div>
+        <p className="muted">
+          칸마다 따로 저장됩니다. 비어 있으면 미등록이며, 평소 페이스로 채우지
+          않습니다.
+        </p>
+        {PACE_SLOTS.map((s) => (
+          <label className="check" key={s.id}>
+            <input
+              type="radio"
+              name="pace-slot"
+              checked={paceSlot === s.id}
+              onChange={() => setPaceSlot(s.id)}
+            />
+            <span>
+              {s.label} ·{" "}
+              {profile.paces[s.id] === null
+                ? "미등록"
+                : formatPaceSpoken(profile.paces[s.id]!)}
+            </span>
+          </label>
+        ))}
         <button
           className="primary"
           onClick={() =>
             void action(async () => {
-              const p = Math.round((Number(calcMin) * 60) / Number(calcKm));
-              if (!validPace(p))
+              const p = calcPace;
+              if (p === null || !validPace(p))
                 throw new Error("거리와 시간을 확인해 주세요.");
-              setPace(p);
-              await updateProfile({ ...profile, pace: p });
+              const paces = applyPaceSlot(profile.paces, paceSlot, p);
+              if (paceSlot === "usual") setPace(p);
+              await updateProfile({
+                ...profile,
+                paces,
+                pace: paces.usual ?? profile.pace,
+              });
               go("home");
             })
           }
         >
-          내 평균 페이스로 저장
+          선택한 칸에 저장
+        </button>
+        <button
+          onClick={() =>
+            void action(async () => {
+              const paces = applyPaceSlot(profile.paces, paceSlot, null);
+              await updateProfile({
+                ...profile,
+                paces,
+                pace: paces.usual ?? profile.pace,
+              });
+              notice("해당 칸을 미등록으로 바꿨어요.");
+            })
+          }
+        >
+          이 칸 미등록으로
         </button>
         {route && (
           <button onClick={() => setCalcKm(String(route.distanceM / 1000))}>
             선택한 경로 거리 사용
           </button>
         )}
+      </section>
+    );
+  else if (page === "diagnostics")
+    content = (
+      <section>
+        <h1>개발 연결 확인</h1>
+        <p className="muted">
+          일반 설정과 분리된 화면입니다. 키 문자열은 보여주지 않으며, 신호 응답은
+          통행 안내가 아닙니다. 실시간 대기 예측은 꺼져 있습니다.
+        </p>
+        <article>
+          <p>
+            지도 키: {import.meta.env.VITE_MAPTILER_KEY ? "설정됨" : "미설정"}
+          </p>
+          <p>장소 검색: {status?.places ? "설정됨" : "미설정"}</p>
+          <p>주소·역지오코딩: {status?.reverseGeocode ? "설정됨" : "미설정"}</p>
+          <p>보행 경로: {status?.routes ? "설정됨" : "미설정"}</p>
+          <p>
+            서울 신호 키:{" "}
+            {status?.signal?.configured.seoul || status?.seoulSignals
+              ? "설정됨"
+              : "미설정"}
+          </p>
+          <p>
+            서울 최근 호출:{" "}
+            {status?.signal?.reachable.seoul === true
+              ? "성공"
+              : status?.signal?.reachable.seoul === false
+                ? "실패"
+                : "아직 호출하지 않음"}
+          </p>
+          <p>
+            횡단 매핑: {status?.signal?.mappingReady ? "준비됨" : "미완료"}
+          </p>
+          <p>
+            경로 예측:{" "}
+            {status?.signal?.predictionReady || status?.signalPrediction
+              ? "가능"
+              : "비활성"}
+          </p>
+          <p className="muted">{status?.signalDetail}</p>
+          <label>
+            연결 확인할 서울 교차로 ID
+            <input
+              inputMode="numeric"
+              value={signalId}
+              onChange={(e) => setSignalId(e.target.value)}
+            />
+          </label>
+          <button
+            disabled={
+              busy ||
+              !(status?.signal?.configured.seoul || status?.seoulSignals)
+            }
+            onClick={() =>
+              void action(async () => {
+                try {
+                  setSignalResult(
+                    await api(
+                      `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=phase`,
+                    ),
+                  );
+                } finally {
+                  try {
+                    setStatus(await api<StatusResponse>("status"));
+                  } catch {
+                    /* status refresh is best-effort */
+                  }
+                }
+              })
+            }
+          >
+            신호 응답 확인
+          </button>
+          {signalResult !== null && (
+            <details>
+              <summary>현재 상태 원문 · 통행 안내 아님</summary>
+              <pre>{JSON.stringify(signalResult, null, 2)}</pre>
+            </details>
+          )}
+        </article>
+        <button onClick={() => go("settings")}>설정으로</button>
       </section>
     );
   else if (page === "settings")
@@ -1487,19 +2029,23 @@ export function RealApp() {
             </select>
           </label>
           <label>
-            허용 우회 거리
+            허용 우회 (시험 기본값)
             <select
               value={profile.detour}
               onChange={(e) =>
                 setProfile({ ...profile, detour: Number(e.target.value) })
               }
             >
-              <option value={0.05}>5% 이내</option>
-              <option value={0.1}>10% 이내</option>
-              <option value={0.15}>15% 이내</option>
+              <option value={0.05}>5% · 최대 150m</option>
+              <option value={0.1}>10% · 최대 300m</option>
+              <option value={0.15}>15% · 최대 500m</option>
             </select>
           </label>
-          {(["avoidStairs", "voice", "vibration", "wake"] as const).map(
+          <p className="muted">
+            우회 비율과 최대 추가 거리는 화면·서버가 같은 시험 기본값을 씁니다.
+            현장 검증으로 확정한 제품값이 아닙니다.
+          </p>
+          {(["avoidStairs", "avoidOverpass", "avoidAlley", "voice", "vibration", "wake", "followCam"] as const).map(
             (k, i) => (
               <label className="check" key={k}>
                 <input
@@ -1512,17 +2058,36 @@ export function RealApp() {
                 {
                   [
                     "계단 제외 경로만 요청",
-                    "시작 음성 안내",
-                    "시작 진동",
+                    "육교·고가 안내 후보 제외",
+                    "큰길 우선(골목 안내 회피)",
+                    "턴·횡단 음성 안내",
+                    "턴·횡단 진동",
                     "러닝 중 화면 켜짐 유지",
+                    "러닝 중 내 위치 따라가기 기본값",
                   ][i]
                 }
               </label>
             ),
           )}
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={persistOn}
+              onChange={(e) => {
+                setPersistOn(e.target.checked);
+                setPersistLogin(e.target.checked);
+                notice(
+                  e.target.checked
+                    ? "다음 로그인부터 이 기기에 세션을 유지합니다."
+                    : "다음 로그인부터 브라우저 탭이 닫히면 로그아웃됩니다.",
+                );
+              }}
+            />
+            이 기기에서 로그인 유지
+          </label>
           <small>
-            우회 최대 500m · 육교·골목 상세 회피는 보행망 속성 연결 후
-            지원합니다.
+            육교·골목은 TMAP 안내 문구·시설 코드가 있을 때만 걸러요. 도로명만으로
+            단정하지 않습니다.
           </small>
           <button
             className="primary"
@@ -1536,7 +2101,28 @@ export function RealApp() {
           >
             설정 저장
           </button>
-          <button onClick={() => go("pace")}>평균 페이스 수정</button>
+          <button onClick={() => go("pace")}>페이스 수정</button>
+        </article>
+        <article>
+          <h2>연결 상태</h2>
+          <p>
+            지도:{" "}
+            {import.meta.env.VITE_MAPTILER_KEY
+              ? "사용 가능"
+              : "연결 필요 · GPS 기록은 가능"}
+          </p>
+          <p>
+            장소 검색:{" "}
+            {status?.places ? "사용 가능" : "미연결 · 지도에서 위치를 고를 수 있어요"}
+          </p>
+          <p>
+            보행 경로:{" "}
+            {status?.routes
+              ? "사용 가능"
+              : "미연결 · 자유 러닝은 가능"}
+          </p>
+          <p>신호 대기 예측: 제공하지 않음</p>
+          <button onClick={() => go("diagnostics")}>개발 연결 확인</button>
         </article>
         <article>
           <h2>기록·위치</h2>
@@ -1586,50 +2172,6 @@ export function RealApp() {
           >
             운동 기록 전체 삭제
           </button>
-        </article>
-        <article>
-          <h2>API 연결 상태</h2>
-          <p>
-            지도:{" "}
-            {import.meta.env.VITE_MAPTILER_KEY
-              ? "키 설정됨 · 화면에서 수신 확인"
-              : "키 미설정"}
-          </p>
-          <p>장소 검색: {status?.places ? "키 설정됨" : "미설정"}</p>
-          <p>보행 경로: {status?.routes ? "키 설정됨" : "미설정"}</p>
-          <p>
-            서울 신호:{" "}
-            {status?.seoulSignals ? "키 설정됨 · 응답 검증 필요" : "미설정"}
-          </p>
-          <p>도착 시점 신호 예측: 검증 대기</p>
-          <label>
-            연결 확인할 서울 교차로 ID
-            <input
-              inputMode="numeric"
-              value={signalId}
-              onChange={(e) => setSignalId(e.target.value)}
-            />
-          </label>
-          <button
-            disabled={busy || !status?.seoulSignals}
-            onClick={() =>
-              void action(async () =>
-                setSignalResult(
-                  await api(
-                    `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=phase`,
-                  ),
-                ),
-              )
-            }
-          >
-            신호 응답 확인
-          </button>
-          {signalResult !== null && (
-            <details>
-              <summary>현재 상태 원문 · 통행 안내 아님</summary>
-              <pre>{JSON.stringify(signalResult, null, 2)}</pre>
-            </details>
-          )}
         </article>
         <article>
           <button onClick={() => go("legal")}>이용약관·개인정보 안내</button>
@@ -1741,7 +2283,10 @@ export function RealApp() {
               <button
                 key={p.id}
                 onClick={() => {
-                  setRoutes([p.route]);
+                  setRoutes([withGeometry(p.route)]);
+                  setForecasts({});
+                  setRecommendReason("walking-baseline");
+                  setDepartureMs(null);
                   setCandidate(0);
                   go("recommend");
                 }}
@@ -1766,11 +2311,17 @@ export function RealApp() {
           </button>
         </div>
         <article>
-          <PlaceInput label="출발지" value={origin} onChange={setOrigin} />
+          <PlaceInput
+            label="출발지"
+            value={origin}
+            onChange={setOrigin}
+            near={position}
+          />
           <PlaceInput
             label={loop ? "반환점" : "목적지"}
             value={destination}
             onChange={setDestination}
+            near={origin?.coord ?? position}
           />
           <label className="check">
             <input
@@ -1781,7 +2332,34 @@ export function RealApp() {
             출발지로 돌아오기
           </label>
           <label>
-            평균 페이스
+            페이스
+            <div className="pace-slots">
+              {PACE_SLOTS.map((s) => {
+                const registered = profile.paces[s.id] !== null;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={paceSlot === s.id ? "slot-on" : undefined}
+                    onClick={() => {
+                      setPaceSlot(s.id);
+                      if (registered) setPace(profile.paces[s.id]!);
+                      else
+                        notice(
+                          `${s.shortLabel}은 미등록이에요. 평소를 쓰거나 계산에서 저장하세요.`,
+                        );
+                    }}
+                  >
+                    {s.shortLabel}
+                    <small>
+                      {registered
+                        ? paceLabel(profile.paces[s.id])
+                        : "미등록"}
+                    </small>
+                  </button>
+                );
+              })}
+            </div>
             <div className="pace-input">
               <input
                 aria-label="페이스 분"
@@ -1810,6 +2388,9 @@ export function RealApp() {
               <span>초 /km</span>
             </div>
           </label>
+          <p className="muted">
+            루트 예상 시간은 이 페이스 × 거리입니다. 신호 대기는 넣지 않습니다.
+          </p>
           <button
             onClick={() => {
               setShowVia(!showVia);
@@ -1819,7 +2400,12 @@ export function RealApp() {
             {showVia ? "경유지 제거" : "꼭 지나고 싶은 장소 추가"}
           </button>
           {showVia && (
-            <PlaceInput label="경유지" value={via} onChange={setVia} />
+            <PlaceInput
+              label="경유지"
+              value={via}
+              onChange={setVia}
+              near={origin?.coord ?? position}
+            />
           )}
         </article>
         <div className="button-row">
@@ -1842,14 +2428,12 @@ export function RealApp() {
             <RealMap
               position={position}
               onPick={(coord) => {
-                const p: Place = {
-                  id: `map:${coord.join(",")}`,
-                  name: `지도 선택 (${coord[1].toFixed(4)}, ${coord[0].toFixed(4)})`,
-                  coord,
-                };
-                if (pick === "origin") setOrigin(p);
-                else setDestination(p);
-                setPick(null);
+                const fallback = `지도 선택 (${coord[1].toFixed(4)}, ${coord[0].toFixed(4)})`;
+                void namedPlace(coord, fallback).then((p) => {
+                  if (pick === "origin") setOrigin(p);
+                  else setDestination(p);
+                  setPick(null);
+                });
               }}
             />
             <button onClick={() => setPick(null)}>닫기</button>

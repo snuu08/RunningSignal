@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "signals": "node --experimental-strip-types --no-warnings ./scripts/signals.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.115.0",

@@ -1,20 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   appendFix,
+  applyWalkingPolicy,
   forecast,
   meters,
+  nextPoi,
+  poisFromInstructions,
+  preferFewerCrossings,
   preferSignalRoute,
+  progressOnRoute,
   rankRoutes,
   routeCompleted,
   routeKey,
   samplePath,
+  scanFacilities,
   trackSegments,
+  withGeometry,
   type Crossing,
   type FixedPlan,
   type Forecast,
   type Route,
   type Track,
 } from "./core.ts";
+import { waitDisplay, candidateIndex } from "./api-contract.ts";
+import {
+  parseRoutingPolicy,
+  policyFromProfile,
+  TRIAL_ROUTING_POLICY,
+} from "./routing-policy.ts";
 const epoch = 1800000000000;
 const plan: FixedPlan = {
   cycleSec: 60,
@@ -154,6 +167,82 @@ describe("arrival-aware signal policy", () => {
       ])?.route.id,
     ).toBe("1");
   });
+  it("uses the same trial extra-distance cap as walking rank, not a separate 500m screen cap", () => {
+    const base = { route: route("1"), forecast: prediction(30) };
+    const far = { route: route("2", 1140), forecast: prediction(0, 0) };
+    expect(preferSignalRoute([base, far])?.route.id).toBe("1");
+    expect(
+      preferSignalRoute([base, far], {
+        ...TRIAL_ROUTING_POLICY,
+        detourRatio: 0.15,
+        detourMaxM: 500,
+      })?.route.id,
+    ).toBe("2");
+  });
+  it("keeps the walking baseline when waits are unknown rather than treating them as zero", () => {
+    const base = { route: route("1"), forecast: prediction(null) };
+    const alt = { route: route("2", 1050), forecast: prediction(null, 0) };
+    expect(preferSignalRoute([base, alt])?.route.id).toBe("1");
+    expect(waitDisplay(base.forecast).known).toBe(false);
+    expect(waitDisplay(prediction(0, 0)).known).toBe(true);
+    expect(waitDisplay(prediction(0, 0)).waitSec).toBe(0);
+    expect(candidateIndex([{ id: "a" }, { id: "b" }], "b")).toBe(1);
+    expect(candidateIndex([{ id: "a" }], "missing")).toBe(0);
+  });
+});
+describe("shared walking policy", () => {
+  it("does not treat TMAP payload order as the baseline", () => {
+    const wide: Route = {
+      ...route("4", 1100, 4, 3),
+      id: "tmap-4",
+      option: "4",
+      coordinates: [
+        [127, 37],
+        [127.01, 37],
+        [127.01, 37.01],
+      ],
+    };
+    const stairsFree: Route = {
+      ...route("30", 1120, 0, 0),
+      id: "tmap-30",
+      option: "30",
+      coordinates: [
+        [127, 37],
+        [127, 37.01],
+      ],
+    };
+    expect(applyWalkingPolicy([wide, stairsFree]).routes[0].id).toBe("tmap-30");
+  });
+  it("applies stairs filter before extra-distance ranking", () => {
+    const wide: Route = {
+      ...route("4", 1000),
+      id: "tmap-4",
+      option: "4",
+      hasStairs: true,
+    };
+    const stairsFree: Route = {
+      ...route("30", 1080),
+      id: "tmap-30",
+      option: "30",
+    };
+    const out = applyWalkingPolicy([wide, stairsFree], {
+      ...TRIAL_ROUTING_POLICY,
+      avoidStairs: true,
+    });
+    expect(out.routes.map((r) => r.id)).toEqual(["tmap-30"]);
+  });
+  it("maps profile ratios to the documented trial max meters", () => {
+    expect(policyFromProfile({ detour: 0.05, avoidStairs: true, avoidOverpass: false, avoidAlley: false }).detourMaxM).toBe(150);
+    expect(policyFromProfile({ detour: 0.1, avoidStairs: true, avoidOverpass: false, avoidAlley: false }).detourMaxM).toBe(300);
+    expect(policyFromProfile({ detour: 0.15, avoidStairs: true, avoidOverpass: false, avoidAlley: false }).detourMaxM).toBe(500);
+    expect(parseRoutingPolicy({ detourRatio: 0.05 }).detourMaxM).toBe(150);
+  });
+  it("filters 200m extra at 10%/300m trial defaults", () => {
+    expect(rankRoutes([route("1"), route("2", 1200)])).toHaveLength(1);
+    expect(
+      rankRoutes([route("1"), route("2", 1140)], 0.15, 500).map((r) => r.id),
+    ).toEqual(["1", "2"]);
+  });
 });
 describe("real distance and GPS", () => {
   const empty: Track = { fixes: [], distanceM: 0, gapSec: 0, stoppedSec: 0 };
@@ -247,5 +336,70 @@ describe("real distance and GPS", () => {
   });
   it("filters excessively long alternatives before offering another route", () => {
     expect(rankRoutes([route("1"), route("2", 1200)])).toHaveLength(1);
+  });
+});
+describe("straight-line and remaining distance", () => {
+  it("measures extra path length against the origin-destination geodesic", () => {
+    const bent: Route = {
+      ...route("bent", 2000),
+      coordinates: [
+        [127, 37],
+        [127.01, 37],
+        [127.01, 37.01],
+      ],
+    };
+    const fit = withGeometry(bent);
+    expect(fit.straightM).toBeCloseTo(meters([127, 37], [127.01, 37.01]), 0);
+    expect(fit.extraM).toBeGreaterThan(400);
+    expect(fit.maxOffLineM).toBeGreaterThan(400);
+  });
+  it("tracks remaining meters along the path, not the straight shortcut", () => {
+    const path: [number, number][] = [
+      [127, 37],
+      [127, 37.005],
+      [127, 37.01],
+    ];
+    const mid = progressOnRoute(path, [127, 37.005]);
+    expect(mid.traveledM).toBeCloseTo(meters(path[0], path[1]), 0);
+    expect(mid.remainM).toBeCloseTo(meters(path[1], path[2]), 0);
+    expect(progressOnRoute(path, [127.002, 37.005]).offRouteM).toBeGreaterThan(
+      100,
+    );
+  });
+  it("keeps TMAP crossing texts as places, not as predicted waits", () => {
+    const pois = poisFromInstructions({
+      ...route("1"),
+      instructions: [
+        { coord: [127, 37.005], text: "횡단보도를 건너세요" },
+        { coord: [127, 37.008], text: "직진하세요" },
+      ],
+    });
+    expect(pois).toHaveLength(1);
+    expect(nextPoi(pois, 0)?.name).toMatch(/횡단/);
+    expect(forecast(1000, 360, epoch, [], false, epoch).waitSec).toBeNull();
+  });
+});
+describe("crossing count rank and facilities", () => {
+  it("moves a unique shorter-crossing candidate first without inventing waits", () => {
+    const a = {
+      ...route("1", 1000),
+      nearbyPois: [{ id: "x", name: "횡단", coord: [127, 37] as [number, number], atM: 100, offPathM: 0, source: "tmap-instruction" as const }, { id: "y", name: "횡단", coord: [127, 37.01] as [number, number], atM: 200, offPathM: 0, source: "tmap-instruction" as const }],
+    };
+    const b = {
+      ...route("2", 1050),
+      nearbyPois: [{ id: "z", name: "횡단", coord: [127, 37] as [number, number], atM: 100, offPathM: 0, source: "tmap-instruction" as const }],
+    };
+    expect(preferFewerCrossings([a, b])[0].id).toBe("2");
+  });
+  it("treats TMAP stairs/overpass codes from payload text, not as wait seconds", () => {
+    expect(
+      scanFacilities([
+        { properties: { facilityType: "15", description: "계단" } },
+        { properties: { facilityType: "14", description: "횡단보도" } },
+      ]),
+    ).toEqual({ hasStairs: true, hasOverpass: false, hasAlley: false });
+    expect(
+      scanFacilities([{ properties: { description: "육교로 이동" } }]).hasOverpass,
+    ).toBe(true);
   });
 });

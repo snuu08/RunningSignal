@@ -4,26 +4,48 @@ import type { GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Coord } from "./core.ts";
 const empty = { type: "FeatureCollection" as const, features: [] };
+function lineData(coordinates: Coord[]) {
+  return coordinates.length > 1
+    ? {
+        type: "Feature" as const,
+        properties: {},
+        geometry: { type: "LineString" as const, coordinates },
+      }
+    : empty;
+}
 export function RealMap({
   coordinates = [],
   position,
   onPick,
   segments,
+  straight,
+  pois = [],
   fitToken = 0,
+  follow = false,
+  heading = null,
+  onUserPan,
 }: {
   coordinates?: Coord[];
   segments?: Coord[][];
   position?: Coord | null;
   onPick?: (coord: Coord) => void;
+  straight?: [Coord, Coord] | null;
+  pois?: { coord: Coord; name: string }[];
   fitToken?: number;
+  follow?: boolean;
+  heading?: number | null;
+  onUserPan?: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null),
     map = useRef<maplibregl.Map | null>(null),
     marker = useRef<maplibregl.Marker | null>(null),
-    pick = useRef(onPick);
+    pick = useRef(onPick),
+    pan = useRef(onUserPan),
+    easing = useRef(false);
   const [ready, setReady] = useState(false),
     [error, setError] = useState("");
   pick.current = onPick;
+  pan.current = onUserPan;
   const key = import.meta.env.VITE_MAPTILER_KEY;
   useEffect(() => {
     if (!container.current || !key) return;
@@ -40,6 +62,17 @@ export function RealMap({
       "top-right",
     );
     m.on("load", () => {
+      m.addSource("straight", { type: "geojson", data: empty });
+      m.addLayer({
+        id: "straight-line",
+        type: "line",
+        source: "straight",
+        paint: {
+          "line-color": "#8ea39a",
+          "line-width": 2,
+          "line-dasharray": [2, 2],
+        },
+      });
       m.addSource("route", { type: "geojson", data: empty });
       m.addLayer({
         id: "route-halo",
@@ -54,6 +87,18 @@ export function RealMap({
         layout: { "line-join": "round", "line-cap": "round" },
         paint: { "line-color": "#b4f6ce", "line-width": 4 },
       });
+      m.addSource("pois", { type: "geojson", data: empty });
+      m.addLayer({
+        id: "poi-dots",
+        type: "circle",
+        source: "pois",
+        paint: {
+          "circle-radius": 5,
+          "circle-color": "#fee500",
+          "circle-stroke-color": "#191919",
+          "circle-stroke-width": 1,
+        },
+      });
       setReady(true);
     });
     m.on("error", () =>
@@ -62,6 +107,12 @@ export function RealMap({
       ),
     );
     m.on("click", (e) => pick.current?.([e.lngLat.lng, e.lngLat.lat]));
+    m.on("dragstart", () => {
+      if (!easing.current) pan.current?.();
+    });
+    m.on("rotatestart", () => {
+      if (!easing.current) pan.current?.();
+    });
     return () => {
       marker.current?.remove();
       marker.current = null;
@@ -80,25 +131,31 @@ export function RealMap({
             properties: {},
             geometry: { type: "MultiLineString", coordinates: segments },
           }
-        : coordinates.length > 1
-          ? {
-              type: "Feature",
-              properties: {},
-              geometry: { type: "LineString", coordinates },
-            }
-          : empty,
+        : lineData(coordinates),
     );
-    const boundsPoints = coordinates.length
-      ? coordinates
-      : (segments?.flat() ?? []);
+    (m.getSource("straight") as GeoJSONSource | undefined)?.setData(
+      straight ? lineData(straight) : empty,
+    );
+    (m.getSource("pois") as GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: pois.map((p) => ({
+        type: "Feature" as const,
+        properties: { name: p.name },
+        geometry: { type: "Point" as const, coordinates: p.coord },
+      })),
+    });
+  }, [coordinates, segments, straight, pois, ready]);
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !ready || follow) return;
+    const boundsPoints = [...coordinates, ...(segments?.flat() ?? [])];
     if (boundsPoints.length > 1) {
       const b = new maplibregl.LngLatBounds(boundsPoints[0], boundsPoints[0]);
       boundsPoints.forEach((c) => b.extend(c));
       m.fitBounds(b, { padding: 36, maxZoom: 17, duration: 400 });
     } else if (position) m.easeTo({ center: position, zoom: 15 });
-    // GPS ticks should not constantly override a user's map pan.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coordinates, segments, ready, fitToken]);
+  }, [coordinates, segments, ready, fitToken, follow]);
   useEffect(() => {
     const m = map.current;
     if (!m || !ready || !position) return;
@@ -107,7 +164,20 @@ export function RealMap({
         .setLngLat(position)
         .addTo(m);
     else marker.current.setLngLat(position);
-  }, [position, ready]);
+    if (follow) {
+      easing.current = true;
+      m.easeTo({
+        center: position,
+        zoom: Math.max(m.getZoom(), 16),
+        bearing: heading ?? m.getBearing(),
+        pitch: 50,
+        duration: 400,
+      });
+      window.setTimeout(() => {
+        easing.current = false;
+      }, 450);
+    }
+  }, [position, heading, follow, ready]);
   return (
     <div className="real-map-wrap">
       <div

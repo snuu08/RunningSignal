@@ -1,0 +1,1 @@
+source,sourceCrossingId,sourceIntersectionId,entryLon,entryLat,exitLon,exitLat,bearingDeg,directionLabel,pedestrianSignalGroupId,crossingLengthM,paintedWidthM,geometryType,hasRefugeIsland,stageIndex,stageCount,planVerifiedAt,observedAt,fetchedAt,currentPlanConfirmedAt,synthetic,stage

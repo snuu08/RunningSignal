@@ -83,6 +83,13 @@ begin
       ),
       'region', '서울',
       'pace', 360,
+      'paces', jsonb_build_object(
+        'usual', 360,
+        'fiveK', null,
+        'tenK', null,
+        'half', null,
+        'full', null
+      ),
       'onboarded', false,
       'detour', 0.1,
       'voice', false,

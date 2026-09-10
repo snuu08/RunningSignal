@@ -29,3 +29,15 @@ captures
 .env
 .env.*
 !.env.example
+
+# Signal collection working copies (templates and samples stay tracked).
+data/signals/inbox/**
+!data/signals/inbox/.gitkeep
+data/signals/raw/**
+!data/signals/raw/.gitkeep
+data/signals/normalized/**
+!data/signals/normalized/.gitkeep
+data/signals/verified/**
+!data/signals/verified/.gitkeep
+data/signals/captures/**
+!data/signals/captures/.gitkeep

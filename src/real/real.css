@@ -278,6 +278,7 @@
   justify-content: center;
   font-size: 32px;
   color: #b4f6ce;
+  object-fit: cover;
 }
 .real-shell .route-row {
   display: flex;
@@ -334,6 +335,31 @@
 }
 .pace-input input {
   max-width: 90px;
+}
+.pace-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.pace-slots button {
+  flex: 1 1 28%;
+  min-width: 72px;
+  padding: 10px 8px;
+  border: 1px solid #ffffff18;
+  border-radius: 12px;
+  background: #141618;
+  color: #c5c9cc;
+}
+.pace-slots button small {
+  display: block;
+  margin-top: 4px;
+  color: #8b9196;
+}
+.pace-slots button.slot-on {
+  border-color: #b4f6ce55;
+  color: #fff;
+  background: #18221c;
 }
 .real-shell .danger {
   color: #f3a4a4;

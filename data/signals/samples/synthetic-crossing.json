@@ -1,0 +1,28 @@
+{
+  "synthetic": true,
+  "stage": "raw",
+  "note": "Synthetic sample only. Do not load into the live provider or set completeCoverage.",
+  "crossing": {
+    "source": "synthetic",
+    "sourceCrossingId": "SYN-N-1",
+    "sourceIntersectionId": "SYN-ITST",
+    "internalId": "synthetic:SYN-N-1",
+    "entryCoord": [126.978, 37.5665],
+    "exitCoord": [126.9782, 37.5667],
+    "travel": { "bearingDeg": 45, "label": "NE" },
+    "pedestrianSignalGroupId": "synthetic:group:ntPdsg",
+    "crossingLengthM": 22,
+    "paintedWidthM": 4,
+    "geometryType": "crossing-endpoints",
+    "hasRefugeIsland": false,
+    "stageIndex": 1,
+    "stageCount": 1
+  },
+  "plan": {
+    "source": "synthetic",
+    "sourcePlanId": "SYN-TOD",
+    "version": "sample",
+    "operationMode": "unknown",
+    "note": "No cycle or green is implied by the coordinates above."
+  }
+}

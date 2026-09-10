@@ -1,0 +1,2 @@
+crossingInternalId,sourceIntersectionId,dateSeoul,timeBand,specialDayId,deviceClockErrorSec,greenStart,flashStart,redStart,arrivedEntry,predictedWaitSec,observedWaitSec,sourceResponseAt,exceptionOperation,notes,synthetic
+synthetic:SYN-N-1,SYN-ITST,2026-09-08,weekday-am,,0,,,,,,,,,false,synthetic row; leave predictedWaitSec empty when the engine did not predict,true

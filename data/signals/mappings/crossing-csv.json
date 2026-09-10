@@ -1,0 +1,30 @@
+{
+  "synthetic": false,
+  "source": "field",
+  "crs": "EPSG:4326",
+  "geometryType": "crossing-endpoints",
+  "columns": {
+    "source": "source",
+    "sourceCrossingId": "sourceCrossingId",
+    "sourceIntersectionId": "sourceIntersectionId",
+    "entryLon": "entryLon",
+    "entryLat": "entryLat",
+    "exitLon": "exitLon",
+    "exitLat": "exitLat",
+    "bearingDeg": "bearingDeg",
+    "directionLabel": "directionLabel",
+    "pedestrianSignalGroupId": "pedestrianSignalGroupId",
+    "crossingLengthM": "crossingLengthM",
+    "paintedWidthM": "paintedWidthM",
+    "geometryType": "geometryType",
+    "hasRefugeIsland": "hasRefugeIsland",
+    "stageIndex": "stageIndex",
+    "stageCount": "stageCount",
+    "planVerifiedAt": "planVerifiedAt",
+    "observedAt": "observedAt",
+    "fetchedAt": "fetchedAt",
+    "currentPlanConfirmedAt": "currentPlanConfirmedAt",
+    "synthetic": "synthetic",
+    "stage": "stage"
+  }
+}

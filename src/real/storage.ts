@@ -1,26 +1,60 @@
+import type { PaceBook } from "../domain/models.ts";
+import { normalizePaceBook } from "../domain/pace.ts";
 import type { Route, Track } from "./core.ts";
 export type Profile = {
   nickname: string;
   region: string;
   pace: number;
+  paces: PaceBook;
   onboarded: boolean;
   detour: number;
   voice: boolean;
   vibration: boolean;
   wake: boolean;
   avoidStairs: boolean;
+  avoidOverpass: boolean;
+  avoidAlley: boolean;
+  followCam: boolean;
 };
 export const defaultProfile: Profile = {
   nickname: "",
   region: "서울",
   pace: 360,
+  paces: {
+    usual: null,
+    fiveK: null,
+    tenK: null,
+    half: null,
+    full: null,
+  },
   onboarded: false,
   detour: 0.1,
   voice: false,
   vibration: false,
   wake: true,
   avoidStairs: true,
+  avoidOverpass: false,
+  avoidAlley: false,
+  followCam: true,
 };
+export function normalizeProfile(raw?: Partial<Profile> | null): Profile {
+  const paces = normalizePaceBook({
+    usual: raw?.paces?.usual ?? raw?.pace ?? null,
+    fiveK: raw?.paces?.fiveK ?? null,
+    tenK: raw?.paces?.tenK ?? null,
+    half: raw?.paces?.half ?? null,
+    full: raw?.paces?.full ?? null,
+  });
+  return {
+    ...defaultProfile,
+    ...raw,
+    paces,
+    pace: paces.usual ?? defaultProfile.pace,
+    avoidOverpass: !!raw?.avoidOverpass,
+    avoidAlley: !!raw?.avoidAlley,
+    followCam: raw?.followCam !== false,
+  };
+}
 export type RunRecord = {
   id: string;
   owner: string;

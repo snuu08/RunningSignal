@@ -1,0 +1,32 @@
+{
+  "synthetic": false,
+  "source": "seoul-spatial",
+  "table": "PDSR_LINK",
+  "column": "LINK_CODE",
+  "crs": "unspecified",
+  "notes": "From 도보네트워크_링크노드유형코드. Bits are allowed modes, not stairs/overpass/alley. Geometry files are separate.",
+  "linkCode": {
+    "0000": { "pedestrian": false, "vehicle": false, "bicycle": false, "pm": false, "label": "통행불가" },
+    "0001": { "pedestrian": false, "vehicle": false, "bicycle": false, "pm": true },
+    "0010": { "pedestrian": false, "vehicle": false, "bicycle": true, "pm": false },
+    "0011": { "pedestrian": false, "vehicle": false, "bicycle": true, "pm": true },
+    "0100": { "pedestrian": false, "vehicle": true, "bicycle": false, "pm": false },
+    "0101": { "pedestrian": false, "vehicle": true, "bicycle": false, "pm": true },
+    "0110": { "pedestrian": false, "vehicle": true, "bicycle": true, "pm": false },
+    "0111": { "pedestrian": false, "vehicle": true, "bicycle": true, "pm": true },
+    "1000": { "pedestrian": true, "vehicle": false, "bicycle": false, "pm": false },
+    "1001": { "pedestrian": true, "vehicle": false, "bicycle": false, "pm": true },
+    "1010": { "pedestrian": true, "vehicle": false, "bicycle": true, "pm": false },
+    "1011": { "pedestrian": true, "vehicle": false, "bicycle": true, "pm": true },
+    "1100": { "pedestrian": true, "vehicle": true, "bicycle": false, "pm": false },
+    "1101": { "pedestrian": true, "vehicle": true, "bicycle": false, "pm": true },
+    "1110": { "pedestrian": true, "vehicle": true, "bicycle": true, "pm": false },
+    "1111": { "pedestrian": true, "vehicle": true, "bicycle": true, "pm": true }
+  },
+  "nodeCode": {
+    "0": "일반노드",
+    "1": "지하철 출입구",
+    "2": "버스 정류장",
+    "3": "지하보도 출입구"
+  }
+}

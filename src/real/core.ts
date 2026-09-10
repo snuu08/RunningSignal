@@ -1,3 +1,13 @@
+import {
+  allowedExtraMeters,
+  TRIAL_ROUTING_POLICY,
+  type RealRoutingPolicy,
+} from "./routing-policy.ts";
+import {
+  ENGINE_PLAN_APPLIED_MAX_AGE_MS,
+  ENGINE_PLAN_CLOCK_SKEW_MS,
+} from "./signals/freshness.ts";
+
 /** Real-world coordinates are always [longitude, latitude], WGS84. */
 export type Coord = [number, number];
 export type Place = {
@@ -5,6 +15,14 @@ export type Place = {
   name: string;
   coord: Coord;
   address?: string;
+};
+export type NearbyPoi = {
+  id: string;
+  name: string;
+  coord: Coord;
+  atM: number;
+  offPathM: number;
+  source: "tmap-instruction" | "kakao-keyword";
 };
 export type Route = {
   id: string;
@@ -15,6 +33,13 @@ export type Route = {
   zigzags: number;
   option: string;
   instructions: { coord: Coord; text: string }[];
+  straightM?: number;
+  extraM?: number;
+  maxOffLineM?: number;
+  nearbyPois?: NearbyPoi[];
+  hasStairs?: boolean;
+  hasOverpass?: boolean;
+  hasAlley?: boolean;
 };
 export type FixedPlan = {
   cycleSec: number;
@@ -24,10 +49,11 @@ export type FixedPlan = {
   clearEndSec: number;
   validFromMs: number;
   validToMs: number;
+  /** Engine freshness clock = currentPlanConfirmedAt, not fetchedAt. See signals/freshness.ts. */
   verifiedAtMs: number;
   uncertaintySec: number;
 };
-/** Crossing associations must be verified against BOTH walking direction and geometry. */
+/** Runtime slice. Source model is src/real/signals/schema.ts. widthM is travel-direction length. */
 export type Crossing = {
   id: string;
   name: string;
@@ -42,6 +68,12 @@ export type Forecast = {
   totalSec: number | null;
   crossings: { id: string; arrivalMs: number | null; waitSec: number | null }[];
 };
+export type WalkingEmptyReason =
+  | "none"
+  | "walkable"
+  | "stairs"
+  | "overpass"
+  | "detour";
 export function meters(a: Coord, b: Coord): number {
   const r = Math.PI / 180,
     dlat = (b[1] - a[1]) * r,
@@ -55,6 +87,94 @@ export function meters(a: Coord, b: Coord): number {
 }
 export function pathLength(points: Coord[]): number {
   return points.slice(1).reduce((s, p, i) => s + meters(points[i], p), 0);
+}
+/** Closest point on segment AB in a local tangent plane; meters stay WGS84. */
+export function closestOnSegment(
+  point: Coord,
+  a: Coord,
+  b: Coord,
+): { coord: Coord; t: number; distM: number } {
+  const scale = Math.cos((a[1] * Math.PI) / 180);
+  const bx = (b[0] - a[0]) * scale,
+    by = b[1] - a[1],
+    px = (point[0] - a[0]) * scale,
+    py = point[1] - a[1];
+  const len2 = bx * bx + by * by;
+  const t = len2 <= 0 ? 0 : Math.max(0, Math.min(1, (px * bx + py * by) / len2));
+  const coord: Coord = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  return { coord, t, distM: meters(point, coord) };
+}
+export function maxOffLineM(points: Coord[], start: Coord, end: Coord): number {
+  if (points.length < 2) return 0;
+  return samplePath(points, 40).reduce(
+    (m, p) => Math.max(m, closestOnSegment(p, start, end).distM),
+    0,
+  );
+}
+export function progressOnRoute(path: Coord[], here: Coord) {
+  const totalM = pathLength(path);
+  if (path.length < 2)
+    return { traveledM: 0, remainM: 0, offRouteM: 0, totalM };
+  let best = { dist: Infinity, i: 0, t: 0 };
+  for (let i = 0; i < path.length - 1; i++) {
+    const hit = closestOnSegment(here, path[i], path[i + 1]);
+    if (hit.distM < best.dist) best = { dist: hit.distM, i: i, t: hit.t };
+  }
+  let traveledM = 0;
+  for (let i = 0; i < best.i; i++) traveledM += meters(path[i], path[i + 1]);
+  traveledM += meters(path[best.i], path[best.i + 1]) * best.t;
+  return {
+    traveledM,
+    remainM: Math.max(0, totalM - traveledM),
+    offRouteM: best.dist,
+    totalM,
+  };
+}
+export function withGeometry(route: Route): Route {
+  const start = route.coordinates[0],
+    end = route.coordinates.at(-1);
+  if (!start || !end)
+    return {
+      ...route,
+      straightM: 0,
+      extraM: 0,
+      maxOffLineM: 0,
+      nearbyPois: route.nearbyPois ?? [],
+    };
+  const straightM = meters(start, end);
+  return {
+    ...route,
+    straightM,
+    extraM: Math.max(0, route.distanceM - straightM),
+    maxOffLineM: maxOffLineM(route.coordinates, start, end),
+    nearbyPois: route.nearbyPois ?? [],
+  };
+}
+export function poisFromInstructions(route: Route): NearbyPoi[] {
+  return route.instructions
+    .filter((step) => /횡단|신호/.test(step.text))
+    .map((step) => {
+      const at = progressOnRoute(route.coordinates, step.coord);
+      return {
+        id: `instr:${step.coord.map((n) => n.toFixed(5)).join(",")}`,
+        name: step.text.slice(0, 80),
+        coord: step.coord,
+        atM: at.traveledM,
+        offPathM: at.offRouteM,
+        source: "tmap-instruction" as const,
+      };
+    })
+    .filter((p) => p.offPathM <= 60);
+}
+export function nextPoi(
+  pois: NearbyPoi[] | undefined,
+  traveledM: number,
+): NearbyPoi | null {
+  return (
+    [...(pois ?? [])]
+      .sort((a, b) => a.atM - b.atM)
+      .find((p) => p.atM > traveledM + 8) ?? null
+  );
 }
 export function validCoord(value: unknown): value is Coord {
   return (
@@ -128,26 +248,73 @@ export function routeKey(points: Coord[]): string {
     .map((p) => p.map((n) => n.toFixed(5)).join(","))
     .join(";");
 }
-export function rankRoutes(
-  routes: Route[],
-  detourRatio = 0.1,
-  maxExtraM = 300,
-): Route[] {
-  if (!routes.length) return [];
-  const shortest = Math.min(...routes.map((r) => r.distanceM));
-  const eligible = routes.filter(
-    (r) =>
-      r.distanceM <= shortest + Math.min(shortest * detourRatio, maxExtraM),
+export function isWalkableRoute(route: Route): boolean {
+  return (
+    route.coordinates.length >= 2 &&
+    route.coordinates.every(validCoord) &&
+    Number.isFinite(route.distanceM) &&
+    route.distanceM > 0
   );
-  const unique = [
-    ...new Map(eligible.map((r) => [routeKey(r.coordinates), r])).values(),
-  ];
-  return unique.sort(
+}
+
+function sortWalkingBaseline(routes: Route[]): Route[] {
+  return [...routes].sort(
     (a, b) =>
       a.zigzags - b.zigzags ||
       a.sharpTurns - b.sharpTurns ||
+      (a.maxOffLineM ?? 0) - (b.maxOffLineM ?? 0) ||
       a.distanceM - b.distanceM,
   );
+}
+
+export function rankRoutes(
+  routes: Route[],
+  detourRatio = TRIAL_ROUTING_POLICY.detourRatio,
+  maxExtraM = TRIAL_ROUTING_POLICY.detourMaxM,
+): Route[] {
+  if (!routes.length) return [];
+  const unique = [
+    ...new Map(routes.map((r) => [routeKey(r.coordinates), r])).values(),
+  ];
+  const shortest = Math.min(...unique.map((r) => r.distanceM));
+  const cap = allowedExtraMeters(shortest, {
+    detourRatio,
+    detourMaxM: maxExtraM,
+  });
+  return sortWalkingBaseline(
+    unique.filter((r) => r.distanceM <= shortest + cap),
+  );
+}
+
+/**
+ * Walkable → stairs/overpass/alley → dedupe → extra-distance cap →
+ * walking baseline. Does not use provider payload order as the baseline.
+ */
+export function applyWalkingPolicy(
+  routes: Route[],
+  policy: RealRoutingPolicy = TRIAL_ROUTING_POLICY,
+): { routes: Route[]; emptyReason: WalkingEmptyReason } {
+  const walkable = routes.filter(isWalkableRoute).map(withGeometry);
+  if (!walkable.length) return { routes: [], emptyReason: "walkable" };
+
+  let next = walkable;
+  if (policy.avoidStairs) {
+    next = next.filter((r) => r.option === "30");
+    if (!next.length) return { routes: [], emptyReason: "stairs" };
+  }
+  if (policy.avoidOverpass) {
+    next = next.filter((r) => !r.hasOverpass);
+    if (!next.length) return { routes: [], emptyReason: "overpass" };
+  }
+  if (policy.avoidAlley) {
+    const wide = next.filter((r) => r.option === "4" || !r.hasAlley);
+    if (wide.length) next = wide;
+  }
+
+  next = rankRoutes(next, policy.detourRatio, policy.detourMaxM);
+  if (!next.length) return { routes: [], emptyReason: "detour" };
+  next = preferFewerCrossings(next, policy);
+  return { routes: next, emptyReason: "none" };
 }
 /** Unknown coverage is never converted to zero stops. Earlier waiting shifts every later ETA. */
 export function forecast(
@@ -190,8 +357,8 @@ export function forecast(
       p.clearEndSec > p.cycleSec ||
       p.uncertaintySec < 0 ||
       p.uncertaintySec > 3 ||
-      nowMs - p.verifiedAtMs > 60000 ||
-      p.verifiedAtMs > nowMs + 1000 ||
+      nowMs - p.verifiedAtMs > ENGINE_PLAN_APPLIED_MAX_AGE_MS ||
+      p.verifiedAtMs > nowMs + ENGINE_PLAN_CLOCK_SKEW_MS ||
       arrival < p.validFromMs ||
       arrival > p.validToMs
     ) {
@@ -237,22 +404,24 @@ export function forecast(
 }
 export function preferSignalRoute(
   candidates: { route: Route; forecast: Forecast }[],
+  policy: RealRoutingPolicy = TRIAL_ROUTING_POLICY,
 ): (typeof candidates)[number] | null {
   const base = candidates[0];
   if (
     !base ||
     base.forecast.maxWaitSec === null ||
-    base.forecast.maxWaitSec < 15
+    base.forecast.maxWaitSec < policy.waitThresholdSec
   )
     return base ?? null;
+  const extra = allowedExtraMeters(base.route.distanceM, policy);
   const valid = candidates.filter(
     (c) =>
       c.forecast.waitSec !== null &&
       c.forecast.stops !== null &&
+      c.forecast.maxWaitSec !== null &&
       c.route.zigzags <= base.route.zigzags &&
-      c.route.sharpTurns <= base.route.sharpTurns + 2 &&
-      c.route.distanceM <=
-        base.route.distanceM + Math.min(base.route.distanceM * 0.1, 300),
+      c.route.sharpTurns <= base.route.sharpTurns + policy.extraSharpTurns &&
+      c.route.distanceM <= base.route.distanceM + extra,
   );
   return (
     valid.sort(
@@ -263,10 +432,68 @@ export function preferSignalRoute(
     )[0] ?? base
   );
 }
+export function crossingCount(route: Route): number {
+  return route.nearbyPois?.length ?? 0;
+}
+/** Prefer fewer TMAP/Kakao 횡단 안내 points. Does not invent wait seconds. */
+export function preferFewerCrossings(
+  routes: Route[],
+  policy: RealRoutingPolicy = TRIAL_ROUTING_POLICY,
+): Route[] {
+  if (routes.length < 2) return routes;
+  const base = routes[0];
+  const extra = allowedExtraMeters(base.distanceM, policy);
+  const pick =
+    [...routes]
+      .filter(
+        (r) =>
+          r.zigzags <= base.zigzags &&
+          r.sharpTurns <= base.sharpTurns + policy.extraSharpTurns &&
+          r.distanceM <= base.distanceM + extra,
+      )
+      .sort(
+        (a, b) =>
+          crossingCount(a) - crossingCount(b) || a.distanceM - b.distanceM,
+      )[0] ?? base;
+  if (pick.id === base.id) return routes;
+  return [pick, ...routes.filter((r) => r.id !== pick.id)];
+}
+export function scanFacilities(
+  features: { properties?: { facilityType?: unknown; description?: unknown; facilityName?: unknown } }[],
+): { hasStairs: boolean; hasOverpass: boolean; hasAlley: boolean } {
+  const flags = { hasStairs: false, hasOverpass: false, hasAlley: false };
+  for (const f of features) {
+    const type = String(f.properties?.facilityType ?? "");
+    const text = `${f.properties?.description ?? ""} ${f.properties?.facilityName ?? ""}`;
+    if (type === "15" || /계단/.test(text)) flags.hasStairs = true;
+    if (
+      type === "1" ||
+      type === "3" ||
+      type === "12" ||
+      /육교|고가|지하보도|지하차도/.test(text)
+    )
+      flags.hasOverpass = true;
+    if (/골목|이면도로|좁은 길/.test(text)) flags.hasAlley = true;
+  }
+  return flags;
+}
+export function bearingDeg(a: Coord, b: Coord): number {
+  const φ1 = (a[1] * Math.PI) / 180,
+    φ2 = (b[1] * Math.PI) / 180,
+    Δ = ((b[0] - a[0]) * Math.PI) / 180;
+  const y = Math.sin(Δ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δ);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+export function cueEtaSec(remainM: number, pace: number): number | null {
+  if (!validPace(pace) || !(remainM > 0)) return null;
+  return (remainM / 1000) * pace;
+}
 export type Fix = {
   coord: Coord;
   at: number;
   accuracy: number;
+  heading?: number;
   segmentStart?: boolean;
 };
 export type Track = {

@@ -1,3 +1,4 @@
+import { persistLoginEnabled } from "./guidance.ts";
 import { createClient } from "@supabase/supabase-js";
 import type { Profile, RunRecord } from "./storage.ts";
 import { validCoord, type Route } from "./core.ts";
@@ -9,10 +10,17 @@ export const recoveryRequested =
 function makeCloud() {
   if (!url || !anon) return null;
   try {
+    const persist = persistLoginEnabled();
     return createClient(url, anon, {
       auth: {
         detectSessionInUrl: true,
         persistSession: true,
+        storage:
+          typeof window === "undefined"
+            ? undefined
+            : persist
+              ? window.localStorage
+              : window.sessionStorage,
         flowType: "pkce",
       },
     });

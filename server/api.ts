@@ -1,16 +1,37 @@
 import {
-  evaluateSignalCandidates,
+  planReturnedRoutes,
   unavailableSignals,
   type RouteSignalProvider,
 } from "./signal-service.ts";
 import {
   continuity,
+  poisFromInstructions,
+  progressOnRoute,
+  samplePath,
+  scanFacilities,
   validCoord,
   validPace,
+  withGeometry,
   type Coord,
+  type NearbyPoi,
   type Place,
   type Route,
 } from "../src/real/core.ts";
+import { parseRoutingPolicy } from "../src/real/routing-policy.ts";
+import {
+  TDATA_CALLABLE,
+  TDATA_FILE_ONLY,
+  tdataUrl,
+  type TdataCallId,
+} from "../src/real/signals/tdata.ts";
+import {
+  parseUticBody,
+  UTIC_OPS,
+  uticQuery,
+  uticUrl,
+  type UticOpId,
+} from "../src/real/signals/utic.ts";
+import { PROVIDER_CONTRACTS } from "../src/real/signals/contracts.ts";
 type Env = Record<string, string | undefined>;
 type Fetch = typeof fetch;
 class ApiError extends Error {
@@ -20,6 +41,28 @@ class ApiError extends Error {
     this.status = status;
   }
 }
+/** Instance-local only. Status GET does not probe providers. */
+const seoulReach = { okAt: 0, failAt: 0 };
+function noteSeoulReachable(ok: boolean) {
+  const at = Date.now();
+  if (ok) seoulReach.okAt = at;
+  else seoulReach.failAt = at;
+}
+function seoulReachable(): boolean | null {
+  if (!seoulReach.okAt && !seoulReach.failAt) return null;
+  return seoulReach.okAt > seoulReach.failAt;
+}
+export function resetApiRuntimeForTests() {
+  seoulReach.okAt = 0;
+  seoulReach.failAt = 0;
+}
+const WALKING_EMPTY: Record<string, string> = {
+  walkable: "조건에 맞는 보행 경로가 없어요.",
+  stairs:
+    "계단 제외 경로를 확인하지 못했어요. 설정을 변경하거나 다시 시도해 주세요.",
+  overpass: "육교·고가 구간이 없는 보행 후보를 확인하지 못했어요.",
+  detour: "허용 우회 범위 안의 보행 후보가 없어요.",
+};
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
     status,
@@ -101,7 +144,7 @@ export function parseTmap(data: any, option: string): Route {
   )?.properties.totalDistance;
   if (coordinates.length < 2 || !Number.isFinite(distanceM) || distanceM <= 0)
     throw new ApiError(502, "보행 경로의 거리 또는 좌표가 없습니다.");
-  return {
+  const route: Route = {
     id: `tmap-${option}`,
     name:
       option === "4"
@@ -114,7 +157,71 @@ export function parseTmap(data: any, option: string): Route {
     option,
     instructions,
     ...continuity(coordinates),
+    ...scanFacilities(data.features),
   };
+  return withGeometry({
+    ...route,
+    nearbyPois: poisFromInstructions(route),
+  });
+}
+function kakaoHeaders(env: Env) {
+  return { Authorization: `KakaoAK ${key(env, "KAKAO_REST_API_KEY")}` };
+}
+function mergePois(a: NearbyPoi[], b: NearbyPoi[]): NearbyPoi[] {
+  const seen = new Set<string>();
+  const out: NearbyPoi[] = [];
+  for (const item of [...a, ...b]) {
+    const k = item.coord.map((n) => n.toFixed(5)).join(",");
+    if (seen.has(k) || seen.has(item.id)) continue;
+    seen.add(k);
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out.sort((x, y) => x.atM - y.atM).slice(0, 16);
+}
+export async function kakaoKeywordPois(
+  path: Coord[],
+  env: Env,
+  fetcher: Fetch,
+): Promise<NearbyPoi[]> {
+  if (!env.KAKAO_REST_API_KEY?.trim() || path.length < 2) return [];
+  const samples = samplePath(path, 250).slice(1, -1).slice(0, 5);
+  const points = samples.length ? samples : [path[Math.floor(path.length / 2)]];
+  const headers = kakaoHeaders(env);
+  const found = await Promise.all(
+    points.map(async (coord) => {
+      const query = new URLSearchParams({
+        query: "횡단보도",
+        x: String(coord[0]),
+        y: String(coord[1]),
+        radius: "80",
+        size: "5",
+        sort: "distance",
+      });
+      const data = await upstream(
+        `https://dapi.kakao.com/v2/local/search/keyword.json?${query}`,
+        { headers },
+        fetcher,
+      );
+      if (!Array.isArray(data.documents)) return [];
+      return data.documents.flatMap((p: any) => {
+        const at: Coord = [Number(p.x), Number(p.y)];
+        if (!validCoord(at) || typeof p.place_name !== "string") return [];
+        const along = progressOnRoute(path, at);
+        if (along.offRouteM > 40) return [];
+        const poi: NearbyPoi = {
+          id: String(p.id ?? `${at[0]},${at[1]}`),
+          name: p.place_name.slice(0, 80),
+          coord: at,
+          atM: along.traveledM,
+          offPathM: along.offRouteM,
+          source: "kakao-keyword",
+        };
+        return [poi];
+      });
+    }),
+  );
+  return mergePois([], found.flat());
 }
 export async function handleApi(
   request: Request,
@@ -125,52 +232,149 @@ export async function handleApi(
   try {
     const url = new URL(request.url),
       path = url.pathname.replace(/^\/\.netlify\/functions\/api/, "/api");
-    if (request.method === "GET" && path === "/api/status")
+    if (request.method === "GET" && path === "/api/status") {
+      const seoulConfigured = !!env.SEOUL_TDATA_API_KEY;
+      const mappingReady = false;
+      const predictionByRegion = {
+        서울: false,
+        인천: false,
+        대구: false,
+        성남: false,
+      };
+      const predictionReady = false;
       return json({
         places: !!env.KAKAO_REST_API_KEY,
         routes: !!env.TMAP_APP_KEY,
-        seoulSignals: !!env.SEOUL_TDATA_API_KEY,
-        signalPrediction: false,
+        seoulSignals: seoulConfigured,
+        reverseGeocode: !!env.KAKAO_REST_API_KEY,
+        signalPrediction: predictionReady,
         signalDetail:
-          "실제 횡단 방향 매핑·운영계획 검증 전입니다. 신호 대기는 예측하지 않습니다.",
+          "실제 횡단 방향 매핑·운영계획 검증 전입니다. 신호 대기는 예측하지 않습니다. 키 설정과 예측 가능은 다릅니다.",
+        signal: {
+          configured: {
+            seoul: seoulConfigured,
+            utic: !!env.UTIC_SERVICE_KEY,
+            national: !!env.DATA_GO_KR_SERVICE_KEY,
+          },
+          reachable: {
+            seoul: seoulReachable(),
+            utic: null,
+            national: null,
+          },
+          mappingReady,
+          predictionReady,
+          predictionByRegion,
+        },
         utic: {
           configured: !!env.UTIC_SERVICE_KEY,
           ready: false,
-          detail: "승인된 서비스 명세와 응답 샘플 연결 필요",
+          detail:
+            "PlanCrossRoadInfoService·SigMap 명세로 조회 가능. 주기·옵셋은 파싱하고 대기 예측에는 쓰지 않음.",
         },
         national: {
           configured: !!env.DATA_GO_KR_SERVICE_KEY,
           ready: false,
-          detail: "개별 데이터셋 엔드포인트·응답 검증 필요",
+          detail:
+            "행안부 베이스 URL은 B551982/rti. 오퍼레이션 경로가 없어 호출하지 않음.",
         },
       });
+    }
     // No arbitrary upstream URLs, key parameters, or server error bodies are exposed.
     if (request.method === "GET" && path === "/api/places") {
       const q = url.searchParams.get("q")?.trim();
       if (!q || q.length > 100)
         throw new ApiError(400, "검색어는 1~100자로 입력하세요.");
-      const query = new URLSearchParams({ query: q, size: "10" });
+      const x = Number(url.searchParams.get("x")),
+        y = Number(url.searchParams.get("y"));
+      const bias = validCoord([x, y]) ? ([x, y] as Coord) : null;
+      const headers = kakaoHeaders(env);
+      const keywordQuery = new URLSearchParams({ query: q, size: "10" });
+      if (bias) {
+        keywordQuery.set("x", String(bias[0]));
+        keywordQuery.set("y", String(bias[1]));
+        keywordQuery.set("sort", "distance");
+      }
+      const [keyword, address] = await Promise.allSettled([
+        upstream(
+          `https://dapi.kakao.com/v2/local/search/keyword.json?${keywordQuery}`,
+          { headers },
+          fetcher,
+        ),
+        upstream(
+          `https://dapi.kakao.com/v2/local/search/address.json?${new URLSearchParams({ query: q })}`,
+          { headers },
+          fetcher,
+        ),
+      ]);
+      if (keyword.status === "rejected" && address.status === "rejected")
+        throw keyword.reason;
+      const fromKeyword =
+        keyword.status === "fulfilled" && Array.isArray(keyword.value.documents)
+          ? keyword.value.documents.map((p: any) => ({
+              id: String(p.id ?? ""),
+              name: p.place_name,
+              address: p.road_address_name || p.address_name,
+              coord: [Number(p.x), Number(p.y)] as Coord,
+            }))
+          : [];
+      const fromAddress =
+        address.status === "fulfilled" && Array.isArray(address.value.documents)
+          ? address.value.documents.map((p: any, i: number) => ({
+              id: `addr:${p.x},${p.y},${i}`,
+              name: p.address_name,
+              address:
+                p.road_address?.address_name ||
+                p.address?.address_name ||
+                p.address_name,
+              coord: [Number(p.x), Number(p.y)] as Coord,
+            }))
+          : [];
+      const seen = new Set<string>();
+      const places = [...fromKeyword, ...fromAddress].flatMap((p) => {
+        if (!place(p) || seen.has(p.id)) return [];
+        const k = p.coord.map((n) => n.toFixed(5)).join(",");
+        if (seen.has(k)) return [];
+        seen.add(p.id);
+        seen.add(k);
+        return [p];
+      });
+      return json({ places });
+    }
+    if (request.method === "GET" && path === "/api/places/reverse") {
+      const coord: Coord = [
+        Number(url.searchParams.get("x")),
+        Number(url.searchParams.get("y")),
+      ];
+      if (!validCoord(coord))
+        throw new ApiError(400, "지도 좌표가 올바르지 않습니다.");
+      const query = new URLSearchParams({
+        x: String(coord[0]),
+        y: String(coord[1]),
+        input_coord: "WGS84",
+      });
       const data = await upstream(
-        `https://dapi.kakao.com/v2/local/search/keyword.json?${query}`,
-        {
-          headers: {
-            Authorization: `KakaoAK ${key(env, "KAKAO_REST_API_KEY")}`,
-          },
-        },
+        `https://dapi.kakao.com/v2/local/geo/coord2address.json?${query}`,
+        { headers: kakaoHeaders(env) },
         fetcher,
       );
-      if (!Array.isArray(data.documents))
-        throw new ApiError(502, "장소 검색 응답을 확인할 수 없습니다.");
-      return json({
-        places: data.documents
-          .map((p: any) => ({
-            id: p.id,
-            name: p.place_name,
-            address: p.road_address_name || p.address_name,
-            coord: [Number(p.x), Number(p.y)],
-          }))
-          .filter((p: Place) => place(p)),
-      });
+      const doc = Array.isArray(data.documents) ? data.documents[0] : null;
+      const road = doc?.road_address,
+        lot = doc?.address;
+      const name =
+        (typeof road?.building_name === "string" && road.building_name) ||
+        (typeof road?.address_name === "string" && road.address_name) ||
+        (typeof lot?.address_name === "string" && lot.address_name);
+      if (!name)
+        throw new ApiError(404, "이 좌표의 주소를 찾지 못했습니다.");
+      const found = {
+        id: `rev:${coord.join(",")}`,
+        name: String(name).slice(0, 200),
+        address: road?.address_name || lot?.address_name,
+        coord,
+      };
+      if (!place(found))
+        throw new ApiError(502, "주소 응답을 확인할 수 없습니다.");
+      return json({ place: found });
     }
     if (request.method === "POST" && path === "/api/routes") {
       const raw = await request.text();
@@ -193,6 +397,7 @@ export async function handleApi(
         !body.waypoints.every(place)
       )
         throw new ApiError(400, "경유지는 최대 5곳입니다.");
+      const policy = parseRoutingPolicy(body.policy);
       const appKey = key(env, "TMAP_APP_KEY");
       const results = await Promise.allSettled(
         ["4", "30", "0"].map(async (option) => {
@@ -233,19 +438,43 @@ export async function handleApi(
         r.status === "fulfilled" ? [r.value] : [],
       );
       if (!routes.length) throw (results[0] as PromiseRejectedResult).reason;
+      const tmapOk = routes.length;
+      const withPois = await Promise.all(
+        routes.map(async (route) => {
+          try {
+            const extra = await kakaoKeywordPois(
+              route.coordinates,
+              env,
+              fetcher,
+            );
+            return {
+              ...route,
+              nearbyPois: mergePois(route.nearbyPois ?? [], extra),
+            };
+          } catch {
+            return route;
+          }
+        }),
+      );
       const departureMs = Date.now();
-      const assessment = await evaluateSignalCandidates(
-        routes,
+      const planned = await planReturnedRoutes(
+        withPois,
         body.pace,
         departureMs,
+        policy,
         signalProvider,
       );
+      if (!planned.assessment || !planned.routes.length)
+        throw new ApiError(
+          404,
+          WALKING_EMPTY[planned.emptyReason] ?? WALKING_EMPTY.walkable,
+        );
       return json({
-        routes,
-        partial: routes.length < 3,
-        signalCoverage: "unknown",
+        routes: planned.routes,
+        partial: tmapOk < 3,
         departureMs,
-        ...assessment,
+        policyApplied: policy,
+        ...planned.assessment,
       });
     }
     if (request.method === "GET" && path === "/api/signals/seoul") {
@@ -253,36 +482,100 @@ export async function handleApi(
       if (!itstId || !/^\d{1,10}$/.test(itstId))
         throw new ApiError(400, "유효한 교차로 ID가 필요합니다.");
       const service = url.searchParams.get("service") ?? "phase";
-      const services: Record<string, string> = {
-        phase: "v2xSignalPhaseInformation",
-        timing: "v2xSignalPhaseTimingInformation",
-        crossroad: "v2xCrossroadMapInformation",
-        connection: "v2xSignalConnectionMapInformation",
-        lane: "v2xLaneMapInformation",
-      };
-      if (!services[service])
+      if (service === "crossroad")
+        throw new ApiError(
+          503,
+          `교차로 MAP은 Open API가 아니라 파일입니다. ${TDATA_FILE_ONLY.crossroad.catalogUrl}`,
+        );
+      if (!(service in TDATA_CALLABLE))
         throw new ApiError(400, "지원하지 않는 신호 서비스입니다.");
+      const spec = TDATA_CALLABLE[service as TdataCallId];
       const query = new URLSearchParams({
         apiKey: key(env, "SEOUL_TDATA_API_KEY"),
         type: "json",
         pageNo: "1",
         numOfRows: "10",
-        itstId,
       });
-      const data = await upstream(
-        `https://t-data.seoul.go.kr/apig/apiman-gateway/tapi/${services[service]}/1.0?${query}`,
-        {},
-        fetcher,
+      if (spec.itstIdListed) query.set("itstId", itstId);
+      try {
+        const data = await upstream(
+          tdataUrl(service as TdataCallId, query),
+          {},
+          fetcher,
+        );
+        noteSeoulReachable(true);
+        return json({
+          source: "서울특별시 T-DATA",
+          service,
+          fetchedAt: Date.now(),
+          capability: "current-state-only",
+          predictionReady: false,
+          data,
+        });
+      } catch (error) {
+        noteSeoulReachable(false);
+        throw error;
+      }
+    }
+    if (request.method === "GET" && path === "/api/signals/utic") {
+      const op = url.searchParams.get("op") as UticOpId | null;
+      const queryOps = (Object.keys(UTIC_OPS) as UticOpId[]).filter(
+        (id) => UTIC_OPS[id].kind === "query",
       );
+      if (!op)
+        throw new ApiError(
+          400,
+          `op 가 필요합니다. ${queryOps.join(", ")}`,
+        );
+      if (!(op in UTIC_OPS))
+        throw new ApiError(400, "지원하지 않는 UTIC 오퍼레이션입니다.");
+      if (UTIC_OPS[op].kind === "file")
+        throw new ApiError(
+          503,
+          "교차로 기반정보는 파일 다운로드입니다. JSON 프록시로 받지 않습니다.",
+        );
+      const contractId = op === "getSigMapCRInfo" ? "utic-sigmap" : "utic-plan";
+      if (!PROVIDER_CONTRACTS.find((c) => c.id === contractId)?.mayCall)
+        throw new ApiError(503, "이 UTIC 오퍼레이션은 호출 계약이 없습니다.");
+      const srchCTId = url.searchParams.get("srchCTId")?.trim() ?? "";
+      const srchCRNm = url.searchParams.get("srchCRNm")?.trim() ?? "";
+      let query: URLSearchParams;
+      try {
+        query = uticQuery(op, {
+          serviceKey: key(env, "UTIC_SERVICE_KEY"),
+          srchCTId,
+          srchCRNm: srchCRNm || undefined,
+        });
+      } catch {
+        throw new ApiError(400, "지역코드 srchCTId 가 코드표에 없습니다.");
+      }
+      const data = await upstream(uticUrl(op, query), {}, fetcher);
+      const kind =
+        op === "getPlanCROPInfo"
+          ? "crop"
+          : op === "getPlanCRWDInfo"
+            ? "weekday"
+            : op === "getPlanCRHDInfo"
+              ? "holiday"
+              : op === "getPlanCRRSInfo"
+                ? "reserve"
+                : "sigmap";
       return json({
-        source: "서울특별시 T-DATA",
-        service,
+        source: "UTIC tsihub",
+        op,
         fetchedAt: Date.now(),
-        capability: "current-state-only",
+        capability: "documented-plan-only",
         predictionReady: false,
+        engineReady: false,
+        parsed: parseUticBody(kind, data),
         data,
       });
     }
+    if (request.method === "GET" && path === "/api/signals/national")
+      throw new ApiError(
+        503,
+        "공공데이터 신호등 데이터셋 엔드포인트를 검증한 뒤에만 연결합니다.",
+      );
     return json({ error: "지원하지 않는 API 요청입니다." }, 404);
   } catch (error) {
     return json(

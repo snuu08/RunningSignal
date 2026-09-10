@@ -1,0 +1,33 @@
+{
+  "synthetic": false,
+  "source": "field",
+  "crs": "EPSG:4326",
+  "geometryType": "crossing-endpoints",
+  "columns": {
+    "source": "source",
+    "sourcePlanId": "sourcePlanId",
+    "version": "version",
+    "sourceIntersectionId": "sourceIntersectionId",
+    "pedestrianSignalGroupId": "pedestrianSignalGroupId",
+    "cycleSec": "cycleSec",
+    "epochMs": "epochMs",
+    "entryStartSec": "entryStartSec",
+    "entryEndSec": "entryEndSec",
+    "flashStartSec": "flashStartSec",
+    "clearEndSec": "clearEndSec",
+    "validFromMs": "validFromMs",
+    "validToMs": "validToMs",
+    "uncertaintySec": "uncertaintySec",
+    "operationMode": "operationMode",
+    "startHm": "startHm",
+    "endHm": "endHm",
+    "weekdays": "weekdays",
+    "specialDayIds": "specialDayIds",
+    "planVerifiedAt": "planVerifiedAt",
+    "observedAt": "observedAt",
+    "fetchedAt": "fetchedAt",
+    "currentPlanConfirmedAt": "currentPlanConfirmedAt",
+    "synthetic": "synthetic",
+    "stage": "stage"
+  }
+}

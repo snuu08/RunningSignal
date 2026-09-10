@@ -7,7 +7,8 @@
 - 계정 DB/RLS: [supabase/schema.sql](supabase/schema.sql)
 - `npm ci` → `.env.example`을 `.env.local`로 복사 → 키 설정 → `npm run dev`
 - `/real/home` 또는 `VITE_APP_MODE=real`로 실제 모드 진입. 키가 없어도 기기 GPS 자유 러닝/기기 저장은 가능합니다.
-- **실제 신호 예측은 아직 활성화하지 않았습니다.** 교차로 방향 매핑·운영계획·응답 신선도를 검증해야 합니다. 키 설정과 서비스 검증은 별개입니다.
+- **실제 신호 예측은 꺼 둔 채** 러닝 경로·GPS 기록 앱으로 배포할 수 있게 맞춰 두었습니다. Netlify 빌드는 `VITE_APP_MODE=real`입니다.
+- 횡단 스키마·현장 CSV·T-DATA 캡처·ETL: [data/signals/README.md](data/signals/README.md)
 - 상업 배포·야외 검증·앱스토어 배포는 완료되지 않았습니다. 아래의 기존 설명은 **데모 모드** 설명입니다.
 
 ---

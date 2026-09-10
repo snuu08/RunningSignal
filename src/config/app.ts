@@ -13,7 +13,11 @@ export const BALANCED_STOP_VALUE_M = 120;
 /** Extra meters one saved wait-second is worth in the balanced style. */
 export const BALANCED_WAIT_VALUE_M_PER_SEC = 4;
 
-/** Initial demo detour presets. Tunable product values, not user-confirmed science. */
+/**
+ * Trial detour presets shared by demo engine and real TMAP ranking.
+ * Not a field-validated product optimum. Real mode must use the same
+ * ratio+maxM pair (5%→150m, 10%→300m, 15%→500m) on server and screen.
+ */
 export const DETOUR_PRESETS = {
   tight: { ratio: 0.05, maxM: 150 },
   normal: { ratio: 0.1, maxM: 300 },
