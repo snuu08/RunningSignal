@@ -51,7 +51,7 @@ async function main() {
     await page
       .getByRole("button", { name: "계정 없이 기기에 기록하기" })
       .or(page.getByPlaceholder("2~20자"))
-      .or(page.getByRole("heading", { name: /오늘 어디로/ }))
+      .or(page.getByRole("heading", { name: /오늘의 러닝/ }))
       .first()
       .waitFor({ timeout: 20000 });
 
@@ -78,11 +78,11 @@ async function main() {
       rec("onboarding", true, "온보딩 생략");
     }
 
-    await page.getByRole("heading", { name: /오늘 어디로/ }).waitFor();
+    await page.getByRole("heading", { name: /오늘의 러닝/ }).waitFor();
     await page.getByRole("button", { name: "현재 위치" }).click();
     let originVal = "";
     for (let i = 0; i < 24; i++) {
-      originVal = await page.getByRole("textbox", { name: "출발지" }).inputValue();
+      originVal = await page.getByRole("combobox", { name: "출발지" }).inputValue();
       if (originVal) break;
       await page.waitForTimeout(250);
     }
@@ -90,15 +90,15 @@ async function main() {
       simulation: true,
     });
 
-    await page.getByRole("textbox", { name: "목적지" }).fill("덕수궁");
+    await page.getByRole("combobox", { name: "목적지" }).fill("덕수궁");
     await page.locator(".place-results button").first().waitFor({ timeout: 15000 });
     const placeName = await page.locator(".place-results button strong").first().innerText();
     await page.locator(".place-results button").first().click();
     rec("place-search", !!placeName, `목적지=${placeName}`);
 
-    await page.getByRole("button", { name: "루트 찾기" }).click();
+    await page.getByRole("button", { name: "러닝 경로 찾기" }).click();
     await page.waitForURL(/\/real\/recommend/, { timeout: 40000 });
-    await page.getByRole("heading", { name: /이 루트로/ }).waitFor({ timeout: 15000 });
+    await page.getByRole("heading", { name: /오늘의 경로가 준비됐어요/ }).waitFor({ timeout: 15000 });
     rec(
       "tmap-routes",
       true,
@@ -108,7 +108,7 @@ async function main() {
     const recText = (await page.locator("main").innerText()).replace(/\s+/g, " ");
     rec(
       "recommend-copy",
-      /이 루트로/.test(recText) && /보행 km/.test(recText),
+      /오늘의 경로가 준비됐어요/.test(recText) && /보행 km/.test(recText),
       recText.slice(0, 280),
     );
     rec(
@@ -121,7 +121,7 @@ async function main() {
         : "예측 문구 확인 실패",
     );
 
-    await page.getByRole("button", { name: "예, 이 루트로 갈게요" }).click();
+    await page.getByRole("button", { name: "이 경로로 준비하기" }).click();
     await page.waitForURL(/\/real\/ready/, { timeout: 15000 });
     rec("ready", page.url().includes("ready"), `URL=${page.url()}`);
 

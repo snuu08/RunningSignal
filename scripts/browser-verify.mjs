@@ -41,7 +41,7 @@ async function main() {
     await page
       .getByRole("button", { name: "계정 없이 기기에 기록하기" })
       .or(page.getByPlaceholder("2~20자"))
-      .or(page.getByRole("heading", { name: /오늘 어디로/ }))
+      .or(page.getByRole("heading", { name: /오늘의 러닝/ }))
       .first()
       .waitFor({ timeout: 20000 });
     const bodyPreview = (await page.locator("body").innerText()).slice(0, 180);
@@ -76,11 +76,11 @@ async function main() {
     const paceText = await page.locator(".hero-number").innerText();
     rec("pace-calc", /5/.test(paceText), `계산 표시: ${paceText.replace(/\s+/g, " ")}`);
     await page.getByRole("button", { name: "선택한 칸에 저장" }).click();
-    await page.getByRole("heading", { name: /오늘 어디로/ }).waitFor();
+    await page.getByRole("heading", { name: /오늘의 러닝/ }).waitFor();
     await page.getByRole("button", { name: "현재 위치" }).click();
     let originVal = "";
     for (let i = 0; i < 20; i++) {
-      originVal = await page.getByRole("textbox", { name: "출발지" }).inputValue();
+      originVal = await page.getByRole("combobox", { name: "출발지" }).inputValue();
       if (originVal) break;
       await page.waitForTimeout(250);
     }
@@ -88,16 +88,16 @@ async function main() {
       simulation: true,
     });
 
-    await page.getByRole("textbox", { name: "목적지" }).fill("덕수궁");
+    await page.getByRole("combobox", { name: "목적지" }).fill("덕수궁");
     await page.locator(".place-results button").first().waitFor({ timeout: 15000 });
     const placeName = await page.locator(".place-results button strong").first().innerText();
     await page.locator(".place-results button").first().click();
     rec("place-search", !!placeName, `Kakao 검색 선택: ${placeName}`);
 
-    await page.getByRole("button", { name: "지도에서 출발지 선택" }).click();
-    rec("map-pick-mode", true, "지도에서 출발지 선택 모드");
+    await page.getByRole("button", { name: "출발점 선택" }).click();
+    rec("map-pick-mode", true, "출발점 선택 모드");
 
-    await page.getByRole("button", { name: "루트 찾기" }).click();
+    await page.getByRole("button", { name: "러닝 경로 찾기" }).click();
     try {
       await page.waitForURL(/\/real\/(recommend|home)/, { timeout: 30000 });
       const onRecommend = page.url().includes("recommend");
@@ -150,7 +150,7 @@ async function main() {
     }
 
     await page.getByRole("navigation", { name: "주 메뉴" }).getByRole("button", { name: "홈" }).click();
-    await page.getByRole("button", { name: "지도에서 출발지 선택" }).click();
+    await page.getByRole("button", { name: "출발점 선택" }).click();
     const homeMap = page.getByLabel("실제 보행 경로 지도");
     await homeMap.waitFor({ timeout: 10000 });
     const homeMapBox = await homeMap.boundingBox();
@@ -161,7 +161,7 @@ async function main() {
       `홈지도=${homeMapBox ? Math.round(homeMapBox.width) + "x" + Math.round(homeMapBox.height) : "없음"} 홈버튼 y=${homeNav.box?.y ?? "없음"}`,
     );
     await page.getByRole("button", { name: "자유 러닝", exact: true }).click();
-    await page.getByRole("button", { name: "경로 없이 자유 러닝 시작" }).click();
+    await page.getByRole("button", { name: "자유 러닝 시작" }).click();
     await page.getByRole("button", { name: "일시정지" }).waitFor({ timeout: 20000 });
     rec("free-run-start", true, "자유 러닝 시작(브라우저 위치 재정의 = GPS 시뮬레이션)", {
       simulation: true,
@@ -204,9 +204,9 @@ async function main() {
         { simulation: true },
       );
     } else {
-      await page.getByRole("navigation", { name: "주 메뉴" }).getByRole("button", { name: "나의 루트" }).click();
+      await page.getByRole("navigation", { name: "주 메뉴" }).getByRole("button", { name: "나의 기록" }).click();
       const saved = await page.getByText(/자유 러닝|검증러너/).count();
-      rec("history-detail", saved > 0, "저장 후 나의 루트에서 확인", { simulation: true });
+      rec("history-detail", saved > 0, "저장 후 나의 기록에서 확인", { simulation: true });
     }
 
     await page.goto(`${BASE}/real/auth`, { waitUntil: "domcontentloaded" });

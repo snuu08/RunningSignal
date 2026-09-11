@@ -17,7 +17,7 @@ try {
   await page
     .getByRole("button", { name: "계정 없이 기기에 기록하기" })
     .or(page.getByPlaceholder("2~20자"))
-    .or(page.getByRole("heading", { name: /오늘 어디로/ }))
+    .or(page.getByRole("heading", { name: /오늘의 러닝/ }))
     .first()
     .waitFor({ timeout: 20000 });
   const guest = page.getByRole("button", { name: "계정 없이 기기에 기록하기" });
@@ -33,19 +33,19 @@ try {
     }
     await page.getByRole("button", { name: "시작하기" }).click();
   }
-  await page.getByRole("heading", { name: /오늘 어디로/ }).waitFor();
+  await page.getByRole("heading", { name: /오늘의 러닝/ }).waitFor();
   await page.getByRole("button", { name: "현재 위치" }).click();
   for (let i = 0; i < 24; i++) {
-    if (await page.getByRole("textbox", { name: "출발지" }).inputValue()) break;
+    if (await page.getByRole("combobox", { name: "출발지" }).inputValue()) break;
     await page.waitForTimeout(250);
   }
-  await page.getByRole("textbox", { name: "목적지" }).fill("덕수궁");
+  await page.getByRole("combobox", { name: "목적지" }).fill("덕수궁");
   await page.locator(".place-results button").first().waitFor({ timeout: 15000 });
   await page.locator(".place-results button").first().click();
   await page.getByRole("checkbox", { name: "출발지로 돌아오기" }).check();
-  await page.getByRole("button", { name: "루트 찾기" }).click();
+  await page.getByRole("button", { name: "러닝 경로 찾기" }).click();
   await page.waitForURL(/\/real\/recommend/, { timeout: 40000 });
-  await page.getByRole("heading", { name: /이 루트로/ }).waitFor();
+  await page.getByRole("heading", { name: /오늘의 경로가 준비됐어요/ }).waitFor();
   const recText = (await page.locator("main").innerText()).replace(/\s+/g, " ");
   const loopName = /→ 출발지/.test(recText);
   const stairs = /계단 제외|보행 km/.test(recText);

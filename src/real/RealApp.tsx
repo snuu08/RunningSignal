@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
@@ -83,6 +83,7 @@ import {
   TRIAL_OFF_ROUTE,
 } from "./running.ts";
 import "./real.css";
+import { FlowIcon, type FlowIconName } from "./FlowIcon.tsx";
 import { RunnerLogo } from "../components/Logo.tsx";
 const regions = ["서울", "인천", "대구", "성남"];
 const emptyCoords: Coord[] = [];
@@ -127,7 +128,7 @@ function Thumbnail({ route }: { route: Route | null }) {
           )
           .join(" ")}
         fill="none"
-        stroke="#b4f6ce"
+        stroke="#e5f45c"
         strokeWidth="2"
       />
     </svg>
@@ -144,6 +145,8 @@ function PlaceInput({
   onChange: (p: Place | null) => void;
   near?: Coord | null;
 }) {
+  const listId = useId();
+  const [activeResult, setActiveResult] = useState(-1);
   const [query, setQuery] = useState(value?.name ?? ""),
     [items, setItems] = useState<Place[]>([]),
     [error, setError] = useState(""),
@@ -171,7 +174,9 @@ function PlaceInput({
         ctrl.signal,
       )
         .then((r) => {
+          if (ctrl.signal.aborted) return;
           setItems(r.places);
+          setActiveResult(-1);
           setError(
             r.places.length
               ? ""
@@ -196,7 +201,24 @@ function PlaceInput({
         {label}
         <input
           value={query}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={items.length > 0}
+          aria-controls={items.length ? listId : undefined}
+          aria-activedescendant={activeResult >= 0 && items[activeResult] ? `${listId}-${activeResult}` : undefined}
           placeholder="장소 이름을 검색하세요"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { setItems([]); setActiveResult(-1); }
+            if (items.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+              e.preventDefault();
+              setActiveResult((i) => e.key === "ArrowDown" ? (i + 1) % items.length : (i <= 0 ? items.length - 1 : i - 1));
+            }
+            if (e.key === "Enter" && items[activeResult]) {
+              e.preventDefault();
+              const selected = items[activeResult];
+              onChange(selected); setQuery(selected.name); setItems([]); setActiveResult(-1);
+            }
+          }}
           onChange={(e) => {
             const q = e.target.value;
             if (value) onChange(null);
@@ -206,7 +228,7 @@ function PlaceInput({
           autoComplete="off"
         />
       </label>
-      {busy && <small>검색 중…</small>}
+      {busy && <small role="status">검색 중…</small>}
       {error && (
         <small role="status">
           {error}{" "}
@@ -223,14 +245,19 @@ function PlaceInput({
         </small>
       )}
       {items.length > 0 && (
-        <div className="place-results">
-          {items.map((p) => (
+        <div className="place-results" id={listId} role="listbox" aria-label={`${label} 검색 결과`}>
+          {items.map((p, i) => (
             <button
               key={p.id}
+              type="button"
+              role="option"
+              id={`${listId}-${i}`}
+              aria-selected={activeResult === i}
               onClick={() => {
                 onChange(p);
                 setQuery(p.name);
                 setItems([]);
+                setActiveResult(-1);
               }}
             >
               <strong>{p.name}</strong>
@@ -545,6 +572,9 @@ export function RealApp() {
     [follow, setFollow] = useState(true),
     [persistOn, setPersistOn] = useState(persistLoginEnabled());
   const spoken = useRef("");
+  useEffect(() => {
+    window.scrollTo?.({ top: 0, behavior: "instant" });
+  }, [page]);
   const owner = user?.id ?? "guest",
     ownerRef = useRef(owner);
   ownerRef.current = owner;
@@ -562,6 +592,9 @@ export function RealApp() {
     [tripIntent, setTripIntent] = useState<"destination" | "park" | "free">(
       "destination",
     );
+  useEffect(() => {
+    if (pick) document.querySelector(".planner-map")?.scrollIntoView?.({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "center" });
+  }, [pick]);
   const [pace, setPace] = useState(360),
     [routes, setRoutes] = useState<Route[]>([]),
     [candidate, setCandidate] = useState(0),
@@ -986,6 +1019,9 @@ export function RealApp() {
     setRoutes(next);
     setForecasts({});
     setRecommendReason("walking-baseline");
+    setRecommendNotes([]);
+    setSignalCoverage("unknown");
+    setDepartureMs(null);
     setCandidate(candidateIndex(next, response.recommendedId));
     run.updateRoute(next[candidateIndex(next, response.recommendedId)]);
     setOffSamples([]);
@@ -1108,16 +1144,16 @@ export function RealApp() {
   const nav = (
     <nav className="real-nav" aria-label="주 메뉴">
       {[
-        ["home", "⌂", "홈"],
-        ["routes", "↗", "나의 루트"],
-        ["settings", "⚙", "설정"],
+        ["home", "home", "홈"],
+        ["routes", "route", "나의 기록"],
+        ["settings", "settings", "설정"],
       ].map(([p, icon, label]) => (
         <button
           key={p}
-          aria-current={page === p || (p === "settings" && page === "diagnostics") ? "page" : undefined}
+          aria-current={page === p || (p === "settings" && ["diagnostics", "pace"].includes(page)) || (p === "routes" && ["history", "popular"].includes(page)) ? "page" : undefined}
           onClick={() => go(p)}
         >
-          <span>{icon}</span>
+          <FlowIcon name={icon as FlowIconName} />
           {label}
         </button>
       ))}
@@ -1299,12 +1335,10 @@ export function RealApp() {
     );
   else if (page === "recommend")
     content = route ? (
-      <section>
+      <section className="recommend-page">
         <p className="eyebrow">YOUR ROUTE</p>
         <h1>
-          이 루트로
-          <br />
-          가시겠어요?
+          오늘의 경로가 준비됐어요.
         </h1>
         <RealMap
           coordinates={route.coordinates}
@@ -1319,6 +1353,7 @@ export function RealApp() {
             name: p.name,
           }))}
         />
+        {routes.length > 1 && <div className="candidate-tabs" aria-label="경로 후보">{routes.map((r, i) => <button key={r.id} aria-pressed={candidate === i} onClick={() => { setCandidate(i); setFit(n => n + 1); }}><span>{i === 0 ? "추천 경로" : `대안 ${i}`}</span><strong>{(r.distanceM / 1000).toFixed(2)} <small>km</small></strong></button>)}</div>}
         <div className="stats">
           <div>
             <strong>{(route.distanceM / 1000).toFixed(2)}</strong>
@@ -1386,14 +1421,14 @@ export function RealApp() {
             <p className="muted">검색 시각 기준 예상입니다. 출발 시 다시 계산하지는 않습니다.</p>
           )}
           <p className="muted">
-            노란 점은 보행 안내·장소 위치입니다.
+            노란 점은 보행 안내와 장소 위치예요.
           </p>
           {(avoidanceCheck ? avoidanceCopy(avoidanceCheck) : []).map((line) => (
             <p key={line}>{line}</p>
           ))}
         </article>
         <button className="primary" onClick={() => go("ready")}>
-          예, 이 루트로 갈게요
+          이 경로로 준비하기
         </button>
         <button
           className="secondary"
@@ -1405,7 +1440,7 @@ export function RealApp() {
               );
           }}
         >
-          아니요, 다른 루트 보기
+          다음 후보 보기
         </button>
         <button onClick={() => go("home")}>조건 수정</button>
       </section>
@@ -1460,7 +1495,7 @@ export function RealApp() {
               ? "잠시 쉬는 중"
               : "내 페이스로 달리는 중"}
           </h1>
-          <span className="live-dot">GPS</span>
+          <span className="live-dot">{run.live.phase === "paused" ? "일시정지" : run.error ? "GPS 확인 필요" : run.fix ? "GPS 수신" : "GPS 대기"}</span>
         </div>
         <RealMap
           coordinates={run.live.route?.coordinates ?? emptyCoords}
@@ -1692,7 +1727,7 @@ export function RealApp() {
     content = (
       <section>
         <div className="section-title">
-          <h1>나의 루트</h1>
+          <div><p className="eyebrow">MY RUNNING LOG</p><h1>나의 러닝 기록</h1></div>
           <button
             disabled={busy || !user}
             onClick={() => void action(synchronize)}
@@ -1769,6 +1804,8 @@ export function RealApp() {
                   setRoutes([r.route]);
                   setForecasts({});
                   setRecommendReason("walking-baseline");
+                  setRecommendNotes([]);
+                  setSignalCoverage("unknown");
                   setDepartureMs(null);
                   setCandidate(0);
                   go("recommend");
@@ -1858,6 +1895,8 @@ export function RealApp() {
                   setRoutes([withGeometry(p.route)]);
                   setForecasts({});
                   setRecommendReason("walking-baseline");
+                  setRecommendNotes([]);
+                  setSignalCoverage("unknown");
                   setDepartureMs(null);
                   setCandidate(0);
                   go("recommend");
@@ -2180,7 +2219,7 @@ export function RealApp() {
   else if (page === "settings")
     content = (
       <section>
-        <h1>설정</h1>
+        <p className="eyebrow">YOUR PREFERENCES</p><h1>내 러닝에 맞게</h1>
         <article>
           <h2>내 프로필</h2>
           <label>
@@ -2205,7 +2244,7 @@ export function RealApp() {
             </select>
           </label>
           <label>
-            허용 우회 (시험 기본값)
+            조금 돌아가도 괜찮은 거리
             <select
               value={profile.detour}
               onChange={(e) =>
@@ -2218,8 +2257,7 @@ export function RealApp() {
             </select>
           </label>
           <p className="muted">
-            우회 비율과 최대 추가 거리는 화면·서버가 같은 시험 기본값을 씁니다.
-            현장 검증으로 확정한 제품값이 아닙니다.
+            선택한 범위 안에서 경로를 비교해요. 실제 길에 따라 조건에 맞는 경로가 없을 수도 있어요.
           </p>
           {(["avoidStairs", "avoidOverpass", "avoidAlley", "voice", "vibration", "wake", "followCam"] as const).map(
             (k, i) => (
@@ -2412,44 +2450,12 @@ export function RealApp() {
     );
   else
     content = (
-      <section>
-        <p className="muted">{profile.nickname}님, 반갑습니다.</p>
-        <h1>
-          오늘 어디로
-          <br />
-          달려볼까요?
-        </h1>
-        <div className="purpose-row">
-          {(
-            [
-              ["destination", "목적지까지"],
-              ["park", "공원·하천"],
-              ["free", "자유 러닝"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              className={tripIntent === id ? "slot-on" : undefined}
-              onClick={() => setTripIntent(id)}
-            >
-              {label}
-            </button>
-          ))}
+      <section className="flow-home">
+        <div className="home-heading">
+          <div><p className="greeting">{profile.nickname || "러너"}님, 반가워요.</p>
+          <h1>오늘의 러닝을<br className="mobile-break" /> <em>시작해 볼까요?</em></h1></div>
+          <button className="profile-pace" onClick={() => go("pace")}><FlowIcon name="activity" /><span><small>나의 페이스</small><strong>{paceLabel(pace)} <small>/km</small></strong></span><FlowIcon name="chevron" size={16} /></button>
         </div>
-        {tripIntent === "destination" && (
-          <p className="muted">검색하거나 지도에서 도착 지점을 고른 뒤 보행 경로를 받습니다.</p>
-        )}
-        {tripIntent === "park" && (
-          <p className="muted">
-            출발지 근처 공원·하천을 검색해 목적지로 씁니다. 보행으로 이어지지 않으면
-            후보로 넣지 않습니다.
-          </p>
-        )}
-        {tripIntent === "free" && (
-          <p className="muted">경로 없이 GPS만으로 거리와 페이스를 기록합니다.</p>
-        )}
-        <p className="eyebrow">{profile.region} · YOUR OWN FLOW</p>
         {result && (
           <article>
             <h2>저장하지 않은 러닝 결과가 있어요.</h2>
@@ -2485,70 +2491,61 @@ export function RealApp() {
             </button>
           </article>
         )}
-        <div className="section-title">
-          <h2>유행하는 루트</h2>
-          <button onClick={() => go("popular")}>더 보기 ↗</button>
-        </div>
-        {publicItems.length ? (
-          <div className="public-strip">
-            {publicItems.slice(0, 3).map((p) => (
-              <button
-                key={p.id}
-                onClick={() => {
-                  setRoutes([withGeometry(p.route)]);
-                  setForecasts({});
-                  setRecommendReason("walking-baseline");
-                  setDepartureMs(null);
-                  setCandidate(0);
-                  go("recommend");
-                }}
-              >
-                <Thumbnail route={p.route} />
-                <strong>{p.title}</strong>
-                <small>
-                  {(p.route.distanceM / 1000).toFixed(2)}km · 공감 {p.likes}
-                </small>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <article className="muted">
-            아직 공개된 코스가 없어요. 첫 코스를 기록해 보세요.
-          </article>
-        )}
-        <div className="section-title">
-          <h2>직접 설정</h2>
-          <button disabled={busy} onClick={() => void action(usePosition)}>
-            현재 위치
-          </button>
-        </div>
-        <article>
-          <PlaceInput
-            label="출발지"
-            value={origin}
-            onChange={setOrigin}
-            near={position}
-          />
-          <PlaceInput
-            label={
-              tripIntent === "park"
-                ? "공원·하천"
-                : loop
-                  ? "반환점"
-                  : "목적지"
-            }
-            value={destination}
-            onChange={setDestination}
-            near={origin?.coord ?? position}
-          />
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={loop}
-              onChange={(e) => setLoop(e.target.checked)}
-            />
-            출발지로 돌아오기
-          </label>
+
+        <div className="planner-layout">
+          <div className="planner-panel">
+            <div className="panel-heading"><span className="eyebrow">PLAN YOUR RUN</span><span className="region-tag"><FlowIcon name="pin" size={14} />{profile.region}</span></div>
+            <div className="purpose-row" aria-label="러닝 방식">
+              {([ ["destination", "pin", "목적지까지"], ["park", "leaf", "공원·하천"], ["free", "activity", "자유 러닝"] ] as const).map(([id, icon, label]) => (
+                <button key={id} type="button" aria-pressed={tripIntent === id} className={tripIntent === id ? "slot-on" : undefined} onClick={() => { setTripIntent(id); setPick(null); }}><FlowIcon name={icon} /><span>{label}</span></button>
+              ))}
+            </div>
+            {tripIntent !== "free" ? <>
+              <div className="journey-fields">
+                <div className="journey-point origin-point"><PlaceInput label="출발지" value={origin} onChange={setOrigin} near={position} /></div>
+                <div className="journey-point destination-point"><PlaceInput label={tripIntent === "park" ? "공원·하천" : loop ? "반환점" : "목적지"} value={destination} onChange={setDestination} near={origin?.coord ?? position} /></div>
+                <button className="swap-places" aria-label="출발지와 목적지 바꾸기" disabled={busy || !origin || !destination} onClick={() => { setOrigin(destination); setDestination(origin); }}><FlowIcon name="swap" size={17} /></button>
+              </div>
+              <div className="location-tools">
+                <button disabled={busy} onClick={() => void action(usePosition)}><FlowIcon name="target" size={16} />현재 위치</button>
+                <button aria-pressed={pick === "origin"} onClick={() => setPick(pick === "origin" ? null : "origin")}>출발점 선택</button>
+                <button aria-pressed={pick === "destination"} onClick={() => setPick(pick === "destination" ? null : "destination")}>도착점 선택</button>
+              </div>
+              <label className="check loop-check"><input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />출발지로 돌아오기<span>왕복</span></label>
+          {tripIntent === "park" && (
+            <button
+              disabled={busy || !origin}
+              onClick={() =>
+                void action(async () => {
+                  if (!origin) throw new Error("먼저 출발지를 정해 주세요.");
+                  const bias = `&x=${origin.coord[0]}&y=${origin.coord[1]}`;
+                  const [parks, rivers] = await Promise.all([
+                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("공원")}${bias}`),
+                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("하천")}${bias}`),
+                  ]);
+                  const seen = new Set<string>();
+                  const found = [...parks.places, ...rivers.places].filter((p) => {
+                    if (seen.has(p.id)) return false;
+                    seen.add(p.id);
+                    return true;
+                  });
+                  if (!found.length)
+                    throw new Error(
+                      "근처 공원·하천을 찾지 못했어요. 이름을 검색하거나 지도에서 고르세요.",
+                    );
+                  setDestination(found[0]);
+                  notice(
+                    `${found[0].name}을 목적지로 넣었어요. 다른 곳이면 검색에서 고르세요.`,
+                  );
+                })
+              }
+            >
+              근처 공원·하천 검색
+            </button>
+          )}
+
+              <details className="run-options">
+                <summary><span><FlowIcon name="settings" size={18} />페이스·경유지 설정</span><span>{paceLabel(pace)}/km <FlowIcon name="chevron" size={14} /></span></summary>
           <label>
             페이스
             <div className="pace-slots">
@@ -2606,107 +2603,31 @@ export function RealApp() {
               <span>초 /km</span>
             </div>
           </label>
-          <p className="muted">
-            루트 예상 시간은 이 페이스 × 거리입니다. 신호 대기는 넣지 않습니다.
-          </p>
-          <button
-            onClick={() => {
-              setShowVia(!showVia);
-              if (showVia) setVia(null);
-            }}
-          >
-            {showVia ? "경유지 제거" : "꼭 지나고 싶은 장소 추가"}
-          </button>
-          {showVia && (
-            <PlaceInput
-              label="경유지"
-              value={via}
-              onChange={setVia}
-              near={origin?.coord ?? position}
-            />
-          )}
-        </article>
-        <div className="button-row">
-          <button onClick={() => setPick(pick === "origin" ? null : "origin")}>
-            지도에서 출발지 선택
-          </button>
-          <button
-            onClick={() =>
-              setPick(pick === "destination" ? null : "destination")
-            }
-          >
-            지도에서 목적지 선택
-          </button>
+
+                <button className="text-btn" onClick={() => go("pace")}>페이스를 모르겠어요</button>
+                <button className="secondary" onClick={() => { setShowVia(!showVia); if (showVia) setVia(null); }}>{showVia ? "경유지 제거" : "+ 꼭 지나고 싶은 장소"}</button>
+                {showVia && <PlaceInput label="경유지" value={via} onChange={setVia} near={origin?.coord ?? position} />}
+              </details>
+              <div className="planner-action"><button className="primary" disabled={busy || !origin || !destination} onClick={() => void action(findRoutes)}><span>{busy ? "경로를 확인하고 있어요" : "러닝 경로 찾기"}</span><FlowIcon name="arrow" /></button><small>{!origin ? "출발지를 검색하거나 현재 위치를 선택하세요." : !destination ? "달려갈 목적지를 선택하세요." : "설정한 페이스 기준 · 신호 대기시간 제외"}</small></div>
+            </> : <div className="free-run-panel">
+              <div className="free-run-symbol"><FlowIcon name="activity" size={42} /></div>
+              <h2>목적지 없이,<br />내 발길이 닿는 대로.</h2><p className="muted">시작을 누르면 GPS로 이동 거리와<br />시간, 페이스를 기록해요.</p>
+              <div className="free-run-info"><FlowIcon name="target" size={18} /><span>위치 권한이 필요해요</span></div>
+              <button className="primary" disabled={busy} onClick={() => void action(() => startRun(null))}><span>{busy ? "위치를 확인하고 있어요" : "자유 러닝 시작"}</span><FlowIcon name="arrow" /></button>
+              <small>기록은 이 기기에 저장됩니다.</small>
+            </div>}
+          </div>
+          <div className={`planner-map${pick ? " is-picking" : ""}`}>
+            <div className="map-topline"><span><FlowIcon name="route" size={16} />{pick ? `${pick === "origin" ? "출발지" : "목적지"}를 지도에서 눌러주세요` : "오늘 달릴 곳"}</span>{pick && <button onClick={() => setPick(null)}>선택 취소</button>}</div>
+            <RealMap coordinates={emptyCoords} position={origin?.coord ?? position} fitToken={`${origin?.id ?? ""}:${destination?.id ?? ""}`} pois={[...(origin ? [{ coord: origin.coord, name: "출발 · " + origin.name }] : []), ...(destination ? [{ coord: destination.coord, name: "도착 · " + destination.name }] : [])]} onPick={pick ? (coord) => {
+              const target = pick;
+              void action(async () => { const selected = await namedPlace(coord, "지도에서 선택한 위치"); if (target === "origin") setOrigin(selected); else setDestination(selected); setPick(null); });
+            } : undefined} />
+            <div className="map-bottomline"><span>{origin ? origin.name : "출발지를 정하고 나만의 경로를 찾아보세요"}</span>{origin && <FlowIcon name="arrow" size={15} />}{destination && <span>{destination.name}</span>}</div>
+          </div>
         </div>
-        {pick && (
-          <article>
-            <p>
-              {pick === "origin" ? "출발지" : "목적지"}를 지도에서 눌러주세요.
-            </p>
-            <RealMap
-              position={position}
-              onPick={(coord) => {
-                const fallback = `지도 선택 (${coord[1].toFixed(4)}, ${coord[0].toFixed(4)})`;
-                void namedPlace(coord, fallback).then((p) => {
-                  if (pick === "origin") setOrigin(p);
-                  else setDestination(p);
-                  setPick(null);
-                });
-              }}
-            />
-            <button onClick={() => setPick(null)}>닫기</button>
-          </article>
-        )}
-          {tripIntent === "park" && (
-            <button
-              disabled={busy || !origin}
-              onClick={() =>
-                void action(async () => {
-                  if (!origin) throw new Error("먼저 출발지를 정해 주세요.");
-                  const bias = `&x=${origin.coord[0]}&y=${origin.coord[1]}`;
-                  const [parks, rivers] = await Promise.all([
-                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("공원")}${bias}`),
-                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("하천")}${bias}`),
-                  ]);
-                  const seen = new Set<string>();
-                  const found = [...parks.places, ...rivers.places].filter((p) => {
-                    if (seen.has(p.id)) return false;
-                    seen.add(p.id);
-                    return true;
-                  });
-                  if (!found.length)
-                    throw new Error(
-                      "근처 공원·하천을 찾지 못했어요. 이름을 검색하거나 지도에서 고르세요.",
-                    );
-                  setDestination(found[0]);
-                  notice(
-                    `${found[0].name}을 목적지로 넣었어요. 다른 곳이면 검색에서 고르세요.`,
-                  );
-                })
-              }
-            >
-              근처 공원·하천 검색
-            </button>
-          )}
-        <button
-          className="primary"
-          disabled={busy || tripIntent === "free"}
-          onClick={() => void action(findRoutes)}
-        >
-          루트 찾기
-        </button>
-        <button
-          className="secondary"
-          disabled={busy}
-          onClick={() => void action(() => startRun(null))}
-        >
-          경로 없이 자유 러닝 시작
-        </button>
-        <button onClick={() => go("pace")}>내 페이스 계산하기</button>
-        <div className="section-title">
-          <h2>나의 루트</h2>
-          <button onClick={() => go("routes")}>전체 보기 ↗</button>
-        </div>
+        <div className="home-bottom-grid">
+          <div className="recent-panel"><div className="section-title"><div><p className="eyebrow">MY ACTIVITY</p><h2>차곡차곡, 나의 러닝</h2></div><button onClick={() => go("routes")}>전체 보기 <FlowIcon name="arrow" size={16} /></button></div>
         {grouped.slice(0, 2).map((g) => (
           <button
             className="route-row"
@@ -2723,17 +2644,54 @@ export function RealApp() {
             </span>
           </button>
         ))}
+
+            {!grouped.length && <div className="flow-empty"><FlowIcon name="route" size={28} /><div><strong>첫 번째 러닝을 기다리고 있어요</strong><p>달리고 나면 나만의 코스가 이곳에 남아요.</p></div></div>}
+          </div>
+          <div className="community-panel"><div className="section-title"><div><p className="eyebrow">EXPLORE</p><h2>함께 달리는 코스</h2></div><button onClick={() => go("popular")}>둘러보기 <FlowIcon name="arrow" size={16} /></button></div>
+        {publicItems.length ? (
+          <div className="public-strip">
+            {publicItems.slice(0, 3).map((p) => (
+              <button
+                key={p.id}
+                onClick={() => {
+                  setRoutes([withGeometry(p.route)]);
+                  setForecasts({});
+                  setRecommendReason("walking-baseline");
+                  setRecommendNotes([]);
+                  setSignalCoverage("unknown");
+                  setDepartureMs(null);
+                  setCandidate(0);
+                  go("recommend");
+                }}
+              >
+                <Thumbnail route={p.route} />
+                <strong>{p.title}</strong>
+                <small>
+                  {(p.route.distanceM / 1000).toFixed(2)}km · 공감 {p.likes}
+                </small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <article className="muted">
+            아직 공개된 코스가 없어요. 첫 코스를 기록해 보세요.
+          </article>
+        )}
+
+          </div>
+        </div>
       </section>
     );
   return (
-    <div className="real-shell">
+    <div className={`real-shell page-${page}`}>
+      <a className="skip-link" href="#run-main">본문으로 이동</a>
       <header className="real-header">
         <button onClick={() => go("home")} className="brand">
-          <RunnerLogo /> FLOW RUN
+          <RunnerLogo /><span>FLOW<span className="brand-light">RUN</span></span>
         </button>
-        <button onClick={() => go("settings")}>{profile.region}⌄</button>
+        <div className="header-meta"><span className="beta-label">RUNNING COMPANION</span><button className="region-button" onClick={() => go("settings")}><FlowIcon name="pin" size={16} />{profile.region}<FlowIcon name="chevron" size={14} /></button></div>
       </header>
-      <main>
+      <main id="run-main">
         {message && (
           <div className="real-notice" role="status">
             {message}

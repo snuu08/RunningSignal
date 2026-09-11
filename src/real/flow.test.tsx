@@ -102,6 +102,7 @@ describe("GPS lifecycle", () => {
 describe("real-mode screen flow", () => {
   beforeEach(() => {
     sessionStorage.setItem("flow-real-guest", "yes");
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -127,17 +128,16 @@ describe("real-mode screen flow", () => {
       target: { value: "테스트러너" },
     });
     fireEvent.click(screen.getByRole("button", { name: "시작하기" }));
-    await screen.findByRole("button", { name: "루트 찾기" });
-    expect(
-      screen.getByRole("button", { name: "경로 없이 자유 러닝 시작" }),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "루트 찾기" }));
-    await screen.findByText(/검색 결과 또는 지도에서 출발지/);
-    fireEvent.click(
-      screen.getByRole("button", { name: "꼭 지나고 싶은 장소 추가" }),
-    );
+    const search = await screen.findByRole("button", { name: "러닝 경로 찾기" });
+    expect((search as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "자유 러닝" }));
+    expect(screen.getByRole("button", { name: "자유 러닝 시작" })).toBeTruthy();
+    expect(screen.queryByLabelText("목적지")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "목적지까지" }));
+    fireEvent.click(screen.getByText("페이스·경유지 설정"));
+    fireEvent.click(screen.getByRole("button", { name: "+ 꼭 지나고 싶은 장소" }));
     expect(screen.getByLabelText("경유지")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "내 페이스 계산하기" }));
+    fireEvent.click(screen.getByRole("button", { name: "페이스를 모르겠어요" }));
     await screen.findByLabelText("거리 (km)");
     fireEvent.change(screen.getByLabelText("거리 (km)"), {
       target: { value: "5" },
@@ -153,6 +153,33 @@ describe("real-mode screen flow", () => {
         (screen.getByLabelText("페이스 분") as HTMLInputElement).value,
       ).toBe("5"),
     );
+  });
+  it("selects places by keyboard, swaps endpoints, and invalidates an edited selection", async () => {
+    await saveState("profile:guest", { ...defaultProfile, onboarded: true });
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("places?")) {
+        const name = new URL(url, "http://localhost").searchParams.get("q")!;
+        return Response.json({ places: [{ id: name, name, coord: [127, 37.5] }] });
+      }
+      return Response.json({ places: true, routes: true, signalPrediction: false });
+    });
+    render(<MemoryRouter initialEntries={["/real/home"]}><RealApp /></MemoryRouter>);
+    const origin = await screen.findByRole("combobox", { name: "출발지" });
+    const destination = screen.getByRole("combobox", { name: "목적지" });
+    for (const [input, name] of [[origin, "서울숲"], [destination, "뚝섬역"]] as const) {
+      fireEvent.change(input, { target: { value: name } });
+      await screen.findByRole("option", { name });
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      expect(input.getAttribute("aria-activedescendant")).toBeTruthy();
+      fireEvent.keyDown(input, { key: "Enter" });
+    }
+    expect((screen.getByRole("button", { name: "러닝 경로 찾기" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "출발지와 목적지 바꾸기" }));
+    expect((origin as HTMLInputElement).value).toBe("뚝섬역");
+    expect((destination as HTMLInputElement).value).toBe("서울숲");
+    fireEvent.change(origin, { target: { value: "새" } });
+    expect((screen.getByRole("button", { name: "러닝 경로 찾기" }) as HTMLButtonElement).disabled).toBe(true);
   });
   it("keeps signup unavailable when no real auth server exists", async () => {
     render(

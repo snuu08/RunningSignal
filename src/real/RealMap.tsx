@@ -31,7 +31,7 @@ export function RealMap({
   onPick?: (coord: Coord) => void;
   straight?: [Coord, Coord] | null;
   pois?: { coord: Coord; name: string }[];
-  fitToken?: number;
+  fitToken?: number | string;
   follow?: boolean;
   heading?: number | null;
   onUserPan?: () => void;
@@ -78,14 +78,14 @@ export function RealMap({
         id: "route-halo",
         type: "line",
         source: "route",
-        paint: { "line-color": "#071d13", "line-width": 9 },
+        paint: { "line-color": "#262a0e", "line-width": 9 },
       });
       m.addLayer({
         id: "route-line",
         type: "line",
         source: "route",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#b4f6ce", "line-width": 4 },
+        paint: { "line-color": "#e5f45c", "line-width": 4 },
       });
       m.addSource("pois", { type: "geojson", data: empty });
       m.addLayer({
@@ -103,7 +103,7 @@ export function RealMap({
     });
     m.on("error", () =>
       setError(
-        "지도를 불러오지 못한 부분이 있어요. 지도 키·허용 도메인·네트워크를 확인해 주세요.",
+        "지도를 불러오지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.",
       ),
     );
     m.on("click", (e) => pick.current?.([e.lngLat.lng, e.lngLat.lat]));
@@ -149,6 +149,7 @@ export function RealMap({
     const m = map.current;
     if (!m || !ready || follow) return;
     const boundsPoints = [...coordinates, ...(segments?.flat() ?? [])];
+    if (!boundsPoints.length) boundsPoints.push(...pois.map((p) => p.coord));
     if (boundsPoints.length > 1) {
       const b = new maplibregl.LngLatBounds(boundsPoints[0], boundsPoints[0]);
       boundsPoints.forEach((c) => b.extend(c));
@@ -187,7 +188,7 @@ export function RealMap({
       />
       {!key && (
         <div className="map-message">
-          지도 연결 준비 중<p>위치 기록과 기록 저장은 사용할 수 있어요.</p>
+          <strong>지도를 표시할 수 없어요</strong><p>장소를 검색하거나 자유 러닝을 시작할 수 있어요.</p>
         </div>
       )}
       {error && (
