@@ -41,7 +41,18 @@ export const SEARCH_EXPAND_LIMIT = 4000;
 export const SEARCH_PATH_LIMIT = 12;
 export const SEARCH_TIME_BUDGET_MS = 80;
 
+/**
+ * Extra seconds added after painted-crossing walk time.
+ * Product assumption, not a field-validated clearance margin.
+ */
 export const CROSSING_BUFFER_SEC = 3;
+/**
+ * Pedestrian crossing walk speed used to estimate time on the painted crossing.
+ * Not the runner's pace. 1.2 m/s is a product trial default (common pedestrian
+ * design speed), not a measured Seoul clearance model and not a safety claim.
+ * Keep this file as the only source for the number.
+ */
+export const CROSSING_WALK_M_PER_SEC = 1.2;
 export const SHARP_TURN_DEG = 50;
 export const GENTLE_TURN_DEG = 22;
 export const ZIGZAG_WINDOW_M = 90;

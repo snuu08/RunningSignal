@@ -27,6 +27,7 @@ import {
   validPace,
   withGeometry,
   validCoord,
+  type AvoidanceCheck,
   type Coord,
   type Forecast,
   type Place,
@@ -35,9 +36,13 @@ import {
 import {
   candidateIndex,
   waitDisplay,
+  remainingRawDisplay,
+  isCurrentSignalView,
   type RoutesResponse,
   type StatusResponse,
+  type SignalCoverage,
 } from "./api-contract.ts";
+import { avoidanceCopy, coverageCopy } from "./recommend-copy.ts";
 import { policyFromProfile } from "./routing-policy.ts";
 import {
   nextInstruction,
@@ -71,8 +76,8 @@ import {
 import type { PaceSlotId } from "../domain/models.ts";
 import { locate, useGpsRun, type LiveRun } from "./useGpsRun.ts";
 import {
-  LIVE_SIGNAL_UI,
   realPage,
+  showSignalWait,
   suggestedUsualFromRecords,
   sustainedOffRoute,
   TRIAL_OFF_ROUTE,
@@ -88,7 +93,7 @@ function Thumbnail({ route }: { route: Route | null }) {
     points && points.length > 1 && !fail
       ? staticMapUrl(
           points,
-          import.meta.env.VITE_MAPTILER_KEY,
+          import.meta.env.VITE_MAPTILER_KEY ?? "",
           import.meta.env.VITE_MAPTILER_STYLE,
         )
       : null;
@@ -142,7 +147,8 @@ function PlaceInput({
   const [query, setQuery] = useState(value?.name ?? ""),
     [items, setItems] = useState<Place[]>([]),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [retry, setRetry] = useState(0);
   useEffect(() => {
     if (value) {
       setQuery(value.name);
@@ -183,7 +189,7 @@ function PlaceInput({
       clearTimeout(timer);
       ctrl.abort();
     };
-  }, [query, value?.name, near]);
+  }, [query, value?.name, near, retry]);
   return (
     <div className="real-field">
       <label>
@@ -201,7 +207,21 @@ function PlaceInput({
         />
       </label>
       {busy && <small>검색 중…</small>}
-      {error && <small role="status">{error}</small>}
+      {error && (
+        <small role="status">
+          {error}{" "}
+          <button
+            type="button"
+            className="text-btn"
+            onClick={() => {
+              setError("");
+              setRetry((n) => n + 1);
+            }}
+          >
+            다시 검색
+          </button>
+        </small>
+      )}
       {items.length > 0 && (
         <div className="place-results">
           {items.map((p) => (
@@ -458,6 +478,59 @@ function Auth({
     </section>
   );
 }
+
+function CurrentStatePanel({ payload }: { payload: unknown }) {
+  const rec = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  const current = isCurrentSignalView(rec?.current) ? rec.current : null;
+  if (!current)
+    return (
+      <p className="muted">현재 상태 해석 결과가 없습니다. 원문을 확인하세요.</p>
+    );
+  const age =
+    current.sourceAgeMs == null
+      ? "원천 시각 없음"
+      : `${Math.round(current.sourceAgeMs / 1000)}초 전 원천`;
+  return (
+    <article>
+      <h2>현재 보행신호 (예측 아님)</h2>
+      <p>교차로 ID: {current.itstId ?? "없음"}</p>
+      <p>
+        {current.stale ? "지연된 응답 · " : ""}
+        {current.missingSourceTime ? "원천 시각 없음 · " : ""}
+        {age}
+      </p>
+      {current.pedestrian.length ? (
+        <ul>
+          {current.pedestrian.map((row) => (
+            <li key={row.key}>
+              {row.direction} · {row.key}: {row.statusName}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>보행신호 상태명이 비어 있습니다.</p>
+      )}
+      <h3>잔여값</h3>
+      {current.remainingPedestrian.length ? (
+        <ul>
+          {current.remainingPedestrian.map((row) => (
+            <li key={row.key}>
+              {row.direction} · {row.key}: {remainingRawDisplay(row.raw)}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>이 응답에는 보행 잔여 필드가 없습니다. 현시(phase)와 잔여(timing)는 다른 서비스입니다.</p>
+      )}
+      <ul>
+        {current.notes.map((note) => (
+          <li key={note}>{note}</li>
+        ))}
+      </ul>
+    </article>
+  );
+}
+
 export function RealApp() {
   const navigate = useNavigate(),
     locationState = useLocation(),
@@ -485,7 +558,10 @@ export function RealApp() {
     [via, setVia] = useState<Place | null>(null),
     [showVia, setShowVia] = useState(false),
     [pick, setPick] = useState<"origin" | "destination" | "via" | null>(null),
-    [loop, setLoop] = useState(false);
+    [loop, setLoop] = useState(false),
+    [tripIntent, setTripIntent] = useState<"destination" | "park" | "free">(
+      "destination",
+    );
   const [pace, setPace] = useState(360),
     [routes, setRoutes] = useState<Route[]>([]),
     [candidate, setCandidate] = useState(0),
@@ -493,6 +569,9 @@ export function RealApp() {
     [recommendReason, setRecommendReason] = useState<
       "walking-baseline" | "signal-compare"
     >("walking-baseline"),
+    [recommendNotes, setRecommendNotes] = useState<string[]>([]),
+    [signalCoverage, setSignalCoverage] = useState<SignalCoverage>("unknown"),
+    [avoidanceCheck, setAvoidanceCheck] = useState<AvoidanceCheck | null>(null),
     [departureMs, setDepartureMs] = useState<number | null>(null),
     [position, setPosition] = useState<Coord | null>(null),
     [fit, setFit] = useState(0);
@@ -523,7 +602,8 @@ export function RealApp() {
     }
   });
   const route = routes[candidate] ?? null;
-  const wait = waitDisplay(LIVE_SIGNAL_UI ? (route ? forecasts[route.id] : null) : null);
+  const liveSignals = showSignalWait(status?.signal?.predictionReady === true);
+  const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
   const travelSec = route ? (route.distanceM / 1000) * pace : 0;
   const here =
     run.fix?.coord ?? run.live?.track.fixes.at(-1)?.coord ?? position;
@@ -609,17 +689,35 @@ export function RealApp() {
   useEffect(() => {
     if (!cloud) return;
     const recoveryHash = recoveryRequested;
-    void cloud.auth.getSession().then(({ data }) => {
-      if (!recoveryHash) setUser(data.session?.user ?? null);
+    let cancelled = false;
+    const ready = (session: User | null | undefined) => {
+      if (cancelled) return;
+      if (!recoveryHash && session !== undefined) setUser(session);
       setAuthReady(true);
-    });
+    };
+    const timer = window.setTimeout(() => ready(null), 4000);
+    void cloud.auth
+      .getSession()
+      .then(({ data }) => {
+        window.clearTimeout(timer);
+        if (!recoveryHash) ready(data.session?.user ?? null);
+        else ready(undefined);
+      })
+      .catch(() => {
+        window.clearTimeout(timer);
+        ready(null);
+      });
     const sub = cloud.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") setRecovering(true);
       if (event !== "PASSWORD_RECOVERY" && !recoveryHash)
         setUser(session?.user ?? null);
       setAuthReady(true);
     });
-    return () => sub.data.subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      sub.data.subscription.unsubscribe();
+    };
   }, []);
   useEffect(() => {
     void api<StatusResponse>("status")
@@ -689,6 +787,12 @@ export function RealApp() {
       cancelled = true;
     };
   }, [owner, notice, user]);
+  useEffect(() => {
+    if (!loaded || page !== "run" || run.live || !recovery) return;
+    runOwner.current = owner;
+    run.recover(recovery);
+    setRecovery(null);
+  }, [loaded, page, run.live, recovery, owner]);
   useEffect(() => {
     let canceled = false;
     void publicRoutes(profile.region)
@@ -788,6 +892,9 @@ export function RealApp() {
     setCandidate(0);
     setForecasts({});
     setRecommendReason("walking-baseline");
+    setRecommendNotes([]);
+    setSignalCoverage("unknown");
+    setAvoidanceCheck(null);
     setDepartureMs(null);
     navigate("/real/loading");
     try {
@@ -828,6 +935,9 @@ export function RealApp() {
       setRoutes(next);
       setForecasts(response.forecasts ?? {});
       setRecommendReason(response.recommendationReason ?? "walking-baseline");
+      setRecommendNotes(response.recommendSentences ?? []);
+      setSignalCoverage(response.signalCoverage ?? "unknown");
+      setAvoidanceCheck(response.avoidanceCheck ?? null);
       setDepartureMs(response.departureMs ?? null);
       setCandidate(candidateIndex(next, response.recommendedId));
       navigate("/real/recommend");
@@ -882,7 +992,7 @@ export function RealApp() {
     notice("목적지·경유·계단 제외를 유지한 새 보행 경로로 바꿨어요.");
   }
   async function startRun(selected: Route | null) {
-    if (LIVE_SIGNAL_UI && selected && !greenOk)
+    if (liveSignals && selected && !greenOk)
       throw new Error("출발 전 실제 보행 신호가 녹색인지 확인해 주세요.");
     runOwner.current = owner;
     await run.start(selected);
@@ -1076,7 +1186,8 @@ export function RealApp() {
           </select>
         </label>
         <p className="muted">
-          지역은 공개 코스 분류에 사용해요. 신호 대기 예측은 아직 제공하지 않습니다.
+          지역은 공개 코스 분류에 사용해요. 신호 데이터 지원 범위와는 다릅니다.
+          지금은 어느 지역도 대기 예측을 켜 두지 않았습니다.
         </p>
         <label>
           닉네임
@@ -1117,7 +1228,36 @@ export function RealApp() {
             <span>초 /km</span>
           </div>
         </label>
-        <p>{paceLabel(pace)}/km · 평소 칸에 저장됩니다.</p>
+        <p>{paceLabel(pace)}/km · 평소 칸에 저장됩니다. 비워 두면 미등록이며 0페이스로 기록하지 않습니다.</p>
+        <p className="muted">페이스를 모르면 거리와 시간으로 계산할 수 있어요.</p>
+        <div className="pace-input">
+          <input
+            aria-label="온보딩 계산 거리 km"
+            type="number"
+            min={0.1}
+            step={0.1}
+            value={calcKm}
+            onChange={(e) => setCalcKm(e.target.value)}
+          />
+          <span>km</span>
+          <input
+            aria-label="온보딩 계산 분"
+            type="number"
+            min={0}
+            value={calcMin}
+            onChange={(e) => setCalcMin(e.target.value)}
+          />
+          <span>분</span>
+        </div>
+        <button
+          onClick={() => {
+            const next = calcPace;
+            if (!next) return notice("거리와 시간을 확인해 주세요. 0km는 계산하지 않아요.");
+            setPace(next);
+          }}
+        >
+          거리·시간으로 페이스 넣기
+        </button>
         <button
           className="primary"
           disabled={busy}
@@ -1197,7 +1337,7 @@ export function RealApp() {
               )}
             </strong>
             <small>
-              {LIVE_SIGNAL_UI && wait.known && wait.totalSec !== null
+              {liveSignals && wait.known && wait.totalSec !== null
                 ? "대기 포함 예상"
                 : "페이스 기준 예상"}
             </small>
@@ -1210,11 +1350,19 @@ export function RealApp() {
           </p>
           <p>
             경로 안내상 횡단 {crossingCount(route)}곳
-            {LIVE_SIGNAL_UI && recommendReason === "signal-compare"
-              ? " · 확인된 대기 예측으로 보행 후보를 비교했어요."
-              : " · 보행 조건과 우회 제한을 적용한 기본 추천입니다."}
           </p>
-          {LIVE_SIGNAL_UI ? (
+          {(recommendNotes.length
+            ? recommendNotes
+            : [
+                recommendReason === "signal-compare"
+                  ? "확인된 대기 예측으로 보행 후보를 비교했어요."
+                  : "보행 조건과 우회 제한을 적용한 기본 추천입니다.",
+                coverageCopy(signalCoverage),
+              ]
+          ).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+          {liveSignals ? (
             <>
               <p>
                 {wait.known
@@ -1230,19 +1378,19 @@ export function RealApp() {
             </>
           ) : (
             <p>
-              예상 시간 {timeLabel(travelSec)} · 입력 페이스 기준 · 신호 대기는
+              예상 시간 {timeLabel(travelSec)} · 입력 페이스 × 거리 · 신호 대기는
               포함하지 않습니다.
             </p>
           )}
-          {departureMs !== null && LIVE_SIGNAL_UI && (
+          {departureMs !== null && liveSignals && (
             <p className="muted">검색 시각 기준 예상입니다. 출발 시 다시 계산하지는 않습니다.</p>
           )}
           <p className="muted">
             노란 점은 보행 안내·장소 위치입니다.
           </p>
-          {profile.avoidStairs && <p>계단 제외 옵션으로 조회했어요.</p>}
-          {profile.avoidOverpass && <p>육교·고가 안내가 있는 후보는 걸렀어요.</p>}
-          {profile.avoidAlley && <p>큰길 우선 후보를 먼저 썼어요.</p>}
+          {(avoidanceCheck ? avoidanceCopy(avoidanceCheck) : []).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
         </article>
         <button className="primary" onClick={() => go("ready")}>
           예, 이 루트로 갈게요
@@ -1283,7 +1431,7 @@ export function RealApp() {
           횡단보도 앞에서는 실제 보행신호를 직접 확인하세요. 앱이 신호를 대신
           보지 않습니다.
         </p>
-        {LIVE_SIGNAL_UI && route && (
+        {liveSignals && route && (
           <label className="check">
             <input
               type="checkbox"
@@ -1295,7 +1443,7 @@ export function RealApp() {
         )}
         <button
           className="primary"
-          disabled={busy || !route || (LIVE_SIGNAL_UI && !greenOk)}
+          disabled={busy || !route || (liveSignals && !greenOk)}
           onClick={() => void action(() => startRun(route))}
         >
           러닝 시작
@@ -1483,7 +1631,7 @@ export function RealApp() {
           </p>
           <p>
             GPS 정지 추정 {Math.round(result.track.stoppedSec)}초
-            {LIVE_SIGNAL_UI ? " · 신호 대기 확인 불가" : ""}
+            {liveSignals ? " · 신호 대기 확인 불가" : ""}
           </p>
           {best !== null && result.complete && (
             <p>
@@ -1966,31 +2114,59 @@ export function RealApp() {
               onChange={(e) => setSignalId(e.target.value)}
             />
           </label>
-          <button
-            disabled={
-              busy ||
-              !(status?.signal?.configured.seoul || status?.seoulSignals)
-            }
-            onClick={() =>
-              void action(async () => {
-                try {
-                  setSignalResult(
-                    await api(
-                      `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=phase`,
-                    ),
-                  );
-                } finally {
+          <div className="button-row">
+            <button
+              disabled={
+                busy ||
+                !(status?.signal?.configured.seoul || status?.seoulSignals)
+              }
+              onClick={() =>
+                void action(async () => {
                   try {
-                    setStatus(await api<StatusResponse>("status"));
-                  } catch {
-                    /* status refresh is best-effort */
+                    setSignalResult(
+                      await api(
+                        `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=phase`,
+                      ),
+                    );
+                  } finally {
+                    try {
+                      setStatus(await api<StatusResponse>("status"));
+                    } catch {
+                      /* status refresh is best-effort */
+                    }
                   }
-                }
-              })
-            }
-          >
-            신호 응답 확인
-          </button>
+                })
+              }
+            >
+              현시 확인
+            </button>
+            <button
+              disabled={
+                busy ||
+                !(status?.signal?.configured.seoul || status?.seoulSignals)
+              }
+              onClick={() =>
+                void action(async () => {
+                  try {
+                    setSignalResult(
+                      await api(
+                        `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=timing`,
+                      ),
+                    );
+                  } finally {
+                    try {
+                      setStatus(await api<StatusResponse>("status"));
+                    } catch {
+                      /* status refresh is best-effort */
+                    }
+                  }
+                })
+              }
+            >
+              잔여 원본 확인
+            </button>
+          </div>
+          {signalResult !== null && <CurrentStatePanel payload={signalResult} />}
           {signalResult !== null && (
             <details>
               <summary>현재 상태 원문 · 통행 안내 아님</summary>
@@ -2086,8 +2262,9 @@ export function RealApp() {
             이 기기에서 로그인 유지
           </label>
           <small>
-            육교·골목은 TMAP 안내 문구·시설 코드가 있을 때만 걸러요. 도로명만으로
-            단정하지 않습니다.
+            육교·골목은 TMAP 안내 문구·시설 코드가 있을 때만 걸러요. 없으면 회피
+            확인 불가입니다. 웹에서는 화면 유지·백그라운드 GPS·알림이 보장되지
+            않습니다.
           </small>
           <button
             className="primary"
@@ -2121,7 +2298,12 @@ export function RealApp() {
               ? "사용 가능"
               : "미연결 · 자유 러닝은 가능"}
           </p>
-          <p>신호 대기 예측: 제공하지 않음</p>
+          <p>
+            신호 대기 예측:{" "}
+            {status?.signal?.predictionReady
+              ? "검증된 횡단 범위에서만"
+              : "제공하지 않음"}
+          </p>
           <button onClick={() => go("diagnostics")}>개발 연결 확인</button>
         </article>
         <article>
@@ -2237,6 +2419,36 @@ export function RealApp() {
           <br />
           달려볼까요?
         </h1>
+        <div className="purpose-row">
+          {(
+            [
+              ["destination", "목적지까지"],
+              ["park", "공원·하천"],
+              ["free", "자유 러닝"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={tripIntent === id ? "slot-on" : undefined}
+              onClick={() => setTripIntent(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {tripIntent === "destination" && (
+          <p className="muted">검색하거나 지도에서 도착 지점을 고른 뒤 보행 경로를 받습니다.</p>
+        )}
+        {tripIntent === "park" && (
+          <p className="muted">
+            출발지 근처 공원·하천을 검색해 목적지로 씁니다. 보행으로 이어지지 않으면
+            후보로 넣지 않습니다.
+          </p>
+        )}
+        {tripIntent === "free" && (
+          <p className="muted">경로 없이 GPS만으로 거리와 페이스를 기록합니다.</p>
+        )}
         <p className="eyebrow">{profile.region} · YOUR OWN FLOW</p>
         {result && (
           <article>
@@ -2318,7 +2530,13 @@ export function RealApp() {
             near={position}
           />
           <PlaceInput
-            label={loop ? "반환점" : "목적지"}
+            label={
+              tripIntent === "park"
+                ? "공원·하천"
+                : loop
+                  ? "반환점"
+                  : "목적지"
+            }
             value={destination}
             onChange={setDestination}
             near={origin?.coord ?? position}
@@ -2439,9 +2657,40 @@ export function RealApp() {
             <button onClick={() => setPick(null)}>닫기</button>
           </article>
         )}
+          {tripIntent === "park" && (
+            <button
+              disabled={busy || !origin}
+              onClick={() =>
+                void action(async () => {
+                  if (!origin) throw new Error("먼저 출발지를 정해 주세요.");
+                  const bias = `&x=${origin.coord[0]}&y=${origin.coord[1]}`;
+                  const [parks, rivers] = await Promise.all([
+                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("공원")}${bias}`),
+                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("하천")}${bias}`),
+                  ]);
+                  const seen = new Set<string>();
+                  const found = [...parks.places, ...rivers.places].filter((p) => {
+                    if (seen.has(p.id)) return false;
+                    seen.add(p.id);
+                    return true;
+                  });
+                  if (!found.length)
+                    throw new Error(
+                      "근처 공원·하천을 찾지 못했어요. 이름을 검색하거나 지도에서 고르세요.",
+                    );
+                  setDestination(found[0]);
+                  notice(
+                    `${found[0].name}을 목적지로 넣었어요. 다른 곳이면 검색에서 고르세요.`,
+                  );
+                })
+              }
+            >
+              근처 공원·하천 검색
+            </button>
+          )}
         <button
           className="primary"
-          disabled={busy}
+          disabled={busy || tripIntent === "free"}
           onClick={() => void action(findRoutes)}
         >
           루트 찾기

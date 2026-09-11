@@ -143,31 +143,55 @@ function hmToMin(hm: string): number {
   return h * 60 + m;
 }
 
-/** Spec sample: 77+25+38+40 = 180 = INT_OPER_CYCLE_VAL. Unused phases are 0. */
-export function ringPhases(row: Record<string, unknown>, prefix: "A" | "B"): number[] {
-  return [1, 2, 3, 4, 5, 6, 7, 8].map(
-    (i) => num(row, `${prefix}_RING_${i}_PHASE_VAL`) ?? 0,
+/**
+ * Spec sample lists unused phases as 0. Missing keys stay null — they are not 0.
+ */
+export function ringPhases(
+  row: Record<string, unknown>,
+  prefix: "A" | "B",
+): (number | null)[] {
+  return [1, 2, 3, 4, 5, 6, 7, 8].map((i) =>
+    num(row, `${prefix}_RING_${i}_PHASE_VAL`),
   );
+}
+
+function listedPhaseSum(phases: (number | null)[]): {
+  sum: number;
+  incomplete: boolean;
+} {
+  let sum = 0;
+  let incomplete = false;
+  for (const n of phases) {
+    if (n === null) incomplete = true;
+    else sum += n;
+  }
+  return { sum, incomplete };
 }
 
 export function cycleFromCrop(row: Record<string, unknown>): {
   cycleSec: number | null;
-  aPhaseSec: number[];
-  bPhaseSec: number[];
+  aPhaseSec: (number | null)[];
+  bPhaseSec: (number | null)[];
   reasons: string[];
 } {
   const reasons: string[] = [];
   const listed = num(row, "INT_OPER_CYCLE_VAL");
   const aPhaseSec = ringPhases(row, "A");
   const bPhaseSec = ringPhases(row, "B");
-  const aSum = aPhaseSec.reduce((s, n) => s + n, 0);
-  const bSum = bPhaseSec.reduce((s, n) => s + n, 0);
+  const a = listedPhaseSum(aPhaseSec);
+  const b = listedPhaseSum(bPhaseSec);
   if (listed === null || listed < 20 || listed > 240) {
     reasons.push("cycle_out_of_range");
     return { cycleSec: null, aPhaseSec, bPhaseSec, reasons };
   }
-  if (aSum > 0 && aSum !== listed) reasons.push("a_ring_sum_ne_cycle");
-  if (bSum > 0 && bSum !== listed) reasons.push("b_ring_sum_ne_cycle");
+  if (a.incomplete && aPhaseSec.some((n) => n !== null))
+    reasons.push("a_ring_phases_incomplete");
+  if (b.incomplete && bPhaseSec.some((n) => n !== null))
+    reasons.push("b_ring_phases_incomplete");
+  if (!a.incomplete && a.sum > 0 && a.sum !== listed)
+    reasons.push("a_ring_sum_ne_cycle");
+  if (!b.incomplete && b.sum > 0 && b.sum !== listed)
+    reasons.push("b_ring_sum_ne_cycle");
   return { cycleSec: listed, aPhaseSec, bPhaseSec, reasons };
 }
 
@@ -180,8 +204,8 @@ export type UticCropPlan = {
   startHm: string | null;
   cycleSec: number | null;
   offsetVal: number | null;
-  aPhaseSec: number[];
-  bPhaseSec: number[];
+  aPhaseSec: (number | null)[];
+  bPhaseSec: (number | null)[];
   collectedAt: string | null;
   engineReady: false;
   blockedReasons: string[];
@@ -294,8 +318,8 @@ export type UticSigMapRow = {
   ringNo: number | null;
   planTp: number | null;
   stepNo: number | null;
-  car: number[];
-  ped: number[];
+  car: (number | null)[];
+  ped: (number | null)[];
   minTm: number | null;
   maxTm: number | null;
   eop: number | null;
@@ -311,25 +335,48 @@ export function parseSigMapRow(row: Record<string, unknown>): UticSigMapRow | nu
     ringNo: num(row, "RING_NO"),
     planTp: num(row, "PLAN_TP"),
     stepNo: num(row, "STEP_NO"),
-    car: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => num(row, `CAR${i}`) ?? 0),
-    ped: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => num(row, `PED${i}`) ?? 0),
+    car: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => num(row, `CAR${i}`)),
+    ped: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => num(row, `PED${i}`)),
     minTm: num(row, "MIN_TM"),
     maxTm: num(row, "MAX_TM"),
     eop: num(row, "EOP"),
   };
 }
 
-/** CrossInfo XY with no CRS in the HWP. Accept WGS84 ranges only. */
-export function parseCrossInfoCoord(row: Record<string, unknown>): {
+/**
+ * CrossInfo XY has no CRS in the HWP. Range-looking numbers are not WGS84.
+ * Pass `crs` only when a source document names it; otherwise keep raw XY.
+ */
+export function parseCrossInfoCoord(
+  row: Record<string, unknown>,
+  crs?: string,
+): {
+  raw: { x: number; y: number } | null;
   coord: Coord | null;
+  crs: string;
   reason: string | null;
 } {
   const x = num(row, "X", "POS_X", "LON", "x");
   const y = num(row, "Y", "POS_Y", "LAT", "y");
-  if (x === null || y === null) return { coord: null, reason: "missing_xy" };
-  const coord: Coord = [x, y];
-  if (validCoord(coord)) return { coord, reason: null };
-  return { coord: null, reason: "crs_not_in_crossinfo_spec" };
+  if (x === null || y === null)
+    return { raw: null, coord: null, crs: crs?.trim() || "unspecified", reason: "missing_xy" };
+  const raw = { x, y };
+  const listed = crs?.trim();
+  if (!listed)
+    return { raw, coord: null, crs: "unspecified", reason: "crs_unspecified" };
+  const code = listed.toUpperCase().replace(" ", "");
+  if (code === "EPSG:4326" || code === "WGS84") {
+    const coord: Coord = [x, y];
+    return validCoord(coord)
+      ? { raw, coord, crs: listed, reason: null }
+      : { raw, coord: null, crs: listed, reason: "wgs84_out_of_range" };
+  }
+  return {
+    raw,
+    coord: null,
+    crs: listed,
+    reason: "crs_not_in_crossinfo_spec",
+  };
 }
 
 export type UticBundle = {

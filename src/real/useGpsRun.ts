@@ -27,8 +27,8 @@ export function locate(): Promise<Fix> {
         reject(
           new Error(
             e.code === 1
-              ? "위치 권한을 허용해 주세요."
-              : "현재 위치를 찾지 못했습니다. 야외에서 다시 시도해 주세요.",
+              ? "위치 권한을 허용해 주세요. 지도에서 출발지를 고를 수도 있어요."
+              : "현재 위치를 찾지 못했습니다. 야외에서 다시 시도하거나 지도에서 출발지를 고르세요.",
           ),
         ),
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },

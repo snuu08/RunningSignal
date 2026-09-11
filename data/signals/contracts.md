@@ -18,6 +18,7 @@
 | mois-realtime | listing-unverified | 아니오 | https://www.data.go.kr/data/15157604/openapi.do |
 | national-signal-xls | documented-file | 아니오 | https://www.data.go.kr/data/15113147/fileData.do |
 | seoul-crossing-spatial | missing-document | 아니오 | (서비스 ID 없음) |
+| seoul-walk-network | documented-file | 아니오 | https://data.seoul.go.kr/dataList/OA-21208/A/1/datasetView.do |
 
 필드·단위·오류 응답·한도의 원문은 `src/real/signals/contracts.ts`입니다.
 

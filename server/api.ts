@@ -4,6 +4,11 @@ import {
   type RouteSignalProvider,
 } from "./signal-service.ts";
 import {
+  createVerifiedProvider,
+  parsePredictionScopes,
+} from "../src/real/signals/provider.ts";
+import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
+import {
   continuity,
   poisFromInstructions,
   progressOnRoute,
@@ -21,6 +26,7 @@ import { parseRoutingPolicy } from "../src/real/routing-policy.ts";
 import {
   TDATA_CALLABLE,
   TDATA_FILE_ONLY,
+  interpretCurrentState,
   tdataUrl,
   type TdataCallId,
 } from "../src/real/signals/tdata.ts";
@@ -56,6 +62,36 @@ export function resetApiRuntimeForTests() {
   seoulReach.okAt = 0;
   seoulReach.failAt = 0;
 }
+
+export function signalProviderFromEnv(
+  env: Env,
+): RouteSignalProvider {
+  const bundle = loadVerifiedBundle(env);
+  const scopes = parsePredictionScopes(env.SIGNAL_PREDICTION_SCOPES);
+  if (!bundle.crossings.length) return unavailableSignals;
+  return createVerifiedProvider(bundle, scopes);
+}
+
+function predictionFromEnv(env: Env) {
+  const bundle = loadVerifiedBundle(env);
+  const scopes = parsePredictionScopes(env.SIGNAL_PREDICTION_SCOPES);
+  const publicOn = env.SIGNAL_PUBLIC_PREDICTION === "true";
+  const mappingReady = bundle.crossings.length > 0;
+  const scopedPlans = bundle.plans.filter((p) =>
+    scopes.some(
+      (s) =>
+        s.source === p.source && s.sourceIntersectionId === p.sourceIntersectionId,
+    ),
+  );
+  const predictionReady = publicOn && scopedPlans.length > 0 && mappingReady;
+  const predictionByRegion = {
+    서울: predictionReady && scopes.some((s) => s.source === "tdata" || s.source === "field"),
+    인천: false,
+    대구: false,
+    성남: false,
+  };
+  return { mappingReady, predictionReady, predictionByRegion, scopes };
+}
 const WALKING_EMPTY: Record<string, string> = {
   walkable: "조건에 맞는 보행 경로가 없어요.",
   stairs:
@@ -90,11 +126,25 @@ async function upstream(
       "제공기관 연결에 실패했습니다. 잠시 뒤 다시 시도하세요.",
     );
   }
-  if (!response.ok)
+  if (!response.ok) {
+    let code = "";
+    try {
+      const errBody = JSON.parse(await response.text()) as {
+        error?: { code?: unknown };
+      };
+      if (
+        typeof errBody.error?.code === "string" &&
+        /^[A-Z][A-Z0-9_]{2,40}$/.test(errBody.error.code)
+      )
+        code = ` · ${errBody.error.code}`;
+    } catch {
+      /* keep generic provider error */
+    }
     throw new ApiError(
       response.status === 429 ? 429 : 502,
-      `제공기관 응답 오류 (${response.status}). 서버의 키 승인·호출 한도를 확인하세요.`,
+      `제공기관 응답 오류 (${response.status}${code}). 서버의 키 승인·호출 한도를 확인하세요.`,
     );
+  }
   try {
     return await response.json();
   } catch {
@@ -227,29 +277,25 @@ export async function handleApi(
   request: Request,
   env: Env,
   fetcher: Fetch = fetch,
-  signalProvider: RouteSignalProvider = unavailableSignals,
+  signalProvider?: RouteSignalProvider,
 ): Promise<Response> {
   try {
     const url = new URL(request.url),
       path = url.pathname.replace(/^\/\.netlify\/functions\/api/, "/api");
+    const provider = signalProvider ?? signalProviderFromEnv(env);
     if (request.method === "GET" && path === "/api/status") {
       const seoulConfigured = !!env.SEOUL_TDATA_API_KEY;
-      const mappingReady = false;
-      const predictionByRegion = {
-        서울: false,
-        인천: false,
-        대구: false,
-        성남: false,
-      };
-      const predictionReady = false;
+      const { mappingReady, predictionReady, predictionByRegion } =
+        predictionFromEnv(env);
       return json({
         places: !!env.KAKAO_REST_API_KEY,
         routes: !!env.TMAP_APP_KEY,
         seoulSignals: seoulConfigured,
         reverseGeocode: !!env.KAKAO_REST_API_KEY,
         signalPrediction: predictionReady,
-        signalDetail:
-          "실제 횡단 방향 매핑·운영계획 검증 전입니다. 신호 대기는 예측하지 않습니다. 키 설정과 예측 가능은 다릅니다.",
+        signalDetail: predictionReady
+          ? "검증된 횡단·계획 범위에서만 대기를 계산합니다. 그 외 구간은 미확인입니다."
+          : "실제 횡단 방향 매핑·운영계획 검증 전입니다. 신호 대기는 예측하지 않습니다. 키 설정과 예측 가능은 다릅니다.",
         signal: {
           configured: {
             seoul: seoulConfigured,
@@ -269,7 +315,7 @@ export async function handleApi(
           configured: !!env.UTIC_SERVICE_KEY,
           ready: false,
           detail:
-            "PlanCrossRoadInfoService·SigMap 명세로 조회 가능. 주기·옵셋은 파싱하고 대기 예측에는 쓰지 않음.",
+            "안내 페이지의 온라인 제어기는 인천·대전·대구. L01 코드만으로 서울 데이터가 있다고 보지 않음. 계획 조회는 파싱만 하고 대기 예측에 쓰지 않음.",
         },
         national: {
           configured: !!env.DATA_GO_KR_SERVICE_KEY,
@@ -462,7 +508,7 @@ export async function handleApi(
         body.pace,
         departureMs,
         policy,
-        signalProvider,
+        provider,
       );
       if (!planned.assessment || !planned.routes.length)
         throw new ApiError(
@@ -474,6 +520,7 @@ export async function handleApi(
         partial: tmapOk < 3,
         departureMs,
         policyApplied: policy,
+        avoidanceCheck: planned.avoidance,
         ...planned.assessment,
       });
     }
@@ -504,12 +551,15 @@ export async function handleApi(
           fetcher,
         );
         noteSeoulReachable(true);
+        const fetchedAt = Date.now();
+        const kind = service === "timing" ? "timing" : "phase";
         return json({
           source: "서울특별시 T-DATA",
           service,
-          fetchedAt: Date.now(),
+          fetchedAt,
           capability: "current-state-only",
           predictionReady: false,
+          current: interpretCurrentState(data, fetchedAt, kind),
           data,
         });
       } catch (error) {

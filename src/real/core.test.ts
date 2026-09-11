@@ -22,7 +22,7 @@ import {
   type Route,
   type Track,
 } from "./core.ts";
-import { waitDisplay, candidateIndex } from "./api-contract.ts";
+import { waitDisplay, candidateIndex, remainingRawDisplay } from "./api-contract.ts";
 import {
   parseRoutingPolicy,
   policyFromProfile,
@@ -186,6 +186,9 @@ describe("arrival-aware signal policy", () => {
     expect(waitDisplay(base.forecast).known).toBe(false);
     expect(waitDisplay(prediction(0, 0)).known).toBe(true);
     expect(waitDisplay(prediction(0, 0)).waitSec).toBe(0);
+    expect(remainingRawDisplay(36001)).not.toMatch(/초$/);
+    expect(remainingRawDisplay(36001)).toMatch(/원본 36001/);
+    expect(remainingRawDisplay(null)).toBe("잔여값 없음");
     expect(candidateIndex([{ id: "a" }, { id: "b" }], "b")).toBe(1);
     expect(candidateIndex([{ id: "a" }], "missing")).toBe(0);
   });
@@ -378,6 +381,18 @@ describe("straight-line and remaining distance", () => {
     expect(nextPoi(pois, 0)?.name).toMatch(/횡단/);
     expect(forecast(1000, 360, epoch, [], false, epoch).waitSec).toBeNull();
   });
+  it("uses walk speed for crossing time, not the runner pace", () => {
+    const fast = forecast(0, 180, epoch + 19000, [crossing(0)], true, epoch);
+    expect(fast.waitSec).toBeGreaterThan(0);
+  });
+  it("marks overpass avoidance unconfirmed when no facility flags exist", () => {
+    const out = applyWalkingPolicy([route("0")], {
+      ...TRIAL_ROUTING_POLICY,
+      avoidOverpass: true,
+    });
+    expect(out.avoidance.overpass).toBe("unconfirmed");
+    expect(out.routes).toHaveLength(1);
+  });
 });
 describe("crossing count rank and facilities", () => {
   it("moves a unique shorter-crossing candidate first without inventing waits", () => {
@@ -397,7 +412,7 @@ describe("crossing count rank and facilities", () => {
         { properties: { facilityType: "15", description: "계단" } },
         { properties: { facilityType: "14", description: "횡단보도" } },
       ]),
-    ).toEqual({ hasStairs: true, hasOverpass: false, hasAlley: false });
+    ).toEqual({ hasStairs: true, hasOverpass: false, hasAlley: false, facilityHints: true });
     expect(
       scanFacilities([{ properties: { description: "육교로 이동" } }]).hasOverpass,
     ).toBe(true);

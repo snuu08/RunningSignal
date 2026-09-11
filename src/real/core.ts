@@ -4,6 +4,10 @@ import {
   type RealRoutingPolicy,
 } from "./routing-policy.ts";
 import {
+  CROSSING_BUFFER_SEC,
+  CROSSING_WALK_M_PER_SEC,
+} from "../config/app.ts";
+import {
   ENGINE_PLAN_APPLIED_MAX_AGE_MS,
   ENGINE_PLAN_CLOCK_SKEW_MS,
 } from "./signals/freshness.ts";
@@ -40,6 +44,8 @@ export type Route = {
   hasStairs?: boolean;
   hasOverpass?: boolean;
   hasAlley?: boolean;
+  /** True when TMAP/Kakao text or facilityType was present. False means 회피 확인 불가. */
+  facilityHints?: boolean;
 };
 export type FixedPlan = {
   cycleSec: number;
@@ -74,6 +80,11 @@ export type WalkingEmptyReason =
   | "stairs"
   | "overpass"
   | "detour";
+export type AvoidanceCheck = {
+  stairs: "off" | "tmap-option-30";
+  overpass: "off" | "excluded" | "unconfirmed";
+  alley: "off" | "preferred-wide" | "unconfirmed";
+};
 export function meters(a: Coord, b: Coord): number {
   const r = Math.PI / 180,
     dlat = (b[1] - a[1]) * r,
@@ -289,32 +300,43 @@ export function rankRoutes(
 /**
  * Walkable → stairs/overpass/alley → dedupe → extra-distance cap →
  * walking baseline. Does not use provider payload order as the baseline.
+ * Missing facility flags are 회피 확인 불가, not "confirmed no overpass".
  */
 export function applyWalkingPolicy(
   routes: Route[],
   policy: RealRoutingPolicy = TRIAL_ROUTING_POLICY,
-): { routes: Route[]; emptyReason: WalkingEmptyReason } {
+): { routes: Route[]; emptyReason: WalkingEmptyReason; avoidance: AvoidanceCheck } {
+  const avoidance: AvoidanceCheck = {
+    stairs: policy.avoidStairs ? "tmap-option-30" : "off",
+    overpass: policy.avoidOverpass ? "unconfirmed" : "off",
+    alley: policy.avoidAlley ? "unconfirmed" : "off",
+  };
   const walkable = routes.filter(isWalkableRoute).map(withGeometry);
-  if (!walkable.length) return { routes: [], emptyReason: "walkable" };
+  if (!walkable.length)
+    return { routes: [], emptyReason: "walkable", avoidance };
 
   let next = walkable;
   if (policy.avoidStairs) {
     next = next.filter((r) => r.option === "30");
-    if (!next.length) return { routes: [], emptyReason: "stairs" };
+    if (!next.length) return { routes: [], emptyReason: "stairs", avoidance };
   }
   if (policy.avoidOverpass) {
+    const sawOverpass = walkable.some((r) => r.hasOverpass);
     next = next.filter((r) => !r.hasOverpass);
-    if (!next.length) return { routes: [], emptyReason: "overpass" };
+    if (sawOverpass) avoidance.overpass = "excluded";
+    if (!next.length) return { routes: [], emptyReason: "overpass", avoidance };
   }
   if (policy.avoidAlley) {
+    const sawAlley = walkable.some((r) => r.hasAlley);
     const wide = next.filter((r) => r.option === "4" || !r.hasAlley);
     if (wide.length) next = wide;
+    if (sawAlley) avoidance.alley = "preferred-wide";
   }
 
   next = rankRoutes(next, policy.detourRatio, policy.detourMaxM);
-  if (!next.length) return { routes: [], emptyReason: "detour" };
+  if (!next.length) return { routes: [], emptyReason: "detour", avoidance };
   next = preferFewerCrossings(next, policy);
-  return { routes: next, emptyReason: "none" };
+  return { routes: next, emptyReason: "none", avoidance };
 }
 /** Unknown coverage is never converted to zero stops. Earlier waiting shifts every later ETA. */
 export function forecast(
@@ -368,7 +390,7 @@ export function forecast(
     }
     const phase =
       ((((arrival - p.epochMs) / 1000) % p.cycleSec) + p.cycleSec) % p.cycleSec;
-    const crossSec = (c.widthM / 1000) * pace + 3;
+    const crossSec = c.widthM / CROSSING_WALK_M_PER_SEC + CROSSING_BUFFER_SEC;
     const entryStart = p.entryStartSec + p.uncertaintySec;
     const latestEntry =
       Math.min(p.entryEndSec, p.clearEndSec - crossSec) - p.uncertaintySec;
@@ -460,11 +482,17 @@ export function preferFewerCrossings(
 }
 export function scanFacilities(
   features: { properties?: { facilityType?: unknown; description?: unknown; facilityName?: unknown } }[],
-): { hasStairs: boolean; hasOverpass: boolean; hasAlley: boolean } {
-  const flags = { hasStairs: false, hasOverpass: false, hasAlley: false };
+): { hasStairs: boolean; hasOverpass: boolean; hasAlley: boolean; facilityHints: boolean } {
+  const flags = {
+    hasStairs: false,
+    hasOverpass: false,
+    hasAlley: false,
+    facilityHints: false,
+  };
   for (const f of features) {
     const type = String(f.properties?.facilityType ?? "");
     const text = `${f.properties?.description ?? ""} ${f.properties?.facilityName ?? ""}`;
+    if (type || text.trim()) flags.facilityHints = true;
     if (type === "15" || /계단/.test(text)) flags.hasStairs = true;
     if (
       type === "1" ||

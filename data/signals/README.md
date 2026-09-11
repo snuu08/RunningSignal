@@ -37,7 +37,18 @@ npm run signals -- etl --kind observations --input data/signals/inbox/field-obse
 npm run signals -- etl --kind geojson --input data/signals/inbox/crossings.geojson --mapping data/signals/mappings/seoul-spatial.json
 ```
 
-XLS/XLSX는 파서로 열지 않습니다. CSV로 저장한 뒤 `national-xls-placeholder.json`과 `seoul-spatial.json`의 `REPLACE_AFTER_DICTIONARY_*` 헤더를 실제 컬럼명으로 바꿉니다. 이 자리 표시 이름은 공식 스키마가 아닙니다. 원본 좌표계가 EPSG:4326 또는 EPSG:5186가 아니면 변환을 거부합니다.
+XLS/XLSX는 `npm run signals -- xlsx-csv --input …`로 CSV를 만들 수 있습니다. 선행 0은 문자열로 유지합니다. `.xls`(OLE)는 엑셀에서 CSV로 저장하세요. `national-xls-placeholder.json`은 서울 표준데이터와 다른 전국/파일 자리입니다. 헤더를 추측 이름으로 확정하지 마세요.
+
+수집:
+
+```bash
+npm run signals -- collect --provider utic --op getPlanCROPInfo --srchCTId L02
+npm run signals -- collect --provider tdata --service phase --itstId 1537
+npm run signals -- mae --input data/signals/inbox/field-observation.csv
+npm run signals -- pack-verified --crossings data/signals/verified/crossings.json --plans data/signals/verified/plans.json
+```
+
+`pack-verified`는 `samples/`를 넣지 않습니다. 공개 예측은 `SIGNAL_PUBLIC_PREDICTION=true`와 `SIGNAL_PREDICTION_SCOPES=field:교차로ID`가 있을 때만 켜집니다.
 
 합성 예시 ETL (실서비스 로드 금지):
 

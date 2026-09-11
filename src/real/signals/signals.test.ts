@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ENGINE_PLAN_APPLIED_MAX_AGE_MS, appliedPlanIsFresh, engineVerifiedAtMs } from "./freshness.ts";
 import { namespacedId } from "./schema.ts";
-import { validateCrossing, validateObservation, validatePlan } from "./validate.ts";
+import { validateCrossing, validateObservation, validatePlan, asFinite } from "./validate.ts";
 import { redactText, redactValue } from "./redact.ts";
 import { etlCrossings, etlObservations, rejectSpreadsheetFilename } from "./etl.ts";
 import { captureTdataIntersection, contrastInCodeUrl, tdataUrl } from "./tdata.ts";
@@ -302,5 +302,62 @@ describe("engine mapping does not enable live prediction", () => {
     );
     expect(actuated?.plan).toBeNull();
     expect(forecast(100, 360, 1800000000000, [actuated!], true, 1800000000000).waitSec).toBeNull();
+  });
+  it("refuses a plan from another intersection or pedestrian group", () => {
+    const crossing = validateCrossing(crossingRow).ok as CrossingRecord;
+    const plan = validatePlan({
+      source: "field",
+      sourcePlanId: "TOD-1",
+      version: "v1",
+      sourceIntersectionId: "1537",
+      pedestrianSignalGroupId: "tdata:1537:ntPdsg",
+      cycleSec: "60",
+      epochMs: "1800000000000",
+      entryStartSec: "0",
+      entryEndSec: "20",
+      clearEndSec: "30",
+      validFromMs: "1799999990000",
+      validToMs: "1800003600000",
+      uncertaintySec: "0",
+      operationMode: "fixed",
+      currentPlanConfirmedAt: "1800000000000",
+      stage: "verified",
+    }).ok as OperatingPlanRecord;
+    expect(
+      toRuntimeCrossing(crossing, { ...plan, sourceIntersectionId: "9999" }, 1800000000000, 10)
+        ?.plan,
+    ).toBeNull();
+    expect(
+      toRuntimeCrossing(crossing, { ...plan, pedestrianSignalGroupId: "other" }, 1800000000000, 10)
+        ?.plan,
+    ).toBeNull();
+    expect(
+      toRuntimeCrossing(crossing, { ...plan, source: "utic" }, 1800000000000, 10)?.plan,
+    ).toBeNull();
+  });
+});
+
+describe("numeric empty vs zero", () => {
+  it("does not treat blank strings as 0", () => {
+    expect(asFinite("", 0, 3)).toBeNull();
+    expect(asFinite("  ", 0, 3)).toBeNull();
+    expect(asFinite(null, 0, 3)).toBeNull();
+    expect(asFinite("0", 0, 3)).toBe(0);
+    expect(validatePlan({
+      source: "field",
+      sourcePlanId: "TOD-1",
+      version: "v1",
+      sourceIntersectionId: "1537",
+      pedestrianSignalGroupId: "g",
+      cycleSec: "60",
+      epochMs: "1800000000000",
+      entryStartSec: "0",
+      entryEndSec: "20",
+      clearEndSec: "30",
+      validFromMs: "1",
+      validToMs: "2",
+      uncertaintySec: "",
+      operationMode: "fixed",
+    }).reason).toBe("invalid_plan_numbers");
   });
 });

@@ -105,6 +105,30 @@ describe("server provider boundary", () => {
     expect(r.status).toBe(502);
     expect(await r.text()).not.toContain("secret-test-key");
   });
+  it("surfaces TMAP gateway codes without leaking the key", async () => {
+    const f = vi.fn(async () =>
+      Response.json(
+        {
+          error: {
+            id: "403",
+            category: "gw",
+            code: "INVALID_API_KEY",
+            message: "secret-test-key",
+          },
+        },
+        { status: 403 },
+      ),
+    );
+    const r = await handleApi(
+      request(),
+      { TMAP_APP_KEY: "secret-test-key" },
+      f,
+    );
+    const text = await r.text();
+    expect(r.status).toBe(502);
+    expect(text).toContain("INVALID_API_KEY");
+    expect(text).not.toContain("secret-test-key");
+  });
   it("rejects invalid coordinates and pace before contacting providers", async () => {
     const f = vi.fn();
     const r = await handleApi(
@@ -142,7 +166,12 @@ describe("server provider boundary", () => {
     expect(
       new URL(f.mock.calls[0][0] as string).searchParams.get("apiKey"),
     ).toBe("test");
-    expect((await r.json()).predictionReady).toBe(false);
+    const body = await r.json();
+    expect(body.predictionReady).toBe(false);
+    expect(body.current.pedestrianPresent).toBe(false);
+    expect(
+      body.current.remainingPedestrian.every((row: { seconds: null }) => row.seconds === null),
+    ).toBe(true);
   });
   it("requires a Kakao REST key; does not use a JavaScript key", async () => {
     const f = vi.fn();
@@ -472,5 +501,48 @@ describe("route recommendation contract", () => {
     expect(status.signal.mappingReady).toBe(false);
     expect(status.signal.predictionReady).toBe(false);
     expect(status.signalPrediction).toBe(false);
+  });
+  it("blocks server predictionReady if any of mapping, scopes, or public flag is missing", async () => {
+    const fixture = JSON.stringify({
+      version: 1,
+      synthetic: false,
+      crossings: [
+        {
+          synthetic: false,
+          stage: "verified",
+          source: "field",
+          sourceIntersectionId: "1850",
+        },
+      ],
+      plans: [
+        {
+          synthetic: false,
+          stage: "verified",
+          source: "field",
+          sourceIntersectionId: "1850",
+        },
+      ],
+      surveys: [],
+    });
+    const full = {
+      SIGNAL_VERIFIED_JSON: fixture,
+      SIGNAL_PREDICTION_SCOPES: "field:1850",
+      SIGNAL_PUBLIC_PREDICTION: "true",
+    };
+    const ready = await (
+      await handleApi(new Request("https://app.test/api/status"), full)
+    ).json();
+    expect(ready.signal.mappingReady).toBe(true);
+    expect(ready.signal.predictionReady).toBe(true);
+    for (const missing of [
+      { ...full, SIGNAL_PUBLIC_PREDICTION: "false" },
+      { ...full, SIGNAL_PREDICTION_SCOPES: "" },
+      { SIGNAL_PREDICTION_SCOPES: "field:1850", SIGNAL_PUBLIC_PREDICTION: "true" },
+    ]) {
+      const blocked = await (
+        await handleApi(new Request("https://app.test/api/status"), missing)
+      ).json();
+      expect(blocked.signal.predictionReady).toBe(false);
+    }
   });
 });

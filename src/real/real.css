@@ -424,9 +424,21 @@
 .real-shell a {
   color: #d0dfd5;
 }
-.live-dot {
-  font-size: 12px;
-  color: #b4f6ce;
+.purpose-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+.purpose-row button {
+  flex: 1;
+  background: #ffffff12;
+}
+.real-shell .text-btn {
+  display: inline;
+  padding: 0 4px;
+  min-height: 0;
+  text-decoration: underline;
+  color: #d0dfd5;
 }
 @keyframes runner-in {
   0% {

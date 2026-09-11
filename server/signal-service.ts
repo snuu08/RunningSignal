@@ -11,6 +11,7 @@ import {
   type RecommendationReason,
   type SignalCoverage,
 } from "../src/real/api-contract.ts";
+import { recommendSentences } from "../src/real/recommend-copy.ts";
 import {
   TRIAL_ROUTING_POLICY,
   type RealRoutingPolicy,
@@ -26,6 +27,7 @@ export interface RouteSignalProvider {
     completeCoverage: boolean;
     crossings: Crossing[];
     source: string;
+    exclusions?: { id: string; reason: string }[];
   }>;
 }
 export const unavailableSignals: RouteSignalProvider = {
@@ -89,11 +91,20 @@ export async function evaluateSignalCandidates(
   const forecasts = Object.fromEntries(
     entries.map((e) => [e.route.id, e.forecast]),
   ) as Record<string, Forecast>;
+  const signalCoverage = coverageOf(entries.map((e) => e.forecast));
+  const chosen = entries.find((e) => e.route.id === recommendedId)?.route ?? routes[0];
   return {
     recommendedId,
     recommendationReason: reason,
     forecasts,
-    signalCoverage: coverageOf(entries.map((e) => e.forecast)),
+    signalCoverage,
+    recommendSentences: recommendSentences({
+      reason,
+      coverage: signalCoverage,
+      liveSignals: reason === "signal-compare",
+      extraM: chosen?.extraM ?? 0,
+      sharpTurns: chosen?.sharpTurns ?? 0,
+    }),
   };
 }
 
@@ -118,16 +129,27 @@ export async function planReturnedRoutes(
     walking.routes.some((r) => r.id === assessment.recommendedId)
       ? assessment.recommendedId
       : (walking.routes[0]?.id ?? null);
+  const reason: RecommendationReason =
+    recommendedId && recommendedId !== walking.routes[0]?.id
+      ? "signal-compare"
+      : assessment.recommendationReason;
+  const chosen =
+    walking.routes.find((r) => r.id === recommendedId) ?? walking.routes[0];
   return {
     emptyReason: walking.emptyReason,
+    avoidance: walking.avoidance,
     routes: orderWithRecommended(walking.routes, recommendedId),
     assessment: {
       ...assessment,
       recommendedId,
-      recommendationReason:
-        recommendedId && recommendedId !== walking.routes[0]?.id
-          ? ("signal-compare" as const)
-          : assessment.recommendationReason,
+      recommendationReason: reason,
+      recommendSentences: recommendSentences({
+        reason,
+        coverage: assessment.signalCoverage,
+        liveSignals: reason === "signal-compare",
+        extraM: chosen?.extraM ?? 0,
+        sharpTurns: chosen?.sharpTurns ?? 0,
+      }),
     },
   };
 }

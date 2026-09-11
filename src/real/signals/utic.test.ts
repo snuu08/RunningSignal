@@ -78,7 +78,14 @@ describe("UTIC HWP mapping", () => {
     const crop = parseCropRow(cropSample)!;
     expect(crop.startHm).toBe("06:00");
     expect(crop.offsetVal).toBe(10);
-    expect(crop.engineReady).toBe(false);
+    const incomplete = cycleFromCrop({
+      INT_OPER_CYCLE_VAL: "180",
+      A_RING_1_PHASE_VAL: "77",
+      A_RING_2_PHASE_VAL: "25",
+    });
+    expect(incomplete.aPhaseSec[0]).toBe(77);
+    expect(incomplete.aPhaseSec[4]).toBeNull();
+    expect(incomplete.reasons).toContain("a_ring_phases_incomplete");
     expect(crop.blockedReasons).toEqual(
       expect.arrayContaining([
         "epoch_not_in_spec",
@@ -195,15 +202,20 @@ describe("UTIC HWP mapping", () => {
   });
 
   it("keeps intersection XY that is not WGS84 out of the engine", () => {
-    expect(parseCrossInfoCoord({ X: 126.978, Y: 37.566 }).coord).toEqual([
-      126.978, 37.566,
-    ]);
+    const looking = parseCrossInfoCoord({ X: 126.978, Y: 37.566 });
+    expect(looking.coord).toBeNull();
+    expect(looking.raw).toEqual({ x: 126.978, y: 37.566 });
+    expect(looking.reason).toBe("crs_unspecified");
     expect(parseCrossInfoCoord({ X: 200000, Y: 450000 }).reason).toBe(
-      "crs_not_in_crossinfo_spec",
+      "crs_unspecified",
     );
+    expect(
+      parseCrossInfoCoord({ X: 126.978, Y: 37.566 }, "EPSG:4326").coord,
+    ).toEqual([126.978, 37.566]);
     expect(parseSigMapRow({ REGION_CD: "L02", INT_NO: "5033", PED1: "0" })?.ped[0]).toBe(
       0,
     );
+    expect(parseSigMapRow({ REGION_CD: "L02", INT_NO: "5033" })?.ped[0]).toBeNull();
   });
 
   it("builds documented query URLs and refuses unknown regions and file ops on the JSON proxy contract", () => {

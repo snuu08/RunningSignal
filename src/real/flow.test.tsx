@@ -28,10 +28,21 @@ vi.mock("./backend.ts", async () => {
     await vi.importActual<typeof import("./backend.ts")>("./backend.ts");
   return { ...actual, cloud: null, publicRoutes: async () => [] };
 });
-afterEach(() => {
+function resetIdb() {
+  return new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase("flow-run-real-v1");
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();
+    req.onblocked = () => resolve();
+  });
+}
+
+afterEach(async () => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  sessionStorage.clear();
+  await resetIdb();
 });
 describe("GPS lifecycle", () => {
   beforeEach(() => {

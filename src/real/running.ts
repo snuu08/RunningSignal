@@ -1,8 +1,12 @@
 import { validPace } from "./core.ts";
 import type { RunRecord } from "./storage.ts";
 
-/** Signal wait UI stays built but unpublished until mapping/plans are verified. */
+/** Signal wait UI stays unpublished until mapping/plans are verified and LIVE_SIGNAL_UI is flipped. */
 export const LIVE_SIGNAL_UI = false;
+
+export function showSignalWait(predictionReady: boolean): boolean {
+  return LIVE_SIGNAL_UI && predictionReady;
+}
 
 /** Trial off-route thresholds. Not a surveyed product value. */
 export const TRIAL_OFF_ROUTE = {

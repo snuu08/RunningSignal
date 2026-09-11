@@ -3,11 +3,17 @@ command = "npm run build"
 publish = "dist"
 
 [build.environment]
+  NODE_VERSION = "22"
   VITE_APP_MODE = "real"
+  SIGNAL_PUBLIC_PREDICTION = "false"
 
 [functions]
 directory = "netlify/functions"
 node_bundler = "esbuild"
+included_files = ["data/signals/verified/**"]
+
+[functions."api"]
+  timeout = 26
 
 [[headers]]
 for = "/*"
@@ -21,6 +27,8 @@ for = "/index.html"
 [headers.values]
   Cache-Control = "no-cache"
 
+# Keep the rewrite so the SPA fallback does not swallow /api.
+# The function also declares path /api/* for runtimes that honor it.
 [[redirects]]
 from = "/api/*"
 to = "/.netlify/functions/api/:splat"

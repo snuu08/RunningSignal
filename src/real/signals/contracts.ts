@@ -71,11 +71,14 @@ export const PROVIDER_CONTRACTS: ProviderContract[] = [
       "stPdsgRmdrCs",
       "wtPdsgRmdrCs",
     ],
-    unitsNoted: ["잔여 *RmdrCs = 1/10초(센티초) — 포털 설명"],
+    unitsNoted: [
+      "잔여 *RmdrCs 필드명=센티초, 값 설명=1/10초 — 2026-09-11 카탈로그 재확인. 변환하지 않음.",
+    ],
     errorResponses: "포털 페이지에 HTTP 오류 표가 없음.",
     callLimit: "개발 활용신청 하루 최대 1,000건 (포털 안내)",
     approvalScope: "T-DATA 활용신청 범위.",
-    notes: "2026-09-08 카탈로그 확인. 현재 잔여값. 여러 주기 뒤를 이 값으로 단정하지 않음. 잔여 *RmdrCs = 1/10초(센티초).",
+    notes:
+      "2026-09-11 카탈로그 재확인. 현재 잔여값. 여러 주기 뒤를 이 값으로 단정하지 않음. 필드명 센티초와 값 설명 1/10초가 불일치하므로 초 변환을 하지 않는다.",
     mayCall: true,
   },
   {
@@ -157,7 +160,7 @@ export const PROVIDER_CONTRACTS: ProviderContract[] = [
       "L{region}_crossInfo.xlsx — REGION_CD, INT_NO, INT_NM, X/Y",
       "L{region}_crossDetailInfo.xlsx — 맵번호, A/B링 현시별 방향설정코드",
     ],
-    unitsNoted: ["일 1회. 좌표계 미기재. WGS84 범위만 좌표로 수용."],
+    unitsNoted: ["일 1회. 좌표계 미기재. 숫자 범위만으로 WGS84라고 보지 않음."],
     errorResponses:
       "1 APPLICATION_ERROR, 10 INVALID_REQUEST_PARAMETER_ERROR, 12 NO_OPENAPI_SERVICE_ERROR, 20 SERVICE_ACCESS_DENIED_ERROR, 22 LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR, 30 SERVICE_KEY_IS_NOT_REGISTERED_ERROR, 31 DEADLINE_HAS_EXPIRED_ERROR, 32 UNREGISTERED_IP_ERROR, 99 UNKNOWN_ERROR",
     callLimit: "명세서 30 tps. 파일 다운로드.",
@@ -240,7 +243,7 @@ export const PROVIDER_CONTRACTS: ProviderContract[] = [
     errorResponses: "안내 페이지. 오류표는 HWP.",
     callLimit: "해당 없음.",
     approvalScope:
-      "2026-09-08 안내: 인천시·대전시·대구시 온라인 제어기. L01 코드 ≠ 서울 데이터 존재.",
+      "2026-09-11 안내 페이지 재확인: 온라인 제어기는 인천시·대전시·대구시. L01 코드 ≠ 서울 데이터 존재. 서울 구현은 UTIC에 의존하지 않음.",
     notes: "호출은 utic-plan / utic-sigmap 계약을 쓴다. 이 항목은 안내 URL만.",
     mayCall: false,
   },
@@ -316,7 +319,7 @@ export const PROVIDER_CONTRACTS: ProviderContract[] = [
     callLimit: "파일 다운로드.",
     approvalScope: "포털 파일.",
     notes:
-      "시설 위치 목록. 주기·녹색을 만들지 않음. 실제 XLS/컬럼 설명 수령 후 매핑을 확정.",
+      "시설 위치 목록. 주기·녹색을 만들지 않음. 서울 자료와 전국/표준 파일 이름을 섞지 않음. 실제 XLS 헤더 수령 후 매핑.",
     mayCall: false,
   },
   {
@@ -335,6 +338,24 @@ export const PROVIDER_CONTRACTS: ProviderContract[] = [
     approvalScope: "미확인.",
     notes:
       "정확한 서비스 ID·좌표계 문서가 없다. 입력 자리만 둔다. URL을 만들지 않는다.",
+    mayCall: false,
+  },
+  {
+    id: "seoul-walk-network",
+    provider: "서울 열린데이터광장",
+    title: "서울시 자치구별 도보 네트워크 (OA-21208)",
+    status: "documented-file",
+    catalogUrl: "https://data.seoul.go.kr/dataList/OA-21208/A/1/datasetView.do",
+    listedEndpoint: null,
+    listedOperations: [],
+    requestFields: [],
+    responseFieldsNoted: ["노드·링크 보행 네트워크, 횡단보도·육교 등 시설 언급"],
+    unitsNoted: ["공개 안내 WGS84. 페이지 직접 조회는 2026-09-11 409."],
+    errorResponses: "광장 로그인/다운로드.",
+    callLimit: "파일 다운로드.",
+    approvalScope: "서울 열린데이터 광장 이용조건.",
+    notes:
+      "PDSR_LINK 코드표는 통행 모드 비트일 뿐 기하가 없다. TMAP 보행 경로가 기본 러닝 경로망이다. OA-21208 SHP/CSV를 받으면 육교·횡단 확인용으로만 쓰고, 없으면 TMAP 안내 문구 회피(확인 불가 가능).",
     mayCall: false,
   },
 ];

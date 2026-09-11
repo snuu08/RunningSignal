@@ -39,7 +39,11 @@ const MODES: OperationMode[] = [
   "unknown",
 ];
 
+/** Empty string / null / blank is missing, not 0. Explicit 0 still passes when in range. */
 export function asFinite(value: unknown, min: number, max: number): number | null {
+  if (value === "" || value == null || value === false) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  if (typeof value === "boolean") return null;
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n) || n < min || n > max) return null;
   return n;
@@ -49,6 +53,23 @@ function asString(value: unknown, max = 200): string | null {
   if (typeof value !== "string") return null;
   const s = value.trim();
   return s.length > 0 && s.length <= max ? s : null;
+}
+
+function hmParts(value: string): { h: number; m: number } | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!m) return null;
+  return { h: Number(m[1]), m: Number(m[2]) };
+}
+
+function validStartHm(value: string): boolean {
+  const p = hmParts(value);
+  return !!p && p.h >= 0 && p.h <= 23 && p.m >= 0 && p.m <= 59;
+}
+
+function validEndHm(value: string): boolean {
+  if (value === "24:00") return true;
+  const p = hmParts(value);
+  return !!p && p.h >= 0 && p.h <= 23 && p.m >= 0 && p.m <= 59;
 }
 
 /** Provider IDs may arrive as numbers in GeoJSON/XLS exports. */
@@ -191,7 +212,7 @@ export function validatePlan(raw: Record<string, unknown>): {
   if (!MODES.includes(operationMode)) return { ok: null, reason: "unknown_operationMode" };
   const startHm = asString(raw.startHm, 5) ?? "00:00";
   const endHm = asString(raw.endHm, 5) ?? "24:00";
-  if (!/^\d{2}:\d{2}$/.test(startHm) || !/^\d{2}:\d{2}$/.test(endHm))
+  if (!validStartHm(startHm) || !validEndHm(endHm))
     return { ok: null, reason: "invalid_time_band" };
   const synthetic = raw.synthetic === true || raw.synthetic === "true";
   if (source === "synthetic" && !synthetic)
@@ -200,12 +221,20 @@ export function validatePlan(raw: Record<string, unknown>): {
     raw.flashStartSec === "" || raw.flashStartSec == null
       ? null
       : asFinite(raw.flashStartSec, 0, 240);
-  const weekdays = Array.isArray(raw.weekdays)
-    ? raw.weekdays.map(Number).filter((d) => d >= 1 && d <= 7)
-    : String(raw.weekdays ?? "")
+  const weekdayRaw = raw.weekdays;
+  const weekdays = Array.isArray(weekdayRaw)
+    ? weekdayRaw.map(Number).filter((d) => d >= 1 && d <= 7)
+    : String(weekdayRaw ?? "")
         .split(/[|,]/)
         .map((s) => Number(s.trim()))
         .filter((d) => d >= 1 && d <= 7);
+  if (
+    weekdayRaw != null &&
+    weekdayRaw !== "" &&
+    !(Array.isArray(weekdayRaw) && weekdayRaw.length === 0) &&
+    weekdays.length === 0
+  )
+    return { ok: null, reason: "invalid_weekdays" };
   const specialDayIds = Array.isArray(raw.specialDayIds)
     ? raw.specialDayIds.map(String)
     : String(raw.specialDayIds ?? "")

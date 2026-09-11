@@ -199,7 +199,10 @@ GET /api/signals/utic?op=getSigMapCRInfo&srchCTId=L01
 - 신호 없는 경로의 `0초`는 전체 보행 횡단 조사 범위가 완전하다고 입증된 경우만 가능하다.
 - `preferSignalRoute()`는 15초 이상일 때만 대안 비교한다. 신호가 없다는 이유로 지그재그나 무제한 우회를 선택하지 않는다.
 - 검증시각 60초, 불확실성 3초, 횡단 여유 3초는 시험용 보수적 기본값이다. 제공기관 계획 갱신 정책·현장 검증에 맞춰 재설정해야 한다.
-- `server/signal-service.ts`의 `RouteSignalProvider.inspect()`가 실제 신호 연결 지점이다. 기본 구현은 항상 미확인이다. 제공기관 장애가 경로 API 전체를 실패시키지 않도록 되어 있다.
+- `server/signal-service.ts`의 `RouteSignalProvider.inspect()`가 실제 신호 연결 지점이다. 검증 파일이 없으면 미확인이다. `data/signals/verified/bundle.json` + `SIGNAL_PREDICTION_SCOPES` + `SIGNAL_PUBLIC_PREDICTION=true` + `LIVE_SIGNAL_UI`가 모두 맞아야 공개 대기가 켜진다.
+- 횡단 시간은 러닝 페이스가 아니라 `CROSSING_WALK_M_PER_SEC`(1.2 m/s 시험값) + `CROSSING_BUFFER_SEC`를 쓴다.
+- T-DATA `*RmdrCs`는 카탈로그 필드명(센티초)과 값 설명(1/10초)이 불일치한다. 초로 변환하지 않는다.
+- UTIC 안내 페이지(2026-09-11) 온라인 제어기는 인천·대전·대구. L01만으로 서울 데이터를 단정하지 않는다.
 - 서버는 후보별 `forecasts`와 추천 ID를 반환할 준비가 돼 있지만, 실제 화면은 아직 미래 예측을 활성화하지 않는다. 검증된 provider 연결, 같은 후보 필터 적용, 실제 시작시각 재예측을 마친 뒤 화면의 신호 수/대기/다음 횡단 안내를 함께 활성화해야 한다.
 
 예: 6:00/km로 100m 지점에 도착하면 36초가 걸린다. 거기서 24초 기다렸다면 다음 200m 지점 도착은 72초가 아닌 96초다. 테스트에서 이 누적 계산을 검증한다.

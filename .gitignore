@@ -39,5 +39,6 @@ data/signals/normalized/**
 !data/signals/normalized/.gitkeep
 data/signals/verified/**
 !data/signals/verified/.gitkeep
+!data/signals/verified/bundle.json
 data/signals/captures/**
 !data/signals/captures/.gitkeep
