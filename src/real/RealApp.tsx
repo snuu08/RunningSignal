@@ -1421,7 +1421,7 @@ export function RealApp() {
             <p className="muted">검색 시각 기준 예상입니다. 출발 시 다시 계산하지는 않습니다.</p>
           )}
           <p className="muted">
-            노란 점은 보행 안내와 장소 위치예요.
+            노란 점은 출발·도착, 파란 점은 지하철, 갈색 점은 카페예요.
           </p>
           {(avoidanceCheck ? avoidanceCopy(avoidanceCheck) : []).map((line) => (
             <p key={line}>{line}</p>

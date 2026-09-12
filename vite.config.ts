@@ -54,6 +54,9 @@ function rejectClientSecretLeak(mode: string): Plugin {
 
 export default defineConfig(({ mode }) => ({
   envPrefix: "VITE_",
+  optimizeDeps: {
+    exclude: ["maplibre-gl"],
+  },
   plugins: [
     react(),
     rejectClientSecretLeak(mode),

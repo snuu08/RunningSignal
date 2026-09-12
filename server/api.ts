@@ -24,6 +24,12 @@ import {
 } from "../src/real/core.ts";
 import { parseRoutingPolicy } from "../src/real/routing-policy.ts";
 import {
+  LANDMARK_CATEGORIES,
+  parseLandmarkKinds,
+  type Landmark,
+  type LandmarkKind,
+} from "../src/real/landmarks.ts";
+import {
   TDATA_CALLABLE,
   TDATA_FILE_ONLY,
   interpretCurrentState,
@@ -273,6 +279,59 @@ export async function kakaoKeywordPois(
   );
   return mergePois([], found.flat());
 }
+function mergeLandmarks(items: Landmark[]): Landmark[] {
+  const seen = new Set<string>();
+  const out: Landmark[] = [];
+  for (const item of items) {
+    const k = item.coord.map((n) => n.toFixed(5)).join(",");
+    if (seen.has(k) || seen.has(item.id)) continue;
+    seen.add(k);
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out.slice(0, 24);
+}
+export async function kakaoLandmarks(
+  coord: Coord,
+  radiusM: number,
+  kinds: LandmarkKind[],
+  env: Env,
+  fetcher: Fetch,
+): Promise<Landmark[]> {
+  if (!env.KAKAO_REST_API_KEY?.trim() || !kinds.length) return [];
+  const radius = String(Math.min(20000, Math.max(200, Math.round(radiusM))));
+  const headers = kakaoHeaders(env);
+  const found = await Promise.all(
+    kinds.map(async (kind) => {
+      const query = new URLSearchParams({
+        category_group_code: LANDMARK_CATEGORIES[kind],
+        x: String(coord[0]),
+        y: String(coord[1]),
+        radius,
+        size: "15",
+        sort: "distance",
+      });
+      const data = await upstream(
+        `https://dapi.kakao.com/v2/local/search/category.json?${query}`,
+        { headers },
+        fetcher,
+      );
+      if (!Array.isArray(data.documents)) return [];
+      return data.documents.flatMap((p: any) => {
+        const at: Coord = [Number(p.x), Number(p.y)];
+        if (!validCoord(at) || typeof p.place_name !== "string") return [];
+        const row: Landmark = {
+          id: String(p.id ?? `${kind}:${at[0]},${at[1]}`),
+          name: p.place_name.slice(0, 40),
+          coord: at,
+          kind,
+        };
+        return [row];
+      });
+    }),
+  );
+  return mergeLandmarks(found.flat());
+}
 export async function handleApi(
   request: Request,
   env: Env,
@@ -385,6 +444,25 @@ export async function handleApi(
         return [p];
       });
       return json({ places });
+    }
+    if (request.method === "GET" && path === "/api/landmarks") {
+      const coord: Coord = [
+        Number(url.searchParams.get("x")),
+        Number(url.searchParams.get("y")),
+      ];
+      if (!validCoord(coord))
+        throw new ApiError(400, "지도 좌표가 올바르지 않습니다.");
+      const radius = Number(url.searchParams.get("radius"));
+      if (!Number.isFinite(radius) || radius < 200 || radius > 20000)
+        throw new ApiError(400, "검색 반경은 200~20000m입니다.");
+      const landmarks = await kakaoLandmarks(
+        coord,
+        radius,
+        parseLandmarkKinds(url.searchParams.get("kinds")),
+        env,
+        fetcher,
+      );
+      return json({ landmarks });
     }
     if (request.method === "GET" && path === "/api/places/reverse") {
       const coord: Coord = [

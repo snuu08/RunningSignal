@@ -209,6 +209,56 @@ describe("server provider boundary", () => {
     expect(f.mock.calls[0][1]?.headers.Authorization).toBe("KakaoAK rest-key");
     expect((await r.json()).place.name).toBe("서울숲");
   });
+  it("loads Kakao subway and cafe categories around the map center", async () => {
+    const f = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      const code = url.searchParams.get("category_group_code");
+      const cafe = code === "CE7";
+      return Response.json({
+        documents: [
+          {
+            id: cafe ? "cafe-1" : "st-1",
+            place_name: cafe ? "스타벅스 시청점" : "시청역 2호선",
+            x: cafe ? "126.979" : "126.978",
+            y: "37.5665",
+          },
+        ],
+      });
+    });
+    const r = await handleApi(
+      new Request(
+        "https://app.test/api/landmarks?x=126.978&y=37.5665&radius=600&kinds=station,cafe",
+      ),
+      { KAKAO_REST_API_KEY: "rest-key" },
+      f,
+    );
+    expect(r.status).toBe(200);
+    expect(f).toHaveBeenCalledTimes(2);
+    const urls = f.mock.calls.map((c) => new URL(String(c[0])));
+    expect(urls.every((u) => u.pathname.endsWith("/search/category.json"))).toBe(
+      true,
+    );
+    expect(urls.map((u) => u.searchParams.get("category_group_code")).sort()).toEqual(
+      ["CE7", "SW8"],
+    );
+    expect(f.mock.calls[0][1]?.headers.Authorization).toBe("KakaoAK rest-key");
+    const body = await r.json();
+    expect(body.landmarks.map((p: { kind: string }) => p.kind).sort()).toEqual([
+      "cafe",
+      "station",
+    ]);
+  });
+  it("returns no landmarks when Kakao REST key is missing", async () => {
+    const f = vi.fn();
+    const r = await handleApi(
+      new Request("https://app.test/api/landmarks?x=126.978&y=37.5665&radius=600"),
+      {},
+      f,
+    );
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ landmarks: [] });
+    expect(f).not.toHaveBeenCalled();
+  });
   it("uses route distance from the provider, not provider walking time as running time", () => {
     const route = parseTmap(routeData, "4");
     expect(route.distanceM).toBe(1100);
