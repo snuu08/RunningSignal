@@ -98,6 +98,51 @@ describe("GPS lifecycle", () => {
     ).rejects.toThrow("100m");
     expect(result.current.live).toBeNull();
   });
+  it("starts a mapped run when startup GPS samples cluster around the departure", async () => {
+    const fixes = [
+      { longitude: 127, latitude: 37, accuracy: 60 },
+      { longitude: 127, latitude: 37.001, accuracy: 18 },
+      { longitude: 127.00002, latitude: 37.00101, accuracy: 16 },
+      { longitude: 126.99998, latitude: 37.00099, accuracy: 14 },
+      { longitude: 127.00001, latitude: 37.00102, accuracy: 18 },
+    ];
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: {
+        getCurrentPosition: vi.fn((success) =>
+          success({
+            coords: fixes[0],
+            timestamp: Date.now(),
+          }),
+        ),
+        watchPosition: vi.fn((success) => {
+          for (const coords of fixes.slice(1))
+            success({ coords, timestamp: Date.now() });
+          return 42;
+        }),
+        clearWatch: vi.fn(),
+      },
+    });
+    const { result } = renderHook(() => useGpsRun(() => {}));
+    await act(() =>
+      result.current.start({
+        id: "r",
+        name: "r",
+        coordinates: [
+          [127, 37.001],
+          [127, 37.002],
+        ],
+        distanceM: 1000,
+        sharpTurns: 0,
+        zigzags: 0,
+        option: "0",
+        instructions: [],
+      }),
+    );
+    expect(result.current.live?.phase).toBe("running");
+    expect(result.current.fix?.accuracy).toBeLessThan(30);
+    expect(navigator.geolocation.clearWatch).toHaveBeenCalledWith(42);
+  });
 });
 describe("real-mode screen flow", () => {
   beforeEach(() => {
