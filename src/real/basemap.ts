@@ -22,3 +22,10 @@ export async function resolveBasemapStyle(
   }
   return FALLBACK_BASEMAP;
 }
+
+export function supportsWebGl2(): boolean {
+  if (typeof document === "undefined") return true;
+  const canvas = document.createElement("canvas");
+  const gl = canvas.getContext("webgl2");
+  return !!gl;
+}

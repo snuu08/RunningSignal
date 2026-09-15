@@ -116,8 +116,8 @@ describe("GPS lifecycle", () => {
           }),
         ),
         watchPosition: vi.fn((success) => {
-          for (const coords of fixes.slice(1))
-            success({ coords, timestamp: Date.now() });
+          for (const [index, coords] of fixes.slice(1).entries())
+            success({ coords, timestamp: Date.now() + (index + 1) * 1000 });
           return 42;
         }),
         clearWatch: vi.fn(),
@@ -142,6 +142,48 @@ describe("GPS lifecycle", () => {
     expect(result.current.live?.phase).toBe("running");
     expect(result.current.fix?.accuracy).toBeLessThan(30);
     expect(navigator.geolocation.clearWatch).toHaveBeenCalledWith(42);
+  });
+  it("allows a mapped run when the GPS accuracy circle overlaps the selected departure", async () => {
+    const fixes = [
+      { longitude: 126.9225, latitude: 37.57961, accuracy: 55 },
+      { longitude: 126.92252, latitude: 37.57962, accuracy: 52 },
+      { longitude: 126.92251, latitude: 37.5796, accuracy: 50 },
+    ];
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: {
+        getCurrentPosition: vi.fn((success) =>
+          success({ coords: fixes[0], timestamp: Date.now() }),
+        ),
+        watchPosition: vi.fn((success) => {
+          for (const [index, coords] of fixes.slice(1).entries())
+            success({ coords, timestamp: Date.now() + (index + 1) * 1000 });
+          return 42;
+        }),
+        clearWatch: vi.fn(),
+      },
+    });
+    const { result } = renderHook(() => useGpsRun(() => {}));
+    await act(() =>
+      result.current.start(
+        {
+          id: "r",
+          name: "r",
+          coordinates: [
+            [126.923, 37.57961],
+            [126.924, 37.58],
+          ],
+          distanceM: 1000,
+          sharpTurns: 0,
+          zigzags: 0,
+          option: "0",
+          instructions: [],
+        },
+        [126.92277, 37.57961],
+      ),
+    );
+    expect(result.current.live?.phase).toBe("running");
+    expect(result.current.fix?.accuracy).toBeGreaterThan(30);
   });
 });
 describe("real-mode screen flow", () => {

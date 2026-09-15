@@ -569,21 +569,27 @@ export function appendFix(track: Track, fix: Fix): Track {
   };
 }
 /** Conservative completion: sample the actual path, require ordered progress and no major jumps. */
-export function routeCompleted(route: Route, track: Track): boolean {
+export function routeCompleted(
+  route: Route,
+  track: Track,
+  expectedStart: Coord = route.coordinates[0],
+): boolean {
+  const approachM = meters(expectedStart, route.coordinates[0]);
   if (
     track.gapSec > 0 ||
     track.distanceM < route.distanceM * 0.95 ||
-    track.distanceM > route.distanceM * 1.1 ||
+    track.distanceM > route.distanceM * 1.1 + approachM ||
     track.fixes.length < 2
   )
     return false;
   if (
-    meters(track.fixes[0].coord, route.coordinates[0]) > 60 ||
+    meters(track.fixes[0].coord, expectedStart) > 60 ||
     meters(track.fixes.at(-1)!.coord, route.coordinates.at(-1)!) > 60
   )
     return false;
   const path = samplePath(route.coordinates, 20);
-  let progress = 0;
+  let progress = 0,
+    joinedRoute = false;
   for (const fix of track.fixes) {
     let closest = progress,
       distance = Infinity;
@@ -598,10 +604,18 @@ export function routeCompleted(route: Route, track: Track): boolean {
         distance = d;
       }
     }
-    if (distance > Math.min(45, fix.accuracy + 20)) return false;
+    if (distance > Math.min(45, fix.accuracy + 20)) {
+      if (
+        !joinedRoute &&
+        meters(fix.coord, expectedStart) <= Math.max(60, approachM + 30)
+      )
+        continue;
+      return false;
+    }
+    joinedRoute = true;
     progress = Math.max(progress, closest);
   }
-  return progress >= path.length - 3;
+  return joinedRoute && progress >= path.length - 3;
 }
 export function trackSegments(fixes: Fix[]): Coord[][] {
   const segments: Coord[][] = [];

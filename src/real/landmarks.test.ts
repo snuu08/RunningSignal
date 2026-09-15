@@ -7,18 +7,34 @@ import {
 
 describe("landmark helpers", () => {
   it("keeps only documented Kakao category kinds", () => {
-    expect(parseLandmarkKinds("station,cafe,other")).toEqual([
+    expect(parseLandmarkKinds("station,cafe,restaurant,convenience,school,other")).toEqual([
       "station",
       "cafe",
+      "restaurant",
+      "convenience",
+      "school",
     ]);
-    expect(parseLandmarkKinds("")).toEqual(["station", "cafe"]);
+    expect(parseLandmarkKinds("")).toEqual([
+      "station",
+      "cafe",
+      "restaurant",
+      "convenience",
+      "school",
+    ]);
     expect(parseLandmarkKinds("cafe")).toEqual(["cafe"]);
   });
 
   it("shows stations before cafes as the map zooms in", () => {
     expect(landmarkKindsForZoom(11)).toEqual([]);
     expect(landmarkKindsForZoom(12.5)).toEqual(["station"]);
-    expect(landmarkKindsForZoom(14)).toEqual(["station", "cafe"]);
+    expect(landmarkKindsForZoom(13.5)).toEqual(["station", "cafe", "restaurant"]);
+    expect(landmarkKindsForZoom(15)).toEqual([
+      "station",
+      "cafe",
+      "restaurant",
+      "convenience",
+      "school",
+    ]);
   });
 
   it("drops malformed landmark rows", () => {

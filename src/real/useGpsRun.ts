@@ -1,10 +1,67 @@
 import { useEffect, useRef, useState } from "react";
 import { appendFix, meters, type Fix, type Route, type Track } from "./core.ts";
+import {
+  classifyLocationAccuracy,
+  correctedBrowserLocation,
+  correctedLocationToFix,
+  distinctLocationFixes,
+  isFreshLocationFix,
+  LOCATION_ACCURACY,
+} from "./location-quality.ts";
 
-const START_ACCURACY_MAX_M = 80;
-const START_DEPARTURE_RADIUS_M = 100;
-const START_SAMPLE_WINDOW_MS = 2500;
-const START_SAMPLE_TARGET = 5;
+const GPS_SETTLE_MS = LOCATION_ACCURACY.COLLECTION_MS;
+const GPS_STABLE_RADIUS_M = 20;
+
+export function stabilizedFix(
+  fixes: Fix[],
+  now = Date.now(),
+): Fix | null {
+  const corrected = correctedBrowserLocation(fixes, now);
+  if (corrected) return correctedLocationToFix(corrected);
+  const fresh = fixes.filter(
+    (fix) =>
+      Number.isFinite(fix.accuracy) &&
+      fix.accuracy > 0 &&
+      fix.accuracy <= LOCATION_ACCURACY.POOR_MAX_METERS &&
+      isFreshLocationFix(fix, now),
+  );
+  if (!fresh.length) return null;
+  const center = [...fresh].sort((a, b) => {
+    const da = fresh.reduce((sum, item) => sum + meters(a.coord, item.coord), 0);
+    const db = fresh.reduce((sum, item) => sum + meters(b.coord, item.coord), 0);
+    return da - db;
+  })[0];
+  const clustered = fresh.filter(
+    (fix) =>
+      meters(center.coord, fix.coord) <=
+      Math.max(GPS_STABLE_RADIUS_M, fix.accuracy),
+  );
+  const usable = clustered.length ? clustered : [center];
+  const weighted = usable.map((fix) => ({
+    fix,
+    weight: 1 / Math.max(5, fix.accuracy) ** 2,
+  }));
+  const weightSum = weighted.reduce((sum, item) => sum + item.weight, 0);
+  const coord: Fix["coord"] = [
+    weighted.reduce((sum, item) => sum + item.fix.coord[0] * item.weight, 0) /
+      weightSum,
+    weighted.reduce((sum, item) => sum + item.fix.coord[1] * item.weight, 0) /
+      weightSum,
+  ];
+  const spread = Math.max(...usable.map((fix) => meters(coord, fix.coord)), 0);
+  return {
+    coord,
+    accuracy: Math.max(
+      Math.min(...usable.map((fix) => fix.accuracy)),
+      spread,
+    ),
+    at: Math.max(...usable.map((fix) => fix.at)),
+  };
+}
+
+export function distinctGpsFixes(fixes: Fix[]): Fix[] {
+  return distinctLocationFixes(fixes);
+}
 
 export type LiveRun = {
   id: string;
@@ -15,151 +72,91 @@ export type LiveRun = {
   manualPauseSec: number;
   lastTick: number;
   route: Route | null;
+  /** User-selected departure, before a routing provider snaps it to a road. */
+  departure?: Fix["coord"] | null;
 };
-
-function toFix(p: GeolocationPosition): Fix {
-  return {
-    coord: [p.coords.longitude, p.coords.latitude],
-    accuracy: p.coords.accuracy,
-    at: p.timestamp,
-    heading: (() => {
-      const h = p.coords.heading;
-      return h != null && Number.isFinite(h) && h >= 0 ? h : undefined;
-    })(),
-  };
-}
-
-export function locate(): Promise<Fix> {
+export function locate(
+  maxAcceptedAccuracyM: number = LOCATION_ACCURACY.GOOD_MAX_METERS,
+): Promise<Fix> {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
       reject(new Error("이 브라우저는 위치 기록을 지원하지 않습니다."));
       return;
     }
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve(toFix(p)),
-      (e) =>
+    const samples: Fix[] = [];
+    let settled = false;
+    let watchId: number | null = null;
+    let timer = 0;
+    let lastFailure: Error | null = null;
+    const finish = (fix: Fix | null, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      if (fix && fix.accuracy <= maxAcceptedAccuracyM) resolve(fix);
+      else
         reject(
-          new Error(
-            e.code === 1
-              ? "위치 권한을 허용해 주세요. 지도에서 출발지를 고를 수도 있어요."
-              : "현재 위치를 찾지 못했습니다. 야외에서 다시 시도하거나 지도에서 출발지를 고르세요.",
-          ),
+          error ??
+            new Error(
+              "GPS 오차가 30m보다 큽니다. 창가나 야외에서 위치가 안정되면 다시 시도해 주세요.",
+            ),
+        );
+    };
+    const receive = (p: GeolocationPosition) => {
+      const nextSamples = distinctGpsFixes([...samples, {
+        coord: [p.coords.longitude, p.coords.latitude],
+        accuracy: p.coords.accuracy,
+        at: p.timestamp,
+      }]);
+      samples.splice(0, samples.length, ...nextSamples);
+      const fix = stabilizedFix(samples);
+      const sampleSpan = samples.length
+        ? Math.max(...samples.map((sample) => sample.at)) -
+          Math.min(...samples.map((sample) => sample.at))
+        : 0;
+      if (
+        fix &&
+        ((samples.length === 1 && fix.accuracy <= 10) ||
+          (samples.length >= 3 &&
+            sampleSpan >= 1_500 &&
+            fix.accuracy <= maxAcceptedAccuracyM))
+      )
+        finish(fix);
+    };
+    const fail = (e: GeolocationPositionError) => {
+      const error = new Error(
+        e.code === 1
+          ? "위치 권한을 허용해 주세요. 지도에서 출발지를 고를 수도 있어요."
+          : "현재 위치를 찾지 못했습니다. 야외에서 다시 시도하거나 지도에서 출발지를 고르세요.",
+      );
+      if (e.code === 1) finish(null, error);
+      else lastFailure = error;
+    };
+    timer = window.setTimeout(
+      () =>
+        finish(
+          stabilizedFix(samples),
+          samples.length ? undefined : (lastFailure ?? undefined),
         ),
+      GPS_SETTLE_MS,
+    );
+    const id = navigator.geolocation.watchPosition(
+      receive,
+      fail,
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
     );
+    watchId = id;
+    if (settled) {
+      navigator.geolocation.clearWatch(id);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(receive, fail, {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: GPS_SETTLE_MS,
+    });
   });
 }
-
-function startupCluster(samples: Fix[]): Fix {
-  const usable = samples.filter(
-    (f) =>
-      Number.isFinite(f.coord[0]) &&
-      Number.isFinite(f.coord[1]) &&
-      Number.isFinite(f.accuracy) &&
-      f.accuracy >= 0 &&
-      f.accuracy <= START_ACCURACY_MAX_M,
-  );
-  if (usable.length === 0) return samples[0];
-  const best = usable
-    .map((fix) => {
-      const neighbors = usable.filter(
-        (other) =>
-          meters(fix.coord, other.coord) <=
-          Math.max(35, Math.min(120, (fix.accuracy + other.accuracy) / 2 + 20)),
-      );
-      return { fix, neighbors };
-    })
-    .sort(
-      (a, b) =>
-        b.neighbors.length - a.neighbors.length ||
-        a.fix.accuracy - b.fix.accuracy,
-    )[0];
-  const neighbors = best.neighbors.length ? best.neighbors : [best.fix];
-  let weightSum = 0,
-    lon = 0,
-    lat = 0;
-  for (const f of neighbors) {
-    const weight = 1 / Math.max(5, f.accuracy) ** 2;
-    weightSum += weight;
-    lon += f.coord[0] * weight;
-    lat += f.coord[1] * weight;
-  }
-  const coord: Fix["coord"] = [lon / weightSum, lat / weightSum];
-  const spread = Math.max(0, ...neighbors.map((f) => meters(coord, f.coord)));
-  return {
-    coord,
-    accuracy: Math.max(Math.min(...neighbors.map((f) => f.accuracy)), spread),
-    at: Math.max(...neighbors.map((f) => f.at)),
-    heading: best.fix.heading,
-  };
-}
-
-function collectStartupFixes(first: Fix): Promise<Fix[]> {
-  if (!navigator.geolocation?.watchPosition) return Promise.resolve([first]);
-  return new Promise((resolve) => {
-    const samples = [first];
-    let watchId: number | null = null,
-      shouldClearWatch = false,
-      finished = false;
-    const done = () => {
-      if (finished) return;
-      finished = true;
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-      else shouldClearWatch = true;
-      clearTimeout(timer);
-      resolve(samples);
-    };
-    const timer = window.setTimeout(done, START_SAMPLE_WINDOW_MS);
-    watchId = navigator.geolocation.watchPosition(
-      (p) => {
-        samples.push(toFix(p));
-        if (samples.length >= START_SAMPLE_TARGET) done();
-      },
-      () => {
-        if (samples.length > 1) done();
-      },
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 },
-    );
-    if (shouldClearWatch) navigator.geolocation.clearWatch(watchId);
-  });
-}
-
-async function locateForStart(route: Route | null): Promise<Fix> {
-  const first = await locate();
-  const departure = route?.coordinates[0];
-  if (!departure) {
-    if (first.accuracy > 30)
-      throw new Error(
-        "GPS 오차가 30m보다 큽니다. 위치가 안정되면 다시 시작해 주세요.",
-      );
-    return first;
-  }
-  const firstDistance = meters(first.coord, departure);
-  if (first.accuracy <= 30 && firstDistance <= START_DEPARTURE_RADIUS_M)
-    return first;
-  if (
-    first.accuracy <= 30 &&
-    firstDistance > START_DEPARTURE_RADIUS_M + START_ACCURACY_MAX_M
-  )
-    throw new Error(
-      "설정한 출발지 100m 이내에서 시작해 주세요. 현재 위치로 경로를 다시 찾을 수도 있어요.",
-    );
-  const corrected = startupCluster(await collectStartupFixes(first));
-  if (corrected.accuracy > START_ACCURACY_MAX_M)
-    throw new Error(
-      "GPS 오차가 커서 출발지를 확인하지 못했습니다. 위치가 안정되면 다시 시작해 주세요.",
-    );
-  const correctedDistance = meters(corrected.coord, departure);
-  if (
-    correctedDistance - Math.min(corrected.accuracy, START_ACCURACY_MAX_M) >
-    START_DEPARTURE_RADIUS_M
-  )
-    throw new Error(
-      "설정한 출발지 100m 이내에서 시작해 주세요. 현재 위치로 경로를 다시 찾을 수도 있어요.",
-    );
-  return corrected;
-}
-
 export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
   const [live, setLive] = useState<LiveRun | null>(null),
     [fix, setFix] = useState<Fix | null>(null),
@@ -209,7 +206,7 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
         setFix(next);
         const r = ref.current;
         if (!r || r.phase !== "running") return;
-        if (next.accuracy > 30) {
+        if (classifyLocationAccuracy(next.accuracy) !== "good") {
           setError("GPS 정확도가 낮아 이 위치는 거리에 더하지 않았어요.");
           return;
         }
@@ -253,11 +250,29 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     live,
     fix,
     error,
-    async start(route: Route | null) {
+    async start(route: Route | null, expectedStart?: Fix["coord"] | null) {
       if (ref.current && ref.current.phase !== "ended")
         throw new Error("진행 중인 러닝을 먼저 종료해 주세요.");
       skipNext.current = false;
-      const f = await locateForStart(route);
+      const departure = expectedStart ?? route?.coordinates[0];
+      const f = await locate(
+        departure
+          ? LOCATION_ACCURACY.USABLE_MAX_METERS
+          : LOCATION_ACCURACY.GOOD_MAX_METERS,
+      );
+      if (!departure && classifyLocationAccuracy(f.accuracy) !== "good")
+        throw new Error(
+          "GPS 오차가 30m보다 큽니다. 위치가 안정되면 다시 시작해 주세요.",
+        );
+      if (
+        departure &&
+        meters(f.coord, departure) -
+          Math.min(f.accuracy, LOCATION_ACCURACY.USABLE_MAX_METERS) >
+          100
+      )
+        throw new Error(
+          "설정한 출발지 100m 이내에서 시작해 주세요. 현재 위치로 경로를 다시 찾을 수도 있어요.",
+        );
       setFix(f);
       const now = Date.now();
       replace({
@@ -269,6 +284,7 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
         manualPauseSec: 0,
         lastTick: now,
         route,
+        departure: departure ?? null,
       });
     },
     pause() {

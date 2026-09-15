@@ -4,7 +4,11 @@ import { setWorkerUrl } from "maplibre-gl";
 import type { GeoJSONSource } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { FALLBACK_BASEMAP, resolveBasemapStyle } from "./basemap.ts";
+import {
+  FALLBACK_BASEMAP,
+  resolveBasemapStyle,
+  supportsWebGl2,
+} from "./basemap.ts";
 import { api } from "./backend.ts";
 import type { Coord } from "./core.ts";
 import {
@@ -15,6 +19,11 @@ import {
 
 setWorkerUrl(workerUrl);
 const empty = { type: "FeatureCollection" as const, features: [] };
+type MapPoint = {
+  coord: Coord;
+  name: string;
+  kind?: "pin" | "origin" | "destination";
+};
 function lineData(coordinates: Coord[]) {
   return coordinates.length > 1
     ? {
@@ -34,6 +43,24 @@ function pointCollection(
       properties: { name: p.name, kind: p.kind },
       geometry: { type: "Point" as const, coordinates: p.coord },
     })),
+  };
+}
+function accuracyData(center?: Coord | null, radiusM?: number | null) {
+  if (!center || !radiusM || radiusM <= 0) return empty;
+  const points: Coord[] = [];
+  const latScale = radiusM / 111_320;
+  const lngScale = radiusM / (111_320 * Math.max(0.2, Math.cos((center[1] * Math.PI) / 180)));
+  for (let i = 0; i <= 48; i += 1) {
+    const angle = (i / 48) * Math.PI * 2;
+    points.push([
+      center[0] + Math.cos(angle) * lngScale,
+      center[1] + Math.sin(angle) * latScale,
+    ]);
+  }
+  return {
+    type: "Feature" as const,
+    properties: {},
+    geometry: { type: "Polygon" as const, coordinates: [points] },
   };
 }
 function overlayFont(m: maplibregl.Map): string[] {
@@ -66,6 +93,16 @@ function addLabeledPoints(
           6,
           "cafe",
           4.5,
+          "restaurant",
+          4.8,
+          "convenience",
+          4.4,
+          "school",
+          5.5,
+          "origin",
+          7,
+          "destination",
+          7,
           5,
         ],
         "circle-color": [
@@ -75,6 +112,16 @@ function addLabeledPoints(
           "#8fd0ff",
           "cafe",
           "#e7c27a",
+          "restaurant",
+          "#ff9f7a",
+          "convenience",
+          "#9ee6a8",
+          "school",
+          "#c8b6ff",
+          "origin",
+          "#b4f6ce",
+          "destination",
+          "#ff8a80",
           "#fee500",
         ],
         "circle-stroke-color": "#191919",
@@ -105,6 +152,19 @@ function addLabeledPoints(
     });
 }
 function paintOverlays(m: maplibregl.Map) {
+  if (!m.getSource("accuracy")) {
+    m.addSource("accuracy", { type: "geojson", data: empty });
+    m.addLayer({
+      id: "accuracy-fill",
+      type: "fill",
+      source: "accuracy",
+      paint: {
+        "fill-color": "#8fd0ff",
+        "fill-opacity": 0.14,
+        "fill-outline-color": "#8fd0ff",
+      },
+    });
+  }
   if (!m.getSource("straight")) {
     m.addSource("straight", { type: "geojson", data: empty });
     m.addLayer({
@@ -146,7 +206,9 @@ function writeOverlays(
     coordinates: Coord[];
     segments?: Coord[][];
     straight?: [Coord, Coord] | null;
-    pois: { coord: Coord; name: string }[];
+    pois: MapPoint[];
+    position?: Coord | null;
+    positionAccuracyM?: number | null;
   },
 ) {
   (m.getSource("route") as GeoJSONSource | undefined)?.setData(
@@ -162,7 +224,10 @@ function writeOverlays(
     data.straight ? lineData(data.straight) : empty,
   );
   (m.getSource("pois") as GeoJSONSource | undefined)?.setData(
-    pointCollection(data.pois.map((p) => ({ ...p, kind: "pin" }))),
+    pointCollection(data.pois.map((p) => ({ ...p, kind: p.kind ?? "pin" }))),
+  );
+  (m.getSource("accuracy") as GeoJSONSource | undefined)?.setData(
+    accuracyData(data.position, data.positionAccuracyM),
   );
 }
 function writeLandmarks(m: maplibregl.Map, items: Landmark[]) {
@@ -207,6 +272,7 @@ function restrictedBasemap(error: unknown) {
 export function RealMap({
   coordinates = [],
   position,
+  positionAccuracyM,
   onPick,
   segments,
   straight,
@@ -221,7 +287,8 @@ export function RealMap({
   position?: Coord | null;
   onPick?: (coord: Coord) => void;
   straight?: [Coord, Coord] | null;
-  pois?: { coord: Coord; name: string }[];
+  pois?: MapPoint[];
+  positionAccuracyM?: number | null;
   fitToken?: number | string;
   follow?: boolean;
   heading?: number | null;
@@ -233,13 +300,14 @@ export function RealMap({
     pick = useRef(onPick),
     pan = useRef(onUserPan),
     easing = useRef(false),
-    overlay = useRef({ coordinates, segments, straight, pois }),
+    overlay = useRef({ coordinates, segments, straight, pois, position, positionAccuracyM }),
     landmarks = useRef<Landmark[]>([]);
-  overlay.current = { coordinates, segments, straight, pois };
+  overlay.current = { coordinates, segments, straight, pois, position, positionAccuracyM };
   const followRef = useRef(follow);
   followRef.current = follow;
   const [ready, setReady] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [unavailable, setUnavailable] = useState(false);
   pick.current = onPick;
   pan.current = onUserPan;
   const key = import.meta.env.VITE_MAPTILER_KEY;
@@ -260,13 +328,24 @@ export function RealMap({
         if (ctrl.signal.aborted) return;
       }
       if (ctrl.signal.aborted || !container.current) return;
-      m = new maplibregl.Map({
-        container: container.current,
-        style,
-        center: [127.03, 37.51],
-        zoom: 13,
-        attributionControl: { compact: true },
-      });
+      if (!supportsWebGl2()) {
+        setUnavailable(true);
+        setError("이 기기에서는 지도를 표시할 수 없어요. 장소 검색으로 출발지와 목적지를 지정해 주세요.");
+        return;
+      }
+      try {
+        m = new maplibregl.Map({
+          container: container.current,
+          style,
+          center: [127.03, 37.51],
+          zoom: 13,
+          attributionControl: { compact: true },
+        });
+      } catch {
+        setUnavailable(true);
+        setError("지도를 시작하지 못했어요. 장소 검색으로 출발지와 목적지를 지정해 주세요.");
+        return;
+      }
       map.current = m;
       m.addControl(
         new maplibregl.NavigationControl({ showCompass: true }),
@@ -355,7 +434,7 @@ export function RealMap({
     const m = map.current;
     if (!m || !ready) return;
     writeOverlays(m, overlay.current);
-  }, [coordinates, segments, straight, pois, ready]);
+  }, [coordinates, segments, straight, pois, position, positionAccuracyM, ready]);
   useEffect(() => {
     const m = map.current;
     if (!m || !ready || follow) return;
@@ -370,7 +449,12 @@ export function RealMap({
   }, [coordinates, segments, ready, fitToken, follow]);
   useEffect(() => {
     const m = map.current;
-    if (!m || !ready || !position) return;
+    if (!m || !ready) return;
+    if (!position) {
+      marker.current?.remove();
+      marker.current = null;
+      return;
+    }
     if (!marker.current)
       marker.current = new maplibregl.Marker({ color: "#fff" })
         .setLngLat(position)
@@ -397,11 +481,20 @@ export function RealMap({
         ref={container}
         aria-label="실제 보행 경로 지도"
       />
-      <div className="map-legend" aria-hidden="true">
+      {!unavailable && <div className="map-legend" aria-hidden="true">
+        {pois.some((p) => p.kind === "origin") && <span className="lg-origin">출발</span>}
+        {pois.some((p) => p.kind === "destination") && <span className="lg-destination">도착</span>}
         <span className="lg-station">지하철</span>
         <span className="lg-cafe">카페</span>
-      </div>
-      {error && (
+        <span className="lg-food">음식점</span>
+        <span className="lg-store">편의점</span>
+      </div>}
+      {unavailable ? (
+        <div className="map-message" role="status">
+          <strong>지도 없이도 계속할 수 있어요.</strong>
+          <p>{error}</p>
+        </div>
+      ) : error && (
         <p className="map-error" role="status">
           {error}
         </p>

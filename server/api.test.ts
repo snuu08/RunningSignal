@@ -183,6 +183,97 @@ describe("server provider boundary", () => {
     expect(r.status).toBe(503);
     expect(f).not.toHaveBeenCalled();
   });
+  it("finds Myongji humanities campus from local correction data without a Kakao key", async () => {
+    const f = vi.fn();
+    const r = await handleApi(
+      new Request("https://app.test/api/places?q=명지대%20인문캠퍼스"),
+      {},
+      f,
+    );
+    expect(r.status).toBe(200);
+    expect(f).not.toHaveBeenCalled();
+    const body = await r.json();
+    expect(body.places[0]).toMatchObject({
+      id: "local:mju-humanities-campus",
+      name: "명지대학교 인문캠퍼스",
+      address: "서울특별시 서대문구 거북골로 34",
+    });
+    expect(body.places[0].coord).toEqual([126.92277, 37.57961]);
+  });
+  it("keeps local Myongji search results when Kakao is temporarily unreachable", async () => {
+    const f = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    const r = await handleApi(
+      new Request("https://app.test/api/places?q=명지대"),
+      { KAKAO_REST_API_KEY: "rest-key" },
+      f,
+    );
+    expect(r.status).toBe(200);
+    expect(f).toHaveBeenCalledTimes(3);
+    const body = await r.json();
+    expect(body.places[0].name).toBe("명지대학교 인문캠퍼스");
+  });
+  it("ranks representative city hall above branch-like Kakao distance results", async () => {
+    const f = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes("keyword") && url.searchParams.get("sort") === "distance") {
+        return Response.json({
+          documents: [
+            {
+              id: "near-branch",
+              place_name: "보디가드 성남시청점",
+              address_name: "경기 성남시 수정구",
+              road_address_name: "경기 성남시 수정구 산성대로",
+              x: "127.124",
+              y: "37.420",
+              category_name: "가정,생활 > 패션 > 속옷",
+              distance: "120",
+            },
+          ],
+        });
+      }
+      if (url.pathname.includes("keyword")) {
+        return Response.json({
+          documents: [
+            {
+              id: "cityhall",
+              place_name: "성남시청",
+              address_name: "경기 성남시 중원구 여수동 200",
+              road_address_name: "경기 성남시 중원구 성남대로 997",
+              x: "127.12628813511819",
+              y: "37.41993055742254",
+              category_name: "사회,공공기관 > 지방행정기관 > 시청",
+              distance: "22000",
+            },
+            {
+              id: "branch",
+              place_name: "보디가드 성남시청점",
+              address_name: "경기 성남시 수정구",
+              x: "127.124",
+              y: "37.420",
+              category_name: "가정,생활 > 패션 > 속옷",
+              distance: "21000",
+            },
+          ],
+        });
+      }
+      return Response.json({ documents: [] });
+    });
+    const r = await handleApi(
+      new Request("https://app.test/api/places?q=성남시청&x=126.92277&y=37.57961"),
+      { KAKAO_REST_API_KEY: "rest-key" },
+      f,
+    );
+    expect(r.status).toBe(200);
+    expect(f).toHaveBeenCalledTimes(3);
+    const body = await r.json();
+    expect(body.places[0]).toMatchObject({ name: "성남시청" });
+    expect(body.places.map((place: { name: string }) => place.name)).toContain(
+      "보디가드 성남시청점",
+    );
+  });
+
   it("reverse-geocodes with REST header and documented WGS84 params", async () => {
     const f = vi.fn(async () =>
       Response.json({
@@ -209,17 +300,28 @@ describe("server provider boundary", () => {
     expect(f.mock.calls[0][1]?.headers.Authorization).toBe("KakaoAK rest-key");
     expect((await r.json()).place.name).toBe("서울숲");
   });
-  it("loads Kakao subway and cafe categories around the map center", async () => {
+  it("loads Kakao landmark categories around the map center", async () => {
     const f = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
       const code = url.searchParams.get("category_group_code");
       const cafe = code === "CE7";
+      const food = code === "FD6";
+      const store = code === "CS2";
+      const school = code === "SC4";
       return Response.json({
         documents: [
           {
-            id: cafe ? "cafe-1" : "st-1",
-            place_name: cafe ? "스타벅스 시청점" : "시청역 2호선",
-            x: cafe ? "126.979" : "126.978",
+            id: cafe ? "cafe-1" : food ? "food-1" : store ? "store-1" : school ? "school-1" : "st-1",
+            place_name: cafe
+              ? "스타벅스 시청점"
+              : food
+                ? "식당"
+                : store
+                  ? "편의점"
+                  : school
+                    ? "명지대학교"
+                    : "시청역 2호선",
+            x: cafe ? "126.979" : food ? "126.98" : store ? "126.981" : school ? "126.982" : "126.978",
             y: "37.5665",
           },
         ],
@@ -247,6 +349,18 @@ describe("server provider boundary", () => {
       "cafe",
       "station",
     ]);
+    const all = await handleApi(
+      new Request(
+        "https://app.test/api/landmarks?x=126.978&y=37.5665&radius=600&kinds=station,cafe,restaurant,convenience,school",
+      ),
+      { KAKAO_REST_API_KEY: "rest-key" },
+      f,
+    );
+    expect(all.status).toBe(200);
+    const allUrls = f.mock.calls.slice(2).map((c) => new URL(String(c[0])));
+    expect(allUrls.map((u) => u.searchParams.get("category_group_code")).sort()).toEqual(
+      ["CE7", "CS2", "FD6", "SC4", "SW8"],
+    );
   });
   it("returns no landmarks when Kakao REST key is missing", async () => {
     const f = vi.fn();

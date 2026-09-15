@@ -238,6 +238,8 @@
   top: 10px;
   z-index: 2;
   display: flex;
+  flex-wrap: wrap;
+  max-width: min(74%, 360px);
   gap: 8px;
   pointer-events: none;
   font-size: 11px;
@@ -261,6 +263,10 @@
 }
 .lg-station::before { background: #8fd0ff; }
 .lg-cafe::before { background: #e7c27a; }
+.lg-food::before { background: #ff9f7a; }
+.lg-store::before { background: #9ee6a8; }
+.lg-origin::before { background: #b4f6ce; }
+.lg-destination::before { background: #ff8a80; }
 .real-shell .real-nav {
   position: fixed;
   bottom: 0;

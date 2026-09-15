@@ -76,6 +76,10 @@ import {
 import type { PaceSlotId } from "../domain/models.ts";
 import { locate, useGpsRun, type LiveRun } from "./useGpsRun.ts";
 import {
+  classifyLocationAccuracy,
+  LOCATION_ACCURACY,
+} from "./location-quality.ts";
+import {
   realPage,
   showSignalWait,
   suggestedUsualFromRecords,
@@ -901,10 +905,10 @@ export function RealApp() {
     }
   }
   async function usePosition() {
-    const f = await locate();
+    const f = await locate(LOCATION_ACCURACY.USABLE_MAX_METERS);
     setPosition(f.coord);
     setOrigin(await namedPlace(f.coord, "현재 위치"));
-    if (f.accuracy > 30)
+    if (classifyLocationAccuracy(f.accuracy) !== "good")
       notice(
         `현재 위치 오차 약 ${Math.round(f.accuracy)}m · 출발 전 위치를 확인해 주세요.`,
       );
@@ -1031,7 +1035,7 @@ export function RealApp() {
     if (liveSignals && selected && !greenOk)
       throw new Error("출발 전 실제 보행 신호가 녹색인지 확인해 주세요.");
     runOwner.current = owner;
-    await run.start(selected);
+    await run.start(selected, selected ? origin?.coord : null);
     setFollow(profile.followCam);
     setOffSamples([]);
     spoken.current = "";
@@ -1044,7 +1048,8 @@ export function RealApp() {
     const live = run.end();
     if (!live) return;
     const r = live.route;
-    const complete = !!r && routeCompleted(r, live.track);
+    const complete =
+      !!r && routeCompleted(r, live.track, live.departure ?? undefined);
     const record: RunRecord = {
       id: live.id,
       owner: runOwner.current,
@@ -1503,6 +1508,7 @@ export function RealApp() {
             run.live.route ? undefined : trackSegments(run.live.track.fixes)
           }
           position={run.fix?.coord ?? run.live.track.fixes.at(-1)?.coord}
+          positionAccuracyM={run.fix?.accuracy}
           fitToken={fit}
           follow={follow}
           heading={heading}
@@ -2349,7 +2355,7 @@ export function RealApp() {
           <button
             onClick={() =>
               void action(async () => {
-                const p = await locate();
+                const p = await locate(LOCATION_ACCURACY.USABLE_MAX_METERS);
                 notice(`현재 위치 확인 · 오차 약 ${Math.round(p.accuracy)}m`);
               })
             }
@@ -2619,7 +2625,7 @@ export function RealApp() {
           </div>
           <div className={`planner-map${pick ? " is-picking" : ""}`}>
             <div className="map-topline"><span><FlowIcon name="route" size={16} />{pick ? `${pick === "origin" ? "출발지" : "목적지"}를 지도에서 눌러주세요` : "오늘 달릴 곳"}</span>{pick && <button onClick={() => setPick(null)}>선택 취소</button>}</div>
-            <RealMap coordinates={emptyCoords} position={origin?.coord ?? position} fitToken={`${origin?.id ?? ""}:${destination?.id ?? ""}`} pois={[...(origin ? [{ coord: origin.coord, name: "출발 · " + origin.name }] : []), ...(destination ? [{ coord: destination.coord, name: "도착 · " + destination.name }] : [])]} onPick={pick ? (coord) => {
+            <RealMap coordinates={emptyCoords} position={origin?.coord ?? position} fitToken={`${origin?.id ?? ""}:${destination?.id ?? ""}`} pois={[...(origin ? [{ coord: origin.coord, name: "출발 · " + origin.name, kind: "origin" as const }] : []), ...(destination ? [{ coord: destination.coord, name: "도착 · " + destination.name, kind: "destination" as const }] : [])]} onPick={pick ? (coord) => {
               const target = pick;
               void action(async () => { const selected = await namedPlace(coord, "지도에서 선택한 위치"); if (target === "origin") setOrigin(selected); else setDestination(selected); setPick(null); });
             } : undefined} />

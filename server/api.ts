@@ -24,6 +24,11 @@ import {
 } from "../src/real/core.ts";
 import { parseRoutingPolicy } from "../src/real/routing-policy.ts";
 import {
+  localLandmarkPlaces,
+  mergeAndRankPlaces,
+  type SearchPlace,
+} from "../src/real/place-ranking.ts";
+import {
   LANDMARK_CATEGORIES,
   parseLandmarkKinds,
   type Landmark,
@@ -114,6 +119,7 @@ const json = (value: unknown, status = 200) =>
       "X-Content-Type-Options": "nosniff",
     },
   });
+
 async function upstream(
   url: string,
   init: RequestInit,
@@ -148,7 +154,7 @@ async function upstream(
     }
     throw new ApiError(
       response.status === 429 ? 429 : 502,
-      `제공기관 응답 오류 (${response.status}${code}). 서버의 키 승인·호출 한도를 확인하세요.`,
+      `제공기관 응답 오류 (${response.status}${code}). 서버의 인증·호출 한도를 확인하세요.`,
     );
   }
   try {
@@ -157,11 +163,13 @@ async function upstream(
     throw new ApiError(502, "제공기관이 JSON 데이터를 반환하지 않았습니다.");
   }
 }
+
 function key(env: Env, name: string): string {
   const k = env[name]?.trim();
   if (!k) throw new ApiError(503, `${name} 설정이 필요합니다.`);
   return k;
 }
+
 function place(p: any): p is Place {
   return (
     p &&
@@ -171,6 +179,7 @@ function place(p: any): p is Place {
     p.name.length <= 200
   );
 }
+
 export function parseTmap(data: any, option: string): Route {
   if (!Array.isArray(data?.features))
     throw new ApiError(502, "보행 경로 응답 형식이 예상과 다릅니다.");
@@ -281,15 +290,30 @@ export async function kakaoKeywordPois(
 }
 function mergeLandmarks(items: Landmark[]): Landmark[] {
   const seen = new Set<string>();
-  const out: Landmark[] = [];
+  const buckets = new Map<LandmarkKind, Landmark[]>();
   for (const item of items) {
     const k = item.coord.map((n) => n.toFixed(5)).join(",");
     if (seen.has(k) || seen.has(item.id)) continue;
     seen.add(k);
     seen.add(item.id);
-    out.push(item);
+    const list = buckets.get(item.kind) ?? [];
+    list.push(item);
+    buckets.set(item.kind, list);
   }
-  return out.slice(0, 24);
+  const out: Landmark[] = [];
+  const order = Object.keys(LANDMARK_CATEGORIES) as LandmarkKind[];
+  for (let i = 0; out.length < 40; i += 1) {
+    let added = false;
+    for (const kind of order) {
+      const item = buckets.get(kind)?.[i];
+      if (!item) continue;
+      out.push(item);
+      added = true;
+      if (out.length >= 40) break;
+    }
+    if (!added) break;
+  }
+  return out;
 }
 export async function kakaoLandmarks(
   coord: Coord,
@@ -392,14 +416,20 @@ export async function handleApi(
       const x = Number(url.searchParams.get("x")),
         y = Number(url.searchParams.get("y"));
       const bias = validCoord([x, y]) ? ([x, y] as Coord) : null;
+      const local = localLandmarkPlaces(q, bias);
+      if (!env.KAKAO_REST_API_KEY?.trim()) {
+        if (local.length) return json({ places: mergeAndRankPlaces(local, { query: q, bias }) });
+        throw new ApiError(503, "KAKAO_REST_API_KEY 설정이 필요합니다.");
+      }
       const headers = kakaoHeaders(env);
-      const keywordQuery = new URLSearchParams({ query: q, size: "10" });
+      const keywordQuery = new URLSearchParams({ query: q, size: "15" });
       if (bias) {
         keywordQuery.set("x", String(bias[0]));
         keywordQuery.set("y", String(bias[1]));
-        keywordQuery.set("sort", "distance");
       }
-      const [keyword, address] = await Promise.allSettled([
+      const distanceQuery = new URLSearchParams(keywordQuery);
+      distanceQuery.set("sort", "distance");
+      const searches = [
         upstream(
           `https://dapi.kakao.com/v2/local/search/keyword.json?${keywordQuery}`,
           { headers },
@@ -410,39 +440,71 @@ export async function handleApi(
           { headers },
           fetcher,
         ),
-      ]);
-      if (keyword.status === "rejected" && address.status === "rejected")
+        ...(bias
+          ? [
+              upstream(
+                `https://dapi.kakao.com/v2/local/search/keyword.json?${distanceQuery}`,
+                { headers },
+                fetcher,
+              ),
+            ]
+          : []),
+      ];
+      const [keyword, address, distance] = await Promise.allSettled(searches);
+      if (
+        keyword.status === "rejected" &&
+        address.status === "rejected" &&
+        (!bias || distance?.status === "rejected") &&
+        !local.length
+      )
         throw keyword.reason;
-      const fromKeyword =
+      const keywordDocs =
         keyword.status === "fulfilled" && Array.isArray(keyword.value.documents)
-          ? keyword.value.documents.map((p: any) => ({
-              id: String(p.id ?? ""),
-              name: p.place_name,
-              address: p.road_address_name || p.address_name,
-              coord: [Number(p.x), Number(p.y)] as Coord,
-            }))
+          ? keyword.value.documents
           : [];
-      const fromAddress =
+      const distanceDocs =
+        distance?.status === "fulfilled" && Array.isArray(distance.value.documents)
+          ? distance.value.documents
+          : [];
+      const fromKeyword: SearchPlace[] = keywordDocs.map((p: any, i: number) => ({
+        id: String(p.id ?? `keyword:${p.x},${p.y},${i}`),
+        name: p.place_name,
+        address: p.road_address_name || p.address_name,
+        coord: [Number(p.x), Number(p.y)] as Coord,
+        category: p.category_group_code || p.category_name,
+        distanceM: Number.isFinite(Number(p.distance)) ? Number(p.distance) : undefined,
+        originalIndex: i,
+        source: "kakao-keyword",
+      }));
+      const fromDistance: SearchPlace[] = distanceDocs.map((p: any, i: number) => ({
+        id: String(p.id ?? `distance:${p.x},${p.y},${i}`),
+        name: p.place_name,
+        address: p.road_address_name || p.address_name,
+        coord: [Number(p.x), Number(p.y)] as Coord,
+        category: p.category_group_code || p.category_name,
+        distanceM: Number.isFinite(Number(p.distance)) ? Number(p.distance) : undefined,
+        originalIndex: i,
+        source: "kakao-distance",
+      }));
+      const fromAddress: SearchPlace[] =
         address.status === "fulfilled" && Array.isArray(address.value.documents)
           ? address.value.documents.map((p: any, i: number) => ({
               id: `addr:${p.x},${p.y},${i}`,
-              name: p.address_name,
+              name: p.road_address?.building_name || p.address_name,
               address:
                 p.road_address?.address_name ||
                 p.address?.address_name ||
                 p.address_name,
               coord: [Number(p.x), Number(p.y)] as Coord,
+              category: "address",
+              originalIndex: i,
+              source: "kakao-address",
             }))
           : [];
-      const seen = new Set<string>();
-      const places = [...fromKeyword, ...fromAddress].flatMap((p) => {
-        if (!place(p) || seen.has(p.id)) return [];
-        const k = p.coord.map((n) => n.toFixed(5)).join(",");
-        if (seen.has(k)) return [];
-        seen.add(p.id);
-        seen.add(k);
-        return [p];
-      });
+      const places = mergeAndRankPlaces(
+        [...local, ...fromKeyword, ...fromAddress, ...fromDistance].filter(place),
+        { query: q, bias },
+      ).slice(0, 15);
       return json({ places });
     }
     if (request.method === "GET" && path === "/api/landmarks") {
