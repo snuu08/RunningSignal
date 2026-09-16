@@ -75,10 +75,7 @@ import {
 } from "../domain/pace.ts";
 import type { PaceSlotId } from "../domain/models.ts";
 import { locate, useGpsRun, type LiveRun } from "./useGpsRun.ts";
-import {
-  classifyLocationAccuracy,
-  LOCATION_ACCURACY,
-} from "./location-quality.ts";
+import { classifyLocationAccuracy } from "./location-quality.ts";
 import {
   realPage,
   showSignalWait,
@@ -905,12 +902,17 @@ export function RealApp() {
     }
   }
   async function usePosition() {
-    const f = await locate(LOCATION_ACCURACY.USABLE_MAX_METERS);
+    const f = await locate();
     setPosition(f.coord);
     setOrigin(await namedPlace(f.coord, "현재 위치"));
-    if (classifyLocationAccuracy(f.accuracy) !== "good")
+    const quality = classifyLocationAccuracy(f.accuracy);
+    if (quality === "usable")
       notice(
-        `현재 위치 오차 약 ${Math.round(f.accuracy)}m · 출발 전 위치를 확인해 주세요.`,
+        `현재 위치 오차 범위가 약 ${Math.round(f.accuracy)}m입니다. 가능한 출발지를 표시했습니다.`,
+      );
+    else if (quality === "poor")
+      notice(
+        "주변 환경으로 인해 위치가 불안정합니다. 지도에서 실제 출발지를 확인해 주세요.",
       );
   }
   async function findRoutes() {
@@ -2355,7 +2357,7 @@ export function RealApp() {
           <button
             onClick={() =>
               void action(async () => {
-                const p = await locate(LOCATION_ACCURACY.USABLE_MAX_METERS);
+                const p = await locate();
                 notice(`현재 위치 확인 · 오차 약 ${Math.round(p.accuracy)}m`);
               })
             }

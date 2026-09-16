@@ -49,6 +49,21 @@ export type CorrectedLocation = {
   rawLocation?: LocationSample;
 };
 
+export type LocationAcquisitionResult = {
+  fix: Fix;
+  quality: LocationQuality;
+  confidence: number;
+  clusterSpreadMeters: number;
+  rawSamples: Fix[];
+  requiresConfirmation: boolean;
+  source:
+    | "browser-geolocation"
+    | "browser-filtered"
+    | "urban-context"
+    | "manual-map"
+    | "place-search";
+};
+
 export type MultipathCorrectionAvailability = {
   rawGnssAvailable: boolean;
   ephemerisAvailable: boolean;
@@ -120,6 +135,7 @@ export function hasNativeMultipathInputs(
   return (
     availability.rawGnssAvailable &&
     availability.ephemerisAvailable &&
+    availability.dgnssAvailable &&
     availability.skyModelAvailable &&
     availability.observationMatrixAvailable &&
     availability.multipathMapAvailable
@@ -247,6 +263,36 @@ export function correctedBrowserLocation(
     timestamp: Math.max(...usable.map((fix) => fix.at)),
     requiresConfirmation: quality !== "good",
     rawLocation: best ? fixToLocationSample(best) : undefined,
+  };
+}
+
+export function locationAcquisitionFromFixes(
+  fixes: Fix[],
+  now = Date.now(),
+): LocationAcquisitionResult | null {
+  const corrected = correctedBrowserLocation(fixes, now);
+  if (!corrected) return null;
+  const fix = correctedLocationToFix(corrected);
+  const rawSamples = distinctLocationFixes(fixes).filter((sample) =>
+    validLocationFix(sample, now),
+  );
+  const clusterSpreadMeters =
+    rawSamples.length > 1
+      ? Math.max(...rawSamples.map((sample) => meters(fix.coord, sample.coord)))
+      : 0;
+  return {
+    fix,
+    quality: classifyLocationAccuracy(fix.accuracy),
+    confidence: corrected.confidence,
+    clusterSpreadMeters,
+    rawSamples,
+    requiresConfirmation: corrected.requiresConfirmation,
+    source:
+      corrected.source === "native-raw-gnss" ||
+      corrected.source === "native-shadow-matching" ||
+      corrected.source === "multipath-map-corrected"
+        ? "browser-filtered"
+        : corrected.source,
   };
 }
 

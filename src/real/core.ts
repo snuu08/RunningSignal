@@ -536,8 +536,8 @@ export function appendFix(track: Track, fix: Fix): Track {
     !validCoord(fix.coord) ||
     !Number.isFinite(fix.at) ||
     !Number.isFinite(fix.accuracy) ||
-    fix.accuracy < 0 ||
-    fix.accuracy > 30
+    fix.accuracy <= 0 ||
+    fix.accuracy > 200
   )
     return track;
   const prev = track.fixes.at(-1);
@@ -545,6 +545,12 @@ export function appendFix(track: Track, fix: Fix): Track {
   const dt = (fix.at - prev.at) / 1000;
   if (dt <= 0) return track;
   const d = meters(prev.coord, fix.coord);
+  if (fix.accuracy > 80 || prev.accuracy > 80)
+    return {
+      ...track,
+      fixes: [...track.fixes, { ...fix, segmentStart: true }],
+      anchor: fix,
+    };
   // Long gaps create a new segment. Never connect a background GPS gap as distance.
   if (dt > 15 || fix.segmentStart)
     return {

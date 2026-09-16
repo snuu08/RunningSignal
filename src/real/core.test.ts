@@ -252,7 +252,7 @@ describe("real distance and GPS", () => {
   it("keeps longitude/latitude order and kilometers separate", () => {
     expect(meters([127, 37], [127, 37.001])).toBeCloseTo(111.2, 0);
   });
-  it("rejects inaccurate fixes and impossible jumps", () => {
+  it("rejects impossible jumps without treating usable accuracy as a hard failure", () => {
     const first = appendFix(empty, {
       coord: [127, 37],
       accuracy: 5,
@@ -268,6 +268,28 @@ describe("real distance and GPS", () => {
         at: epoch + 1000,
       }),
     ).toBe(first);
+    const steady = appendFix(first, {
+      coord: [127, 37.00008],
+      accuracy: 70,
+      at: epoch + 1000,
+    });
+    expect(steady).not.toBe(first);
+    expect(steady.fixes.at(-1)?.accuracy).toBe(70);
+    expect(steady.distanceM).toBeGreaterThan(0);
+  });
+  it("keeps poor accuracy samples from being connected into distance", () => {
+    const first = appendFix(empty, {
+      coord: [127, 37],
+      accuracy: 5,
+      at: epoch,
+    });
+    const poor = appendFix(first, {
+      coord: [127, 37.00005],
+      accuracy: 150,
+      at: epoch + 1000,
+    });
+    expect(poor.distanceM).toBe(0);
+    expect(poor.fixes.at(-1)?.segmentStart).toBe(true);
   });
   it("accumulates small regular running steps rather than discarding all sub-5m motion", () => {
     let t = empty;

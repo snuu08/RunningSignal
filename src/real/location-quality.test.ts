@@ -6,6 +6,7 @@ import {
   filterLocationOutliers,
   hasNativeMultipathInputs,
   isFreshLocationFix,
+  locationAcquisitionFromFixes,
 } from "./location-quality.ts";
 
 describe("location quality", () => {
@@ -73,7 +74,7 @@ describe("location quality", () => {
       hasNativeMultipathInputs({
         rawGnssAvailable: true,
         ephemerisAvailable: true,
-        dgnssAvailable: false,
+        dgnssAvailable: true,
         skyModelAvailable: true,
         multipathMapAvailable: true,
         observationMatrixAvailable: true,
@@ -89,5 +90,25 @@ describe("location quality", () => {
         observationMatrixAvailable: true,
       }),
     ).toBe(false);
+  });
+
+  it("keeps acquisition metadata separate from the final fix", () => {
+    const now = 20_000;
+    const acquired = locationAcquisitionFromFixes(
+      [
+        { coord: [127, 37], accuracy: 60, at: now - 2_000 },
+        { coord: [127.00001, 37.00001], accuracy: 58, at: now - 1_000 },
+        { coord: [127.00002, 37.00002], accuracy: 62, at: now },
+      ],
+      now,
+    );
+
+    expect(acquired).toMatchObject({
+      quality: "usable",
+      requiresConfirmation: true,
+      source: "browser-filtered",
+    });
+    expect(acquired?.rawSamples).toHaveLength(3);
+    expect(acquired?.fix.accuracy).toBeGreaterThan(30);
   });
 });

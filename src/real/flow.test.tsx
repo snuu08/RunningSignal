@@ -143,6 +143,34 @@ describe("GPS lifecycle", () => {
     expect(result.current.fix?.accuracy).toBeLessThan(30);
     expect(navigator.geolocation.clearWatch).toHaveBeenCalledWith(42);
   });
+  it("starts a free run with usable 60m GPS instead of blocking on the old 30m rule", async () => {
+    const fixes = [
+      { longitude: 127, latitude: 37, accuracy: 60 },
+      { longitude: 127.00001, latitude: 37.00001, accuracy: 58 },
+      { longitude: 127.00002, latitude: 37.00002, accuracy: 62 },
+    ];
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: {
+        getCurrentPosition: vi.fn((success) =>
+          success({ coords: fixes[0], timestamp: Date.now() }),
+        ),
+        watchPosition: vi.fn((success) => {
+          for (const [index, coords] of fixes.slice(1).entries())
+            success({ coords, timestamp: Date.now() + (index + 1) * 1000 });
+          return 42;
+        }),
+        clearWatch: vi.fn(),
+      },
+    });
+    const { result } = renderHook(() => useGpsRun(() => {}));
+
+    await act(() => result.current.start(null));
+
+    expect(result.current.live?.phase).toBe("running");
+    expect(result.current.fix?.accuracy).toBeGreaterThan(30);
+    expect(result.current.error).not.toContain("30m");
+  });
   it("allows a mapped run when the GPS accuracy circle overlaps the selected departure", async () => {
     const fixes = [
       { longitude: 126.9225, latitude: 37.57961, accuracy: 55 },

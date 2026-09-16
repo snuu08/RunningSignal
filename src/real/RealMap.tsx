@@ -12,6 +12,12 @@ import {
 import { api } from "./backend.ts";
 import type { Coord } from "./core.ts";
 import {
+  endpointDisplayPoints,
+  mapBoundsPoints,
+  splitOverlayPoints,
+  type MapPoint,
+} from "./RealMap.helpers.ts";
+import {
   asLandmark,
   landmarkKindsForZoom,
   type Landmark,
@@ -19,11 +25,6 @@ import {
 
 setWorkerUrl(workerUrl);
 const empty = { type: "FeatureCollection" as const, features: [] };
-type MapPoint = {
-  coord: Coord;
-  name: string;
-  kind?: "pin" | "origin" | "destination";
-};
 function lineData(coordinates: Coord[]) {
   return coordinates.length > 1
     ? {
@@ -44,6 +45,28 @@ function pointCollection(
       geometry: { type: "Point" as const, coordinates: p.coord },
     })),
   };
+}
+function applyNaturePaint(m: maplibregl.Map) {
+  for (const layer of m.getStyle().layers ?? []) {
+    if (layer.type !== "fill") continue;
+    const id = layer.id.toLowerCase();
+    const sourceLayer =
+      typeof layer["source-layer"] === "string"
+        ? layer["source-layer"].toLowerCase()
+        : "";
+    const token = `${id} ${sourceLayer}`;
+    try {
+      if (/water|river|stream|lake|ocean|sea/.test(token)) {
+        m.setPaintProperty(layer.id, "fill-color", "#123f52");
+        m.setPaintProperty(layer.id, "fill-opacity", 0.78);
+      } else if (/park|green|wood|forest|grass|landcover|nature|natural/.test(token)) {
+        m.setPaintProperty(layer.id, "fill-color", "#234a32");
+        m.setPaintProperty(layer.id, "fill-opacity", 0.56);
+      }
+    } catch {
+      // Some third-party styles keep fill properties locked behind expressions.
+    }
+  }
 }
 function accuracyData(center?: Coord | null, radiusM?: number | null) {
   if (!center || !radiusM || radiusM <= 0) return empty;
@@ -151,7 +174,71 @@ function addLabeledPoints(
       },
     });
 }
+function addEndpointPoints(m: maplibregl.Map) {
+  if (!m.getLayer("endpoint-dots"))
+    m.addLayer({
+      id: "endpoint-dots",
+      type: "circle",
+      source: "endpoints",
+      minzoom: 3,
+      paint: {
+        "circle-radius": [
+          "match",
+          ["get", "kind"],
+          "origin",
+          8.5,
+          "destination",
+          8.5,
+          7,
+        ],
+        "circle-color": [
+          "match",
+          ["get", "kind"],
+          "origin",
+          "#b4f6ce",
+          "destination",
+          "#ff8a80",
+          "#fee500",
+        ],
+        "circle-stroke-color": "#101312",
+        "circle-stroke-width": 2.2,
+      },
+    });
+  if (!m.getLayer("endpoint-labels"))
+    m.addLayer({
+      id: "endpoint-labels",
+      type: "symbol",
+      source: "endpoints",
+      minzoom: 3,
+      layout: {
+        "text-field": ["get", "name"],
+        "text-font": overlayFont(m),
+        "text-size": 13,
+        "text-offset": [0, 1.25],
+        "text-anchor": "top",
+        "text-max-width": 12,
+        "text-padding": 2,
+        "text-allow-overlap": true,
+        "text-ignore-placement": true,
+        "symbol-sort-key": [
+          "match",
+          ["get", "kind"],
+          "destination",
+          2,
+          "origin",
+          1,
+          0,
+        ],
+      },
+      paint: {
+        "text-color": "#ffffff",
+        "text-halo-color": "#111412",
+        "text-halo-width": 1.6,
+      },
+    });
+}
 function paintOverlays(m: maplibregl.Map) {
+  applyNaturePaint(m);
   if (!m.getSource("accuracy")) {
     m.addSource("accuracy", { type: "geojson", data: empty });
     m.addLayer({
@@ -199,6 +286,9 @@ function paintOverlays(m: maplibregl.Map) {
   if (!m.getSource("landmarks"))
     m.addSource("landmarks", { type: "geojson", data: empty });
   addLabeledPoints(m, "landmarks", "landmark-dots", "landmark-labels", 12);
+  if (!m.getSource("endpoints"))
+    m.addSource("endpoints", { type: "geojson", data: empty });
+  addEndpointPoints(m);
 }
 function writeOverlays(
   m: maplibregl.Map,
@@ -223,8 +313,12 @@ function writeOverlays(
   (m.getSource("straight") as GeoJSONSource | undefined)?.setData(
     data.straight ? lineData(data.straight) : empty,
   );
+  const { regular, endpoints } = splitOverlayPoints(data.pois);
   (m.getSource("pois") as GeoJSONSource | undefined)?.setData(
-    pointCollection(data.pois.map((p) => ({ ...p, kind: p.kind ?? "pin" }))),
+    pointCollection(regular.map((p) => ({ ...p, kind: p.kind ?? "pin" }))),
+  );
+  (m.getSource("endpoints") as GeoJSONSource | undefined)?.setData(
+    pointCollection(endpointDisplayPoints(endpoints)),
   );
   (m.getSource("accuracy") as GeoJSONSource | undefined)?.setData(
     accuracyData(data.position, data.positionAccuracyM),
@@ -438,15 +532,18 @@ export function RealMap({
   useEffect(() => {
     const m = map.current;
     if (!m || !ready || follow) return;
-    const boundsPoints = [...coordinates, ...(segments?.flat() ?? [])];
-    if (!boundsPoints.length) boundsPoints.push(...pois.map((p) => p.coord));
+    const boundsPoints = mapBoundsPoints({
+      coordinates,
+      segments,
+      pois,
+      position,
+    });
     if (boundsPoints.length > 1) {
       const b = new maplibregl.LngLatBounds(boundsPoints[0], boundsPoints[0]);
       boundsPoints.forEach((c) => b.extend(c));
       m.fitBounds(b, { padding: 36, maxZoom: 17, duration: 400 });
     } else if (position) m.easeTo({ center: position, zoom: 15 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coordinates, segments, ready, fitToken, follow]);
+  }, [coordinates, segments, pois, position, ready, fitToken, follow]);
   useEffect(() => {
     const m = map.current;
     if (!m || !ready) return;

@@ -7,6 +7,8 @@ import {
   distinctLocationFixes,
   isFreshLocationFix,
   LOCATION_ACCURACY,
+  locationAcquisitionFromFixes,
+  type LocationAcquisitionResult,
 } from "./location-quality.ts";
 
 const GPS_SETTLE_MS = LOCATION_ACCURACY.COLLECTION_MS;
@@ -75,9 +77,11 @@ export type LiveRun = {
   /** User-selected departure, before a routing provider snaps it to a road. */
   departure?: Fix["coord"] | null;
 };
-export function locate(
-  maxAcceptedAccuracyM: number = LOCATION_ACCURACY.GOOD_MAX_METERS,
-): Promise<Fix> {
+export function locate(): Promise<Fix> {
+  return acquireLocation().then((result) => result.fix);
+}
+
+export function acquireLocation(): Promise<LocationAcquisitionResult> {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
       reject(new Error("이 브라우저는 위치 기록을 지원하지 않습니다."));
@@ -88,17 +92,17 @@ export function locate(
     let watchId: number | null = null;
     let timer = 0;
     let lastFailure: Error | null = null;
-    const finish = (fix: Fix | null, error?: Error) => {
+    const finish = (result: LocationAcquisitionResult | null, error?: Error) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-      if (fix && fix.accuracy <= maxAcceptedAccuracyM) resolve(fix);
+      if (result) resolve(result);
       else
         reject(
           error ??
             new Error(
-              "GPS 오차가 30m보다 큽니다. 창가나 야외에서 위치가 안정되면 다시 시도해 주세요.",
+              "현재 위치를 확인하지 못했습니다. 다시 측정하거나 지도에서 출발지를 선택해 주세요.",
             ),
         );
     };
@@ -109,19 +113,21 @@ export function locate(
         at: p.timestamp,
       }]);
       samples.splice(0, samples.length, ...nextSamples);
-      const fix = stabilizedFix(samples);
+      const result = locationAcquisitionFromFixes(samples);
       const sampleSpan = samples.length
         ? Math.max(...samples.map((sample) => sample.at)) -
           Math.min(...samples.map((sample) => sample.at))
         : 0;
       if (
-        fix &&
-        ((samples.length === 1 && fix.accuracy <= 10) ||
+        result &&
+        ((samples.length === 1 &&
+          result.quality === "good" &&
+          result.fix.accuracy <= 10) ||
           (samples.length >= 3 &&
             sampleSpan >= 1_500 &&
-            fix.accuracy <= maxAcceptedAccuracyM))
+            (result.quality === "good" || result.quality === "usable")))
       )
-        finish(fix);
+        finish(result);
     };
     const fail = (e: GeolocationPositionError) => {
       const error = new Error(
@@ -135,7 +141,7 @@ export function locate(
     timer = window.setTimeout(
       () =>
         finish(
-          stabilizedFix(samples),
+          locationAcquisitionFromFixes(samples),
           samples.length ? undefined : (lastFailure ?? undefined),
         ),
       GPS_SETTLE_MS,
@@ -206,11 +212,14 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
         setFix(next);
         const r = ref.current;
         if (!r || r.phase !== "running") return;
-        if (classifyLocationAccuracy(next.accuracy) !== "good") {
-          setError("GPS 정확도가 낮아 이 위치는 거리에 더하지 않았어요.");
-          return;
-        }
-        setError("");
+        const quality = classifyLocationAccuracy(next.accuracy);
+        if (quality === "poor")
+          setError("GPS 위치가 불안정해 지도 표시에만 참고하고 거리는 보수적으로 계산합니다.");
+        else if (quality === "usable")
+          setError("GPS 오차가 다소 있어 안정적인 움직임만 거리에 반영합니다.");
+        else if (quality === "unreliable")
+          setError("현재 GPS 위치를 신뢰하기 어려워 거리 계산에서 제외했습니다.");
+        else setError("");
         if (skipNext.current) {
           next.segmentStart = true;
           skipNext.current = false;
@@ -255,24 +264,30 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
         throw new Error("진행 중인 러닝을 먼저 종료해 주세요.");
       skipNext.current = false;
       const departure = expectedStart ?? route?.coordinates[0];
-      const f = await locate(
-        departure
-          ? LOCATION_ACCURACY.USABLE_MAX_METERS
-          : LOCATION_ACCURACY.GOOD_MAX_METERS,
-      );
-      if (!departure && classifyLocationAccuracy(f.accuracy) !== "good")
+      const acquired = await acquireLocation();
+      const f = acquired.fix;
+      if (acquired.quality === "unreliable")
         throw new Error(
-          "GPS 오차가 30m보다 큽니다. 위치가 안정되면 다시 시작해 주세요.",
+          "현재 위치를 정확하게 확인하기 어렵습니다. 다시 측정하거나 지도에서 출발지를 선택해 주세요.",
         );
       if (
         departure &&
         meters(f.coord, departure) -
-          Math.min(f.accuracy, LOCATION_ACCURACY.USABLE_MAX_METERS) >
+          Math.min(f.accuracy, 150) >
           100
       )
         throw new Error(
           "설정한 출발지 100m 이내에서 시작해 주세요. 현재 위치로 경로를 다시 찾을 수도 있어요.",
         );
+      if (acquired.quality === "usable")
+        setError(
+          `현재 위치 오차 범위가 약 ${Math.round(f.accuracy)}m입니다. 선택한 출발지를 기준으로 기록을 시작합니다.`,
+        );
+      else if (acquired.quality === "poor")
+        setError(
+          `주변 환경으로 인해 위치가 불안정합니다. 약 ${Math.round(f.accuracy)}m 범위의 후보 위치로 시작하므로 지도에서 출발지를 확인해 주세요.`,
+        );
+      else setError("");
       setFix(f);
       const now = Date.now();
       replace({
