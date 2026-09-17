@@ -129,19 +129,44 @@ export function maxOffLineM(points: Coord[], start: Coord, end: Coord): number {
     0,
   );
 }
-export function progressOnRoute(path: Coord[], here: Coord) {
+export type RouteProgress = {
+  traveledM: number;
+  remainM: number;
+  offRouteM: number;
+  totalM: number;
+  closestCoord: Coord;
+};
+export function progressOnRoute(
+  path: Coord[],
+  here: Coord,
+  continuity?: {
+    minTraveledM: number;
+    maxTraveledM: number;
+    fallback?: RouteProgress;
+  },
+): RouteProgress {
   const totalM = pathLength(path);
   if (path.length < 2)
     return { traveledM: 0, remainM: 0, offRouteM: 0, totalM, closestCoord: here };
-  let best = { dist: Infinity, i: 0, t: 0, coord: path[0] };
+  let best = { dist: Infinity, i: 0, t: 0, coord: path[0], traveledM: 0 };
+  let traveledBefore = 0;
   for (let i = 0; i < path.length - 1; i++) {
     const hit = closestOnSegment(here, path[i], path[i + 1]);
+    const segmentM = meters(path[i], path[i + 1]);
+    const traveledM = traveledBefore + segmentM * hit.t;
+    traveledBefore += segmentM;
+    if (
+      continuity &&
+      (traveledM < continuity.minTraveledM ||
+        traveledM > continuity.maxTraveledM)
+    )
+      continue;
     if (hit.distM < best.dist)
-      best = { dist: hit.distM, i: i, t: hit.t, coord: hit.coord };
+      best = { dist: hit.distM, i: i, t: hit.t, coord: hit.coord, traveledM };
   }
-  let traveledM = 0;
-  for (let i = 0; i < best.i; i++) traveledM += meters(path[i], path[i + 1]);
-  traveledM += meters(path[best.i], path[best.i + 1]) * best.t;
+  if (!Number.isFinite(best.dist))
+    return continuity?.fallback ?? progressOnRoute(path, here);
+  const traveledM = best.traveledM;
   return {
     traveledM,
     remainM: Math.max(0, totalM - traveledM),

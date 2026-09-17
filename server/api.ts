@@ -77,6 +77,7 @@ export function resetApiRuntimeForTests() {
 export function signalProviderFromEnv(
   env: Env,
 ): RouteSignalProvider {
+  if (env.SIGNAL_PUBLIC_PREDICTION !== "true") return unavailableSignals;
   const bundle = loadVerifiedBundle(env);
   const scopes = parsePredictionScopes(env.SIGNAL_PREDICTION_SCOPES);
   if (!bundle.crossings.length) return unavailableSignals;
@@ -365,11 +366,14 @@ export async function handleApi(
   try {
     const url = new URL(request.url),
       path = url.pathname.replace(/^\/\.netlify\/functions\/api/, "/api");
-    const provider = signalProvider ?? signalProviderFromEnv(env);
+    const prediction = predictionFromEnv(env);
+    const provider =
+      prediction.predictionReady
+        ? (signalProvider ?? signalProviderFromEnv(env))
+        : unavailableSignals;
     if (request.method === "GET" && path === "/api/status") {
       const seoulConfigured = !!env.SEOUL_TDATA_API_KEY;
-      const { mappingReady, predictionReady, predictionByRegion } =
-        predictionFromEnv(env);
+      const { mappingReady, predictionReady, predictionByRegion } = prediction;
       return json({
         places: !!env.KAKAO_REST_API_KEY,
         routes: !!env.TMAP_APP_KEY,

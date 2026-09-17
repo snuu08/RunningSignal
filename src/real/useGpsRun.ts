@@ -213,6 +213,7 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     [error, setError] = useState("");
   const skipNext = useRef(false);
   const watchSamples = useRef<Fix[]>([]);
+  const routeProgressM = useRef<number | null>(null);
   const ref = useRef(live),
     save = useRef(onCheckpoint);
   save.current = onCheckpoint;
@@ -263,7 +264,12 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
           );
           return;
         }
-        const projected = displayLocationForRoute(accepted, r.route);
+        const projected = displayLocationForRoute(
+          accepted,
+          r.route,
+          routeProgressM.current,
+        );
+        routeProgressM.current = projected.routeProjection?.traveledM ?? null;
         const next = { ...projected.recordingFix };
         setRawFix(projected.rawFix);
         setFix(projected.displayFix);
@@ -332,7 +338,7 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
       if (
         departure &&
         meters(f.coord, departure) -
-          Math.min(f.accuracy, 150) >
+          startDistanceAccuracyCredit(acquired.quality, f.accuracy) >
           100
       )
         throw new Error(
@@ -348,6 +354,7 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
         );
       else setError("");
       const projected = displayLocationForRoute(f, route);
+      routeProgressM.current = projected.routeProjection?.traveledM ?? null;
       setRawFix(projected.rawFix);
       setFix(projected.displayFix);
       setRouteProjection(projected.routeProjection);
@@ -386,11 +393,13 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     updateRoute(route: Route) {
       const r = ref.current;
       if (!r || r.phase === "ended") return;
+      routeProgressM.current = null;
       const current = rawFix ?? fix;
       if (current) {
         const projected = displayLocationForRoute(current, route);
         setFix(projected.displayFix);
         setRouteProjection(projected.routeProjection);
+        routeProgressM.current = projected.routeProjection?.traveledM ?? null;
       }
       replace({ ...r, route });
     },
@@ -411,6 +420,15 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
       setRawFix(null);
       setRouteProjection(null);
       watchSamples.current = [];
+      routeProgressM.current = null;
     },
   };
+}
+
+function startDistanceAccuracyCredit(
+  quality: LocationAcquisitionResult["quality"],
+  accuracyM: number,
+) {
+  const cap = quality === "good" ? 20 : quality === "usable" ? 35 : 45;
+  return Math.min(accuracyM, cap);
 }

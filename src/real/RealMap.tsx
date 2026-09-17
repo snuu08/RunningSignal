@@ -307,19 +307,35 @@ async function loadLandmarks(
   kinds: string,
   signal: AbortSignal,
 ) {
+  const cacheKey = landmarkCacheKey(center, radiusM, kinds);
+  const cached = landmarkCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < LANDMARK_CACHE_TTL_MS)
+    return cached.items;
   try {
     const data = await api<{ landmarks: unknown[] }>(
       `landmarks?x=${center[0]}&y=${center[1]}&radius=${Math.round(radiusM)}&kinds=${kinds}`,
       undefined,
       signal,
     );
-    return (data.landmarks ?? []).flatMap((row) => {
+    const items = (data.landmarks ?? []).flatMap((row) => {
       const item = asLandmark(row);
       return item ? [item] : [];
     });
+    if (!signal.aborted) landmarkCache.set(cacheKey, { at: Date.now(), items });
+    return items;
   } catch {
     return [];
   }
+}
+
+const LANDMARK_CACHE_TTL_MS = 45_000;
+const landmarkCache = new Map<string, { at: number; items: Landmark[] }>();
+
+function landmarkCacheKey(center: Coord, radiusM: number, kinds: string) {
+  const lng = Math.round(center[0] * 500) / 500;
+  const lat = Math.round(center[1] * 500) / 500;
+  const radius = Math.round(radiusM / 250) * 250;
+  return `${lng},${lat}:${radius}:${kinds}`;
 }
 
 function restrictedBasemap(error: unknown) {

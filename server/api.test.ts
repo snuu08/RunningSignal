@@ -34,6 +34,32 @@ const request = (extra?: Record<string, unknown>) =>
     method: "POST",
     body: JSON.stringify({ ...body, ...extra }),
   });
+const signalReadyEnv = {
+  TMAP_APP_KEY: "key",
+  SIGNAL_PUBLIC_PREDICTION: "true",
+  SIGNAL_PREDICTION_SCOPES: "field:1850",
+  SIGNAL_VERIFIED_JSON: JSON.stringify({
+    version: 1,
+    synthetic: false,
+    crossings: [
+      {
+        synthetic: false,
+        stage: "verified",
+        source: "field",
+        sourceIntersectionId: "1850",
+      },
+    ],
+    plans: [
+      {
+        synthetic: false,
+        stage: "verified",
+        source: "field",
+        sourceIntersectionId: "1850",
+      },
+    ],
+    surveys: [],
+  }),
+};
 beforeEach(() => resetApiRuntimeForTests());
 describe("server provider boundary", () => {
   it("reports configuration without exposing credentials or claiming verification", async () => {
@@ -578,7 +604,7 @@ describe("route recommendation contract", () => {
     const f = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
       tmapForOption(init),
     );
-    const r = await handleApi(request(), { TMAP_APP_KEY: "key" }, f, {
+    const r = await handleApi(request(), signalReadyEnv, f, {
       inspect: async () => ({
         completeCoverage: false,
         crossings: [],
@@ -594,7 +620,7 @@ describe("route recommendation contract", () => {
     const f = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
       tmapForOption(init),
     );
-    const r = await handleApi(request(), { TMAP_APP_KEY: "key" }, f, {
+    const r = await handleApi(request(), signalReadyEnv, f, {
       inspect: async () => ({
         completeCoverage: true,
         crossings: [],
@@ -610,7 +636,7 @@ describe("route recommendation contract", () => {
     const f = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
       tmapForOption(init),
     );
-    const r = await handleApi(request(), { TMAP_APP_KEY: "key" }, f, {
+    const r = await handleApi(request(), signalReadyEnv, f, {
       inspect: async (route) => {
         const now = Date.now();
         const plan: FixedPlan = {
@@ -680,7 +706,7 @@ describe("route recommendation contract", () => {
           waitThresholdSec: 15,
         },
       }),
-      { TMAP_APP_KEY: "key" },
+      signalReadyEnv,
       f,
       {
         inspect: async (route, departureMs) => {
@@ -728,6 +754,25 @@ describe("route recommendation contract", () => {
     expect(result.recommendSentences[0]).toBe(
       "기본 경로보다 70m 길지만 예상 신호 대기가 약 42초 적습니다.",
     );
+  });
+  it("does not let injected signal data affect routes when public prediction is off", async () => {
+    const f = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+      tmapForOption(init),
+    );
+    const r = await handleApi(
+      request(),
+      { ...signalReadyEnv, SIGNAL_PUBLIC_PREDICTION: "false" },
+      f,
+      {
+        inspect: async () => {
+          throw new Error("provider must not be called");
+        },
+      },
+    );
+    const result = await r.json();
+    expect(result.recommendationReason).toBe("walking-baseline");
+    expect(result.signalCoverage).toBe("unknown");
+    expect(result.forecasts[result.recommendedId].waitSec).toBeNull();
   });
   it("marks Seoul reachable after a successful probe without enabling prediction", async () => {
     const f = vi.fn(async () => Response.json([{ itstId: "123" }]));

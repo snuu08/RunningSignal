@@ -79,6 +79,7 @@ import type { PaceSlotId } from "../domain/models.ts";
 import { acquireLocation, useGpsRun, type LiveRun } from "./useGpsRun.ts";
 import {
   classifyLocationAccuracy,
+  LocationAcquisitionError,
   locationFailureUserMessage,
   queryGeolocationPermission,
   type LocationPermissionState,
@@ -974,7 +975,17 @@ export function RealApp() {
     }
   }
   async function usePosition() {
-    const acquired = await acquireLocation();
+    let acquired;
+    try {
+      acquired = await acquireLocation();
+    } catch (error) {
+      if (
+        error instanceof LocationAcquisitionError &&
+        error.reason === "permission-denied"
+      )
+        setPermissionStatus("denied");
+      throw error;
+    }
     const f = acquired.fix;
     setPosition(f.coord);
     setPermissionStatus(acquired.permission);

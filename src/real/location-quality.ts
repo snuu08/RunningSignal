@@ -15,8 +15,13 @@ export const LOCATION_ACCURACY = {
   COLLECTION_MS: 12_000,
   STABLE_RADIUS_METERS: 20,
   MAX_RUNNING_SPEED_MPS: 10,
+  MAX_PLAUSIBLE_RUNNING_SPEED_MPS: 8,
+  OUTLIER_ACCURACY_CAP_METERS: 18,
   ROUTE_PROJECTION_MIN_METERS: 45,
   ROUTE_PROJECTION_MARGIN_METERS: 20,
+  ROUTE_PROJECTION_MAX_METERS: 60,
+  ROUTE_CONTINUITY_BACK_METERS: 80,
+  ROUTE_CONTINUITY_FORWARD_METERS: 320,
 } as const;
 
 export type LocationQuality = "good" | "usable" | "poor" | "unreliable";
@@ -312,12 +317,17 @@ export function distinctLocationFixes(fixes: Fix[]): Fix[] {
 export function plausibleFromPrevious(prev: Fix, next: Fix) {
   const dt = (next.at - prev.at) / 1000;
   if (dt <= 0) return false;
+  const dist = meters(prev.coord, next.coord);
+  if (dt <= 3 && dist / dt > LOCATION_ACCURACY.MAX_PLAUSIBLE_RUNNING_SPEED_MPS)
+    return false;
+  const accuracyAllowance =
+    Math.min(prev.accuracy, LOCATION_ACCURACY.OUTLIER_ACCURACY_CAP_METERS) +
+    Math.min(next.accuracy, LOCATION_ACCURACY.OUTLIER_ACCURACY_CAP_METERS);
   const allowed =
-    LOCATION_ACCURACY.MAX_RUNNING_SPEED_MPS * dt +
-    Math.min(prev.accuracy, LOCATION_ACCURACY.USABLE_MAX_METERS) +
-    Math.min(next.accuracy, LOCATION_ACCURACY.USABLE_MAX_METERS) +
-    20;
-  return meters(prev.coord, next.coord) <= allowed;
+    LOCATION_ACCURACY.MAX_PLAUSIBLE_RUNNING_SPEED_MPS * dt +
+    accuracyAllowance +
+    8;
+  return dist <= allowed;
 }
 
 export function filterLocationOutliers(fixes: Fix[], now = Date.now()): Fix[] {
@@ -465,6 +475,7 @@ export type RouteDisplayLocation = {
 export function displayLocationForRoute(
   rawFix: Fix,
   route: Pick<Route, "coordinates"> | null | undefined,
+  previousTraveledM: number | null = null,
 ): RouteDisplayLocation {
   if (!route?.coordinates?.length)
     return {
@@ -473,10 +484,26 @@ export function displayLocationForRoute(
       displayFix: rawFix,
       routeProjection: null,
     };
-  const progress = progressOnRoute(route.coordinates, rawFix.coord);
-  const thresholdM = Math.max(
-    rawFix.accuracy + LOCATION_ACCURACY.ROUTE_PROJECTION_MARGIN_METERS,
-    LOCATION_ACCURACY.ROUTE_PROJECTION_MIN_METERS,
+  const current = progressOnRoute(route.coordinates, rawFix.coord);
+  const progress =
+    previousTraveledM === null
+      ? current
+      : progressOnRoute(route.coordinates, rawFix.coord, {
+          minTraveledM: Math.max(
+            0,
+            previousTraveledM - LOCATION_ACCURACY.ROUTE_CONTINUITY_BACK_METERS,
+          ),
+          maxTraveledM:
+            previousTraveledM +
+            LOCATION_ACCURACY.ROUTE_CONTINUITY_FORWARD_METERS,
+          fallback: current,
+        });
+  const thresholdM = Math.min(
+    LOCATION_ACCURACY.ROUTE_PROJECTION_MAX_METERS,
+    Math.max(
+      rawFix.accuracy + LOCATION_ACCURACY.ROUTE_PROJECTION_MARGIN_METERS,
+      LOCATION_ACCURACY.ROUTE_PROJECTION_MIN_METERS,
+    ),
   );
   const canProject =
     classifyLocationAccuracy(rawFix.accuracy) !== "poor" &&

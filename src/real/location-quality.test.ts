@@ -12,7 +12,7 @@ import {
   locationSamplesFailureReason,
   validateFix,
 } from "./location-quality.ts";
-import type { Coord } from "./core.ts";
+import { appendFix, type Coord, type Track } from "./core.ts";
 
 describe("location quality", () => {
   it("classifies GPS accuracy into good, usable, poor, and unreliable bands", () => {
@@ -127,6 +127,59 @@ describe("location quality", () => {
     expect(filtered).toHaveLength(1);
   });
 
+  it("rejects a one-second GPS jump over 60 meters", () => {
+    const now = 20_000;
+    const filtered = filterLocationOutliers(
+      [
+        { coord: [127, 37], accuracy: 8, at: now - 1_000 },
+        { coord: [127, 37.0006], accuracy: 8, at: now },
+      ],
+      now,
+    );
+
+    expect(filtered).toHaveLength(1);
+  });
+
+  it("does not let 50m accuracy permit a near-100m jump", () => {
+    const now = 20_000;
+    const filtered = filterLocationOutliers(
+      [
+        { coord: [127, 37], accuracy: 50, at: now - 1_000 },
+        { coord: [127, 37.00085], accuracy: 50, at: now },
+      ],
+      now,
+    );
+
+    expect(filtered).toHaveLength(1);
+  });
+
+  it("accepts normal running movement", () => {
+    const now = 20_000;
+    const filtered = filterLocationOutliers(
+      [
+        { coord: [127, 37], accuracy: 8, at: now - 1_000 },
+        { coord: [127, 37.00004], accuracy: 8, at: now },
+      ],
+      now,
+    );
+
+    expect(filtered).toHaveLength(2);
+  });
+
+  it("keeps stationary jitter from inflating recorded distance", () => {
+    const empty: Track = { fixes: [], distanceM: 0, gapSec: 0, stoppedSec: 0 };
+    let track = appendFix(empty, { coord: [127, 37], accuracy: 8, at: 10_000 });
+    for (let i = 1; i <= 8; i++)
+      track = appendFix(track, {
+        coord: [127 + i * 0.000002, 37],
+        accuracy: 8,
+        at: 10_000 + i * 1000,
+      });
+
+    expect(track.distanceM).toBeLessThan(3);
+    expect(track.stoppedSec).toBeGreaterThan(0);
+  });
+
   it("returns a browser-filtered corrected location with confidence metadata", () => {
     const now = 10_000;
     const corrected = correctedBrowserLocation(
@@ -202,6 +255,42 @@ describe("location quality", () => {
 
     expect(projected.routeProjection?.usedForDisplay).toBe(false);
     expect(projected.displayFix.coord).toEqual([127.005, 37.00005]);
+  });
+
+  it("caps route projection distance for usable GPS", () => {
+    const projected = displayLocationForRoute(
+      { coord: [127.005, 37.00065], accuracy: 55, at: 1 },
+      {
+        coordinates: [
+          [127, 37] as Coord,
+          [127.01, 37] as Coord,
+        ],
+      },
+    );
+
+    expect(projected.routeProjection?.thresholdM).toBeLessThanOrEqual(60);
+    expect(projected.routeProjection?.usedForDisplay).toBe(false);
+    expect(projected.displayFix.coord).toEqual([127.005, 37.00065]);
+  });
+
+  it("keeps route projection near previous progress on looped routes", () => {
+    const route = {
+      coordinates: [
+        [127, 37],
+        [127, 37.02],
+        [127.002, 37.02],
+        [127.002, 37],
+        [127, 37],
+      ] as Coord[],
+    };
+    const projected = displayLocationForRoute(
+      { coord: [127.00195, 37.001], accuracy: 8, at: 1 },
+      route,
+      120,
+    );
+
+    expect(projected.routeProjection?.traveledM).toBeLessThan(500);
+    expect(projected.routeProjection?.usedForDisplay).toBe(false);
   });
 
   it("maps browser geolocation errors to separate failure reasons", () => {
