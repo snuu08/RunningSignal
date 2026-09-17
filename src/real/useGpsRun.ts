@@ -5,14 +5,24 @@ import {
   correctedBrowserLocation,
   correctedLocationToFix,
   distinctLocationFixes,
+  displayLocationForRoute,
+  filterLocationOutliers,
+  geolocationErrorReason,
   isFreshLocationFix,
   LOCATION_ACCURACY,
+  LocationAcquisitionError,
   locationAcquisitionFromFixes,
+  locationFailureUserMessage,
+  locationSamplesFailureReason,
+  normalizeGeolocationPosition,
+  queryGeolocationPermission,
+  validateFix,
   type LocationAcquisitionResult,
+  type RouteProjection,
 } from "./location-quality.ts";
 
 const GPS_SETTLE_MS = LOCATION_ACCURACY.COLLECTION_MS;
-const GPS_STABLE_RADIUS_M = 20;
+const GPS_STABLE_RADIUS_M = LOCATION_ACCURACY.STABLE_RADIUS_METERS;
 
 export function stabilizedFix(
   fixes: Fix[],
@@ -81,18 +91,38 @@ export function locate(): Promise<Fix> {
   return acquireLocation().then((result) => result.fix);
 }
 
-export function acquireLocation(): Promise<LocationAcquisitionResult> {
+function geolocationAvailableInThisContext() {
+  if (typeof navigator === "undefined" || !("geolocation" in navigator))
+    return false;
+  if (typeof window === "undefined") return true;
+  if (window.isSecureContext) return true;
+  return ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+}
+
+export async function acquireLocation(): Promise<LocationAcquisitionResult> {
+  const permission = await queryGeolocationPermission();
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error("이 브라우저는 위치 기록을 지원하지 않습니다."));
+    if (!geolocationAvailableInThisContext()) {
+      const reason =
+        typeof navigator === "undefined" || !("geolocation" in navigator)
+          ? "unsupported"
+          : "secure-context";
+      reject(new LocationAcquisitionError(reason));
+      return;
+    }
+    if (permission === "denied") {
+      reject(new LocationAcquisitionError("permission-denied"));
       return;
     }
     const samples: Fix[] = [];
     let settled = false;
     let watchId: number | null = null;
     let timer = 0;
-    let lastFailure: Error | null = null;
-    const finish = (result: LocationAcquisitionResult | null, error?: Error) => {
+    let lastFailure: LocationAcquisitionError | null = null;
+    const finish = (
+      result: LocationAcquisitionResult | null,
+      error?: LocationAcquisitionError,
+    ) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
@@ -101,19 +131,28 @@ export function acquireLocation(): Promise<LocationAcquisitionResult> {
       else
         reject(
           error ??
-            new Error(
-              "현재 위치를 확인하지 못했습니다. 다시 측정하거나 지도에서 출발지를 선택해 주세요.",
+            new LocationAcquisitionError(
+              locationSamplesFailureReason(samples),
             ),
         );
     };
     const receive = (p: GeolocationPosition) => {
-      const nextSamples = distinctGpsFixes([...samples, {
-        coord: [p.coords.longitude, p.coords.latitude],
-        accuracy: p.coords.accuracy,
-        at: p.timestamp,
-      }]);
+      const validation = validateFix(normalizeGeolocationPosition(p));
+      if (!validation.ok) {
+        lastFailure = new LocationAcquisitionError(
+          validation.reason,
+          locationFailureUserMessage(validation.reason),
+          validation.developerMessage,
+        );
+        return;
+      }
+      const nextSamples = distinctGpsFixes([...samples, validation.fix]);
       samples.splice(0, samples.length, ...nextSamples);
-      const result = locationAcquisitionFromFixes(samples);
+      const result = locationAcquisitionFromFixes(
+        samples,
+        Date.now(),
+        permission,
+      );
       const sampleSpan = samples.length
         ? Math.max(...samples.map((sample) => sample.at)) -
           Math.min(...samples.map((sample) => sample.at))
@@ -130,19 +169,22 @@ export function acquireLocation(): Promise<LocationAcquisitionResult> {
         finish(result);
     };
     const fail = (e: GeolocationPositionError) => {
-      const error = new Error(
-        e.code === 1
-          ? "위치 권한을 허용해 주세요. 지도에서 출발지를 고를 수도 있어요."
-          : "현재 위치를 찾지 못했습니다. 야외에서 다시 시도하거나 지도에서 출발지를 고르세요.",
+      const reason = geolocationErrorReason(e);
+      const error = new LocationAcquisitionError(
+        reason,
+        locationFailureUserMessage(reason),
+        e.message,
       );
-      if (e.code === 1) finish(null, error);
+      if (reason === "permission-denied") finish(null, error);
       else lastFailure = error;
     };
     timer = window.setTimeout(
       () =>
         finish(
-          locationAcquisitionFromFixes(samples),
-          samples.length ? undefined : (lastFailure ?? undefined),
+          locationAcquisitionFromFixes(samples, Date.now(), permission),
+          samples.length
+            ? new LocationAcquisitionError(locationSamplesFailureReason(samples))
+            : (lastFailure ?? new LocationAcquisitionError("timeout")),
         ),
       GPS_SETTLE_MS,
     );
@@ -166,8 +208,11 @@ export function acquireLocation(): Promise<LocationAcquisitionResult> {
 export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
   const [live, setLive] = useState<LiveRun | null>(null),
     [fix, setFix] = useState<Fix | null>(null),
+    [rawFix, setRawFix] = useState<Fix | null>(null),
+    [routeProjection, setRouteProjection] = useState<RouteProjection | null>(null),
     [error, setError] = useState("");
   const skipNext = useRef(false);
+  const watchSamples = useRef<Fix[]>([]);
   const ref = useRef(live),
     save = useRef(onCheckpoint);
   save.current = onCheckpoint;
@@ -200,18 +245,29 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     if (phase !== "running" || !navigator.geolocation) return;
     const id = navigator.geolocation.watchPosition(
       (p) => {
-        const next: Fix = {
-          coord: [p.coords.longitude, p.coords.latitude],
-          accuracy: p.coords.accuracy,
-          at: p.timestamp,
-          heading: (() => {
-            const h = p.coords.heading;
-            return h != null && Number.isFinite(h) && h >= 0 ? h : undefined;
-          })(),
-        };
-        setFix(next);
         const r = ref.current;
         if (!r || r.phase !== "running") return;
+        const validation = validateFix(normalizeGeolocationPosition(p));
+        if (!validation.ok) {
+          setError(locationFailureUserMessage(validation.reason));
+          return;
+        }
+        const raw = validation.fix;
+        const samples = distinctGpsFixes([...watchSamples.current, raw]).slice(-8);
+        const filtered = filterLocationOutliers(samples);
+        const accepted = filtered.at(-1);
+        watchSamples.current = filtered.slice(-8);
+        if (!accepted || accepted.at !== raw.at) {
+          setError(
+            "GPS 위치가 갑자기 튀어 이번 샘플은 기록 거리에서 제외했습니다.",
+          );
+          return;
+        }
+        const projected = displayLocationForRoute(accepted, r.route);
+        const next = { ...projected.recordingFix };
+        setRawFix(projected.rawFix);
+        setFix(projected.displayFix);
+        setRouteProjection(projected.routeProjection);
         const quality = classifyLocationAccuracy(next.accuracy);
         if (quality === "poor")
           setError("GPS 위치가 불안정해 지도 표시에만 참고하고 거리는 보수적으로 계산합니다.");
@@ -228,9 +284,9 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
       },
       (e) =>
         setError(
-          e.code === 1
+          geolocationErrorReason(e) === "permission-denied"
             ? "위치 권한이 해제됐어요. 기록을 일시정지하고 권한을 확인해 주세요."
-            : "위치 수신이 끊겼어요. 수신하지 못한 구간은 거리에 더하지 않아요.",
+            : locationFailureUserMessage(geolocationErrorReason(e)),
         ),
       { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 },
     );
@@ -258,11 +314,14 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
   return {
     live,
     fix,
+    rawFix,
+    routeProjection,
     error,
     async start(route: Route | null, expectedStart?: Fix["coord"] | null) {
       if (ref.current && ref.current.phase !== "ended")
         throw new Error("진행 중인 러닝을 먼저 종료해 주세요.");
       skipNext.current = false;
+      watchSamples.current = [];
       const departure = expectedStart ?? route?.coordinates[0];
       const acquired = await acquireLocation();
       const f = acquired.fix;
@@ -288,13 +347,17 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
           `주변 환경으로 인해 위치가 불안정합니다. 약 ${Math.round(f.accuracy)}m 범위의 후보 위치로 시작하므로 지도에서 출발지를 확인해 주세요.`,
         );
       else setError("");
-      setFix(f);
+      const projected = displayLocationForRoute(f, route);
+      setRawFix(projected.rawFix);
+      setFix(projected.displayFix);
+      setRouteProjection(projected.routeProjection);
+      watchSamples.current = [projected.recordingFix];
       const now = Date.now();
       replace({
         id: crypto.randomUUID(),
         startedAt: now,
         phase: "running",
-        track: { fixes: [f], distanceM: 0, gapSec: 0, stoppedSec: 0 },
+        track: { fixes: [projected.recordingFix], distanceM: 0, gapSec: 0, stoppedSec: 0 },
         activeSec: 0,
         manualPauseSec: 0,
         lastTick: now,
@@ -323,6 +386,12 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     updateRoute(route: Route) {
       const r = ref.current;
       if (!r || r.phase === "ended") return;
+      const current = rawFix ?? fix;
+      if (current) {
+        const projected = displayLocationForRoute(current, route);
+        setFix(projected.displayFix);
+        setRouteProjection(projected.routeProjection);
+      }
       replace({ ...r, route });
     },
     recover(r: LiveRun) {
@@ -338,6 +407,10 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     },
     clear() {
       replace(null);
+      setFix(null);
+      setRawFix(null);
+      setRouteProjection(null);
+      watchSamples.current = [];
     },
   };
 }

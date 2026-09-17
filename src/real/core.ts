@@ -125,11 +125,12 @@ export function maxOffLineM(points: Coord[], start: Coord, end: Coord): number {
 export function progressOnRoute(path: Coord[], here: Coord) {
   const totalM = pathLength(path);
   if (path.length < 2)
-    return { traveledM: 0, remainM: 0, offRouteM: 0, totalM };
-  let best = { dist: Infinity, i: 0, t: 0 };
+    return { traveledM: 0, remainM: 0, offRouteM: 0, totalM, closestCoord: here };
+  let best = { dist: Infinity, i: 0, t: 0, coord: path[0] };
   for (let i = 0; i < path.length - 1; i++) {
     const hit = closestOnSegment(here, path[i], path[i + 1]);
-    if (hit.distM < best.dist) best = { dist: hit.distM, i: i, t: hit.t };
+    if (hit.distM < best.dist)
+      best = { dist: hit.distM, i: i, t: hit.t, coord: hit.coord };
   }
   let traveledM = 0;
   for (let i = 0; i < best.i; i++) traveledM += meters(path[i], path[i + 1]);
@@ -139,6 +140,7 @@ export function progressOnRoute(path: Coord[], here: Coord) {
     remainM: Math.max(0, totalM - traveledM),
     offRouteM: best.dist,
     totalM,
+    closestCoord: best.coord,
   };
 }
 export function withGeometry(route: Route): Route {

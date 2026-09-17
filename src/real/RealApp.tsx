@@ -74,8 +74,14 @@ import {
   durationPartsToSeconds,
 } from "../domain/pace.ts";
 import type { PaceSlotId } from "../domain/models.ts";
-import { locate, useGpsRun, type LiveRun } from "./useGpsRun.ts";
-import { classifyLocationAccuracy } from "./location-quality.ts";
+import { acquireLocation, useGpsRun, type LiveRun } from "./useGpsRun.ts";
+import {
+  classifyLocationAccuracy,
+  locationFailureUserMessage,
+  queryGeolocationPermission,
+  type LocationPermissionState,
+  type LocationQuality,
+} from "./location-quality.ts";
 import {
   realPage,
   showSignalWait,
@@ -88,6 +94,42 @@ import { FlowIcon, type FlowIconName } from "./FlowIcon.tsx";
 import { RunnerLogo } from "../components/Logo.tsx";
 const regions = ["서울", "인천", "대구", "성남"];
 const emptyCoords: Coord[] = [];
+
+type PositionMeta = {
+  accuracyM: number;
+  at: number;
+  quality: LocationQuality;
+  permission: LocationPermissionState;
+  source: "browser-geolocation" | "browser-filtered";
+  requiresConfirmation: boolean;
+};
+
+function gpsQualityLabel(quality: LocationQuality) {
+  return quality === "good"
+    ? "GPS 상태 좋음"
+    : quality === "usable"
+      ? "GPS 상태 보통"
+      : quality === "poor"
+        ? "GPS 상태 불안정"
+        : "GPS 상태 신뢰 어려움";
+}
+
+function permissionLabel(permission: LocationPermissionState) {
+  return permission === "granted"
+    ? "위치 권한 허용됨"
+    : permission === "prompt"
+      ? "위치 권한 확인 필요"
+      : permission === "denied"
+        ? "위치 권한 꺼짐"
+        : permission === "unsupported"
+          ? "위치 기능 미지원"
+          : "위치 권한 상태 확인 불가";
+}
+
+function relativeSecondsLabel(at: number, now = Date.now()) {
+  const sec = Math.max(0, Math.round((now - at) / 1000));
+  return sec < 2 ? "방금 갱신" : `${sec}초 전 갱신`;
+}
 function Thumbnail({ route }: { route: Route | null }) {
   const points = route?.coordinates;
   const [fail, setFail] = useState(false);
@@ -608,6 +650,9 @@ export function RealApp() {
     [avoidanceCheck, setAvoidanceCheck] = useState<AvoidanceCheck | null>(null),
     [departureMs, setDepartureMs] = useState<number | null>(null),
     [position, setPosition] = useState<Coord | null>(null),
+    [positionMeta, setPositionMeta] = useState<PositionMeta | null>(null),
+    [permissionStatus, setPermissionStatus] =
+      useState<LocationPermissionState>("unknown"),
     [fit, setFit] = useState(0);
   const [records, setRecords] = useState<RunRecord[]>([]),
     [result, setResult] = useState<RunRecord | null>(null),
@@ -639,12 +684,13 @@ export function RealApp() {
   const liveSignals = showSignalWait(status?.signal?.predictionReady === true);
   const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
   const travelSec = route ? (route.distanceM / 1000) * pace : 0;
-  const here =
-    run.fix?.coord ?? run.live?.track.fixes.at(-1)?.coord ?? position;
+  const currentRawFix = run.rawFix ?? run.live?.track.fixes.at(-1) ?? run.fix;
   const along =
-    run.live?.route && here
-      ? progressOnRoute(run.live.route.coordinates, here)
+    run.live?.route && currentRawFix
+      ? (run.routeProjection ??
+        progressOnRoute(run.live.route.coordinates, currentRawFix.coord))
       : null;
+  const rawOffRouteM = run.routeProjection?.offRouteM ?? along?.offRouteM ?? null;
   const upcoming = along
     ? nextPoi(run.live?.route?.nearbyPois, along.traveledM)
     : null;
@@ -664,15 +710,15 @@ export function RealApp() {
     { offRouteM: number; accuracy: number }[]
   >([]);
   useEffect(() => {
-    const fix = run.fix;
-    if (run.live?.phase !== "running" || !along || !fix) {
+    const fix = currentRawFix;
+    if (run.live?.phase !== "running" || rawOffRouteM === null || !fix) {
       if (run.live?.phase !== "running") setOffSamples([]);
       return;
     }
     setOffSamples((prev) =>
-      [...prev, { offRouteM: along.offRouteM, accuracy: fix.accuracy }].slice(-8),
+      [...prev, { offRouteM: rawOffRouteM, accuracy: fix.accuracy }].slice(-8),
     );
-  }, [along?.offRouteM, run.fix?.accuracy, run.fix?.at, run.live?.phase]);
+  }, [rawOffRouteM, currentRawFix, run.live?.phase]);
   const offRouteNow = sustainedOffRoute(offSamples, TRIAL_OFF_ROUTE);
   const paceSuggest = suggestedUsualFromRecords(records);
   const calcDuration = durationPartsToSeconds(
@@ -760,6 +806,32 @@ export function RealApp() {
         notice("API 서버 연결을 확인해 주세요. GPS 기록은 사용할 수 있어요."),
       );
   }, [notice]);
+  useEffect(() => {
+    let cancelled = false;
+    void queryGeolocationPermission().then(async (permission) => {
+      if (cancelled) return;
+      setPermissionStatus(permission);
+      if (permission !== "granted") return;
+      try {
+        const acquired = await acquireLocation();
+        if (cancelled) return;
+        setPosition(acquired.fix.coord);
+        setPositionMeta({
+          accuracyM: acquired.fix.accuracy,
+          at: acquired.fix.at,
+          quality: acquired.quality,
+          permission: acquired.permission,
+          source: acquired.source,
+          requiresConfirmation: acquired.requiresConfirmation,
+        });
+      } catch {
+        if (!cancelled) setPositionMeta(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
@@ -902,10 +974,20 @@ export function RealApp() {
     }
   }
   async function usePosition() {
-    const f = await locate();
+    const acquired = await acquireLocation();
+    const f = acquired.fix;
     setPosition(f.coord);
+    setPermissionStatus(acquired.permission);
+    setPositionMeta({
+      accuracyM: f.accuracy,
+      at: f.at,
+      quality: acquired.quality,
+      permission: acquired.permission,
+      source: acquired.source,
+      requiresConfirmation: acquired.requiresConfirmation,
+    });
     setOrigin(await namedPlace(f.coord, "현재 위치"));
-    const quality = classifyLocationAccuracy(f.accuracy);
+    const quality = acquired.quality;
     if (quality === "usable")
       notice(
         `현재 위치 오차 범위가 약 ${Math.round(f.accuracy)}m입니다. 가능한 출발지를 표시했습니다.`,
@@ -1545,6 +1627,18 @@ export function RealApp() {
           <small>전체 보기 · 따라가기로 내 위치를 다시 중심에 둘 수 있어요.</small>
         )}
         {run.error && <p role="status">{run.error}</p>}
+        {currentRawFix && (
+          <div className="gps-status-panel" role="status">
+            <div>
+              <strong>현재 위치</strong>
+              <span>
+                정확도 ±{Math.round(currentRawFix.accuracy)}m ·{" "}
+                {gpsQualityLabel(classifyLocationAccuracy(currentRawFix.accuracy))} ·{" "}
+                {relativeSecondsLabel(currentRawFix.at)}
+              </span>
+            </div>
+          </div>
+        )}
         <div className="stats">
           <div>
             <strong>{(run.live.track.distanceM / 1000).toFixed(2)}</strong>
@@ -2357,8 +2451,20 @@ export function RealApp() {
           <button
             onClick={() =>
               void action(async () => {
-                const p = await locate();
-                notice(`현재 위치 확인 · 오차 약 ${Math.round(p.accuracy)}m`);
+                const acquired = await acquireLocation();
+                setPermissionStatus(acquired.permission);
+                setPosition(acquired.fix.coord);
+                setPositionMeta({
+                  accuracyM: acquired.fix.accuracy,
+                  at: acquired.fix.at,
+                  quality: acquired.quality,
+                  permission: acquired.permission,
+                  source: acquired.source,
+                  requiresConfirmation: acquired.requiresConfirmation,
+                });
+                notice(
+                  `현재 위치 확인 · 오차 약 ${Math.round(acquired.fix.accuracy)}m`,
+                );
               })
             }
           >
@@ -2519,6 +2625,36 @@ export function RealApp() {
                 <button aria-pressed={pick === "origin"} onClick={() => setPick(pick === "origin" ? null : "origin")}>출발점 선택</button>
                 <button aria-pressed={pick === "destination"} onClick={() => setPick(pick === "destination" ? null : "destination")}>도착점 선택</button>
               </div>
+              <div className="gps-status-panel" role="status">
+                <div>
+                  <strong>
+                    {positionMeta ? "현재 위치" : permissionLabel(permissionStatus)}
+                  </strong>
+                  <span>
+                    {positionMeta
+                      ? `정확도 ±${Math.round(positionMeta.accuracyM)}m · ${gpsQualityLabel(positionMeta.quality)} · ${relativeSecondsLabel(positionMeta.at)}`
+                      : permissionStatus === "denied"
+                        ? locationFailureUserMessage("permission-denied")
+                        : permissionStatus === "prompt"
+                          ? "현재 위치 버튼을 누르면 브라우저 권한 요청이 열립니다."
+                          : "지도에서 출발지를 직접 선택할 수 있습니다."}
+                  </span>
+                </div>
+                {(permissionStatus === "denied" ||
+                  positionMeta?.quality === "poor" ||
+                  positionMeta?.quality === "unreliable") && (
+                  <div className="gps-status-actions">
+                    {permissionStatus !== "denied" && (
+                      <button disabled={busy} onClick={() => void action(usePosition)}>
+                        위치 다시 측정
+                      </button>
+                    )}
+                    <button onClick={() => setPick("origin")}>
+                      지도에서 출발지 선택
+                    </button>
+                  </div>
+                )}
+              </div>
               <label className="check loop-check"><input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />출발지로 돌아오기<span>왕복</span></label>
           {tripIntent === "park" && (
             <button
@@ -2620,7 +2756,12 @@ export function RealApp() {
             </> : <div className="free-run-panel">
               <div className="free-run-symbol"><FlowIcon name="activity" size={42} /></div>
               <h2>목적지 없이,<br />내 발길이 닿는 대로.</h2><p className="muted">시작을 누르면 GPS로 이동 거리와<br />시간, 페이스를 기록해요.</p>
-              <div className="free-run-info"><FlowIcon name="target" size={18} /><span>위치 권한이 필요해요</span></div>
+              <div className="free-run-info"><FlowIcon name="target" size={18} /><span>{permissionLabel(permissionStatus)}</span></div>
+              {positionMeta && (
+                <small>
+                  정확도 ±{Math.round(positionMeta.accuracyM)}m · {gpsQualityLabel(positionMeta.quality)}
+                </small>
+              )}
               <button className="primary" disabled={busy} onClick={() => void action(() => startRun(null))}><span>{busy ? "위치를 확인하고 있어요" : "자유 러닝 시작"}</span><FlowIcon name="arrow" /></button>
               <small>기록은 이 기기에 저장됩니다.</small>
             </div>}

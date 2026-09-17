@@ -1,4 +1,11 @@
-import { meters, validCoord, type Coord, type Fix } from "./core.ts";
+import {
+  meters,
+  progressOnRoute,
+  validCoord,
+  type Coord,
+  type Fix,
+  type Route,
+} from "./core.ts";
 
 export const LOCATION_ACCURACY = {
   GOOD_MAX_METERS: 30,
@@ -8,25 +15,37 @@ export const LOCATION_ACCURACY = {
   COLLECTION_MS: 12_000,
   STABLE_RADIUS_METERS: 20,
   MAX_RUNNING_SPEED_MPS: 10,
+  ROUTE_PROJECTION_MIN_METERS: 45,
+  ROUTE_PROJECTION_MARGIN_METERS: 20,
 } as const;
 
 export type LocationQuality = "good" | "usable" | "poor" | "unreliable";
-export type PositioningMode =
-  | "browser-geolocation"
-  | "browser-filtered"
-  | "urban-context"
-  | "native-raw-gnss"
-  | "native-shadow-matching"
-  | "multipath-map-corrected"
-  | "manual-map";
+export type PositioningMode = "browser-geolocation" | "browser-filtered";
 
 export type StartLocationSource =
   | "gps"
   | "browser-filtered"
-  | "urban-context"
   | "manual-map"
   | "place-search"
   | "saved";
+
+export type LocationFailureReason =
+  | "unsupported"
+  | "permission-denied"
+  | "position-unavailable"
+  | "timeout"
+  | "secure-context"
+  | "inaccurate"
+  | "insufficient-samples"
+  | "stale"
+  | "unknown";
+
+export type LocationPermissionState =
+  | "granted"
+  | "prompt"
+  | "denied"
+  | "unsupported"
+  | "unknown";
 
 export type LocationSample = {
   latitude: number;
@@ -56,22 +75,89 @@ export type LocationAcquisitionResult = {
   clusterSpreadMeters: number;
   rawSamples: Fix[];
   requiresConfirmation: boolean;
-  source:
-    | "browser-geolocation"
-    | "browser-filtered"
-    | "urban-context"
-    | "manual-map"
-    | "place-search";
+  source: PositioningMode;
+  permission: LocationPermissionState;
 };
 
-export type MultipathCorrectionAvailability = {
-  rawGnssAvailable: boolean;
-  ephemerisAvailable: boolean;
-  dgnssAvailable: boolean;
-  skyModelAvailable: boolean;
-  multipathMapAvailable: boolean;
-  observationMatrixAvailable: boolean;
-};
+export class LocationAcquisitionError extends Error {
+  readonly reason: LocationFailureReason;
+  readonly userMessage: string;
+  readonly developerMessage: string;
+
+  constructor(
+    reason: LocationFailureReason,
+    userMessage = locationFailureUserMessage(reason),
+    developerMessage = userMessage,
+  ) {
+    super(userMessage);
+    this.name = "LocationAcquisitionError";
+    this.reason = reason;
+    this.userMessage = userMessage;
+    this.developerMessage = developerMessage;
+  }
+}
+
+export function locationFailureUserMessage(
+  reason: LocationFailureReason,
+): string {
+  switch (reason) {
+    case "unsupported":
+      return "이 브라우저는 위치 기록을 지원하지 않습니다.";
+    case "permission-denied":
+      return "위치 권한이 꺼져 있습니다. 브라우저 설정에서 허용하거나 지도에서 출발지를 직접 선택하세요.";
+    case "position-unavailable":
+      return "현재 위치 신호를 받을 수 없습니다. 야외에서 다시 시도하거나 지도에서 출발지를 선택하세요.";
+    case "timeout":
+      return "현재 위치 확인 시간이 초과됐습니다. 다시 측정하거나 지도에서 출발지를 선택하세요.";
+    case "secure-context":
+      return "위치 기능은 HTTPS 또는 localhost 같은 보안 연결에서만 사용할 수 있습니다.";
+    case "inaccurate":
+      return "GPS 오차가 너무 큽니다. 위치 다시 측정 또는 지도에서 출발지 선택을 사용하세요.";
+    case "insufficient-samples":
+      return "현재 위치 샘플이 부족합니다. 잠시 멈춰서 다시 측정해 주세요.";
+    case "stale":
+      return "오래된 위치만 수신했습니다. 현재 위치를 다시 측정해 주세요.";
+    case "unknown":
+    default:
+      return "현재 위치를 확인하지 못했습니다. 다시 측정하거나 지도에서 출발지를 선택해 주세요.";
+  }
+}
+
+export function geolocationErrorReason(
+  error: Pick<GeolocationPositionError, "code">,
+): LocationFailureReason {
+  switch (error.code) {
+    case 1:
+      return "permission-denied";
+    case 2:
+      return "position-unavailable";
+    case 3:
+      return "timeout";
+    default:
+      return "unknown";
+  }
+}
+
+export async function queryGeolocationPermission(): Promise<LocationPermissionState> {
+  if (typeof navigator === "undefined" || !("geolocation" in navigator))
+    return "unsupported";
+  const permissions = navigator.permissions;
+  if (!permissions?.query) return "unknown";
+  try {
+    const status = await permissions.query({
+      name: "geolocation" as PermissionName,
+    });
+    if (
+      status.state === "granted" ||
+      status.state === "prompt" ||
+      status.state === "denied"
+    )
+      return status.state;
+  } catch {
+    return "unknown";
+  }
+  return "unknown";
+}
 
 export function classifyLocationAccuracy(accuracy: number): LocationQuality {
   if (!Number.isFinite(accuracy) || accuracy <= 0) return "unreliable";
@@ -129,25 +215,82 @@ export function locationSampleToFix(sample: LocationSample): Fix {
   };
 }
 
-export function hasNativeMultipathInputs(
-  availability: MultipathCorrectionAvailability,
-) {
-  return (
-    availability.rawGnssAvailable &&
-    availability.ephemerisAvailable &&
-    availability.dgnssAvailable &&
-    availability.skyModelAvailable &&
-    availability.observationMatrixAvailable &&
-    availability.multipathMapAvailable
-  );
+export type FixValidation =
+  | { ok: true; fix: Fix }
+  | {
+      ok: false;
+      reason: LocationFailureReason;
+      developerMessage: string;
+    };
+
+export function normalizeGeolocationPosition(
+  position: GeolocationPosition,
+): Fix {
+  const heading = position.coords.heading;
+  return {
+    coord: [position.coords.longitude, position.coords.latitude],
+    accuracy: position.coords.accuracy,
+    at: position.timestamp,
+    heading:
+      heading != null && Number.isFinite(heading) && heading >= 0
+        ? heading
+        : undefined,
+  };
+}
+
+export function validateFix(fix: Fix, now = Date.now()): FixValidation {
+  if (!validCoord(fix.coord))
+    return {
+      ok: false,
+      reason: "unknown",
+      developerMessage: "Invalid or non-finite WGS84 coordinate.",
+    };
+  if (!Number.isFinite(fix.at))
+    return {
+      ok: false,
+      reason: "unknown",
+      developerMessage: "Geolocation timestamp is not finite.",
+    };
+  if (!isFreshLocationFix(fix, now))
+    return {
+      ok: false,
+      reason: "stale",
+      developerMessage: `Geolocation fix is older than ${LOCATION_ACCURACY.MAX_FIX_AGE_MS}ms.`,
+    };
+  if (
+    !Number.isFinite(fix.accuracy) ||
+    fix.accuracy <= 0 ||
+    fix.accuracy > LOCATION_ACCURACY.POOR_MAX_METERS
+  )
+    return {
+      ok: false,
+      reason: "inaccurate",
+      developerMessage: `Geolocation accuracy ${fix.accuracy}m is outside the accepted range.`,
+    };
+  return { ok: true, fix };
+}
+
+export function locationSamplesFailureReason(
+  fixes: Fix[],
+  now = Date.now(),
+): LocationFailureReason {
+  if (!fixes.length) return "insufficient-samples";
+  if (fixes.every((fix) => validCoord(fix.coord) && !isFreshLocationFix(fix, now)))
+    return "stale";
+  if (
+    fixes.every(
+      (fix) =>
+        !Number.isFinite(fix.accuracy) ||
+        fix.accuracy <= 0 ||
+        fix.accuracy > LOCATION_ACCURACY.POOR_MAX_METERS,
+    )
+  )
+    return "inaccurate";
+  return "insufficient-samples";
 }
 
 export function validLocationFix(fix: Fix, now = Date.now()) {
-  return (
-    validCoord(fix.coord) &&
-    classifyLocationAccuracy(fix.accuracy) !== "unreliable" &&
-    isFreshLocationFix(fix, now)
-  );
+  return validateFix(fix, now).ok;
 }
 
 export function distinctLocationFixes(fixes: Fix[]): Fix[] {
@@ -269,6 +412,7 @@ export function correctedBrowserLocation(
 export function locationAcquisitionFromFixes(
   fixes: Fix[],
   now = Date.now(),
+  permission: LocationPermissionState = "unknown",
 ): LocationAcquisitionResult | null {
   const corrected = correctedBrowserLocation(fixes, now);
   if (!corrected) return null;
@@ -287,12 +431,8 @@ export function locationAcquisitionFromFixes(
     clusterSpreadMeters,
     rawSamples,
     requiresConfirmation: corrected.requiresConfirmation,
-    source:
-      corrected.source === "native-raw-gnss" ||
-      corrected.source === "native-shadow-matching" ||
-      corrected.source === "multipath-map-corrected"
-        ? "browser-filtered"
-        : corrected.source,
+    source: corrected.source,
+    permission,
   };
 }
 
@@ -302,5 +442,59 @@ export function correctedLocationToFix(location: CorrectedLocation): Fix {
     accuracy:
       location.reportedAccuracyMeters ?? LOCATION_ACCURACY.POOR_MAX_METERS,
     at: location.timestamp,
+  };
+}
+
+export type RouteProjection = {
+  coord: Coord;
+  traveledM: number;
+  remainM: number;
+  offRouteM: number;
+  totalM: number;
+  thresholdM: number;
+  usedForDisplay: boolean;
+};
+
+export type RouteDisplayLocation = {
+  rawFix: Fix;
+  recordingFix: Fix;
+  displayFix: Fix;
+  routeProjection: RouteProjection | null;
+};
+
+export function displayLocationForRoute(
+  rawFix: Fix,
+  route: Pick<Route, "coordinates"> | null | undefined,
+): RouteDisplayLocation {
+  if (!route?.coordinates?.length)
+    return {
+      rawFix,
+      recordingFix: rawFix,
+      displayFix: rawFix,
+      routeProjection: null,
+    };
+  const progress = progressOnRoute(route.coordinates, rawFix.coord);
+  const thresholdM = Math.max(
+    rawFix.accuracy + LOCATION_ACCURACY.ROUTE_PROJECTION_MARGIN_METERS,
+    LOCATION_ACCURACY.ROUTE_PROJECTION_MIN_METERS,
+  );
+  const canProject =
+    classifyLocationAccuracy(rawFix.accuracy) !== "poor" &&
+    classifyLocationAccuracy(rawFix.accuracy) !== "unreliable" &&
+    progress.offRouteM <= thresholdM;
+  const routeProjection: RouteProjection = {
+    coord: progress.closestCoord,
+    traveledM: progress.traveledM,
+    remainM: progress.remainM,
+    offRouteM: progress.offRouteM,
+    totalM: progress.totalM,
+    thresholdM,
+    usedForDisplay: canProject,
+  };
+  return {
+    rawFix,
+    recordingFix: rawFix,
+    displayFix: canProject ? { ...rawFix, coord: progress.closestCoord } : rawFix,
+    routeProjection,
   };
 }
