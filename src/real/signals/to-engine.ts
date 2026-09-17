@@ -19,6 +19,11 @@ export function planFitsCrossing(
  * Actuated/manual/special/unknown modes keep plan=null (no future prediction).
  * verifiedAtMs is currentPlanConfirmedAt only.
  * A plan from another intersection or pedestrian group is refused, not merged.
+ *
+ * Required prediction relationship:
+ * route → crossing geometry → crossing direction → sourceIntersectionId →
+ * pedestrianSignalGroupId → operating plan → cycle / phase / epoch → validity.
+ * Any uncertain link returns a runtime crossing with plan=null, so waitSec stays null.
  */
 export function toRuntimeCrossing(
   crossing: CrossingRecord,
@@ -30,6 +35,16 @@ export function toRuntimeCrossing(
   if (crossing.synthetic) return null;
   if (crossing.stage !== "verified") return null;
   if (!(crossing.crossingLengthM > 0)) return null;
+  if (
+    !Number.isFinite(crossing.travel.bearingDeg) ||
+    !crossing.travel.label.trim() ||
+    crossing.travel.label.trim().toLowerCase() === "unmapped" ||
+    !crossing.travel.evidence.trim() ||
+    !crossing.sourceIntersectionId.trim() ||
+    !crossing.pedestrianSignalGroupId.trim() ||
+    crossing.pedestrianSignalGroupId.trim().toLowerCase() === "unmapped"
+  )
+    return null;
   const mismatch = plan ? planFitsCrossing(crossing, plan) : null;
   const usable = mismatch ? null : plan;
   const ts = usable
@@ -51,6 +66,8 @@ export function toRuntimeCrossing(
     usable.operationMode !== "fixed" ||
     usable.stage !== "verified" ||
     usable.synthetic ||
+    usable.planVerifiedAt === null ||
+    usable.currentPlanConfirmedAt === null ||
     confirmed === null ||
     !appliedPlanIsFresh(confirmed, nowMs)
   ) {

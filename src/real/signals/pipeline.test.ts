@@ -9,6 +9,7 @@ import { remainingRawCs, interpretCurrentState } from "./tdata.ts";
 import { coverageCopy, recommendSentences } from "../recommend-copy.ts";
 import { crossingsAlongRoute } from "./along-route.ts";
 import { createVerifiedProvider, parsePredictionScopes } from "./provider.ts";
+import { auditVerifiedBundle } from "./audit.ts";
 import type { CrossingRecord, FieldObservation, OperatingPlanRecord } from "./schema.ts";
 
 const epoch = 1800000000000;
@@ -22,6 +23,7 @@ const crossingRow = {
   exitLat: "37.5667",
   bearingDeg: "45",
   directionLabel: "NE",
+  directionEvidence: "field survey matched PED group to NE crossing",
   pedestrianSignalGroupId: "tdata:1537:ntPdsg",
   crossingLengthM: "22",
   paintedWidthM: "4",
@@ -44,6 +46,7 @@ const planRow = {
   validToMs: "2000000000000",
   uncertaintySec: "0",
   operationMode: "fixed",
+  planVerifiedAt: String(epoch),
   currentPlanConfirmedAt: String(epoch),
   stage: "verified",
   startHm: "00:00",
@@ -274,5 +277,47 @@ describe("verified provider wiring", () => {
     expect(
       forecast(path.distanceM, 360, epoch, ready.crossings, true, epoch).waitSec,
     ).not.toBeNull();
+  });
+
+  it("reports verified-only eligibility and explicit excluded reasons", () => {
+    const crossing = validateCrossing(crossingRow).ok as CrossingRecord;
+    const plan = validatePlan(planRow).ok as OperatingPlanRecord;
+    const base = {
+      version: 1 as const,
+      synthetic: false as const,
+      crossings: [crossing],
+      plans: [plan],
+      surveys: [],
+    };
+    const inactive = auditVerifiedBundle(base, [], epoch);
+    expect(inactive.predictionReady).toBe(false);
+    expect(inactive.crossingsTotal).toBe(1);
+    expect(inactive.directionMapped).toBe(1);
+    expect(inactive.epochKnown).toBe(1);
+    expect(inactive.widthKnown).toBe(1);
+    expect(inactive.predictionEligible).toBe(0);
+    expect(inactive.excludedReasons.scope_inactive).toBe(1);
+    expect(inactive.excludedReasons.survey_incomplete).toBe(1);
+
+    const eligible = auditVerifiedBundle(
+      {
+        ...base,
+        surveys: [
+          {
+            id: "s1",
+            complete: true,
+            coordinates: [
+              [126.9779, 37.5664],
+              [126.9783, 37.5668],
+            ],
+            crossingInternalIds: [crossing.internalId],
+          },
+        ],
+      },
+      parsePredictionScopes("field:1537"),
+      epoch,
+    );
+    expect(eligible.predictionEligible).toBe(1);
+    expect(eligible.predictionExcluded).toBe(0);
   });
 });

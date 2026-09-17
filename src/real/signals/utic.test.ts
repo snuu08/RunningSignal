@@ -142,7 +142,7 @@ describe("UTIC HWP mapping", () => {
           internalId: "utic:5033-N",
           entryCoord: [126.978, 37.5665],
           exitCoord: [126.9782, 37.5667],
-          travel: { bearingDeg: 0, label: "N" },
+          travel: { bearingDeg: 0, label: "N", evidence: "unmapped UTIC PED fixture" },
           pedestrianSignalGroupId: "utic:5033:PED1",
           crossingLengthM: 22,
           paintedWidthM: null,

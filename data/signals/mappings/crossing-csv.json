@@ -13,6 +13,7 @@
     "exitLat": "exitLat",
     "bearingDeg": "bearingDeg",
     "directionLabel": "directionLabel",
+    "directionEvidence": "directionEvidence",
     "pedestrianSignalGroupId": "pedestrianSignalGroupId",
     "crossingLengthM": "crossingLengthM",
     "paintedWidthM": "paintedWidthM",

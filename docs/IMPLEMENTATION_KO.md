@@ -63,6 +63,32 @@ GET /api/signals/utic?op=getSigMapCRInfo&srchCTId=L01
 
 서버에서만 제공기관에 `apiKey`를 붙인다. 공식 문서의 파라미터 대소문자를 사용한다. HTTPS 연결 실패 시 HTTP로 몰래 전환하지 않는다. 응답이 왔다는 사실과 미래 예측에 쓸 수 있다는 사실을 별도로 관리한다.
 
+### 신호 예측 파이프라인 잠금
+
+`SIGNAL_PUBLIC_PREDICTION=true`는 아직 켜지 않는다. verified bundle이 비어 있거나, 아래 관계 중 하나라도 불확실하면 예측 입력으로 쓰지 않는다.
+
+```text
+route → crossing geometry → crossing direction → sourceIntersectionId → pedestrianSignalGroupId → operating plan → cycle / phase / epoch → validity
+```
+
+필수 조건:
+
+- crossing은 `stage=verified`, 실제 crossing geometry, `sourceIntersectionId`, `pedestrianSignalGroupId`, `directionEvidence`, `crossingLengthM`이 필요하다.
+- PED1~PED8과 실제 횡단 방향의 근거가 없으면 `unmapped`로 남기고 예측에서 제외한다.
+- `crossingLengthM`은 진행 방향 횡단 길이이고 `paintedWidthM`/차도 폭 추정과 섞지 않는다.
+- FixedPlan 변환 전 `cycleSec`, `epochMs`, `entryStartSec`, `entryEndSec`, `clearEndSec`, `validFromMs`, `validToMs`, `planVerifiedAt`, `currentPlanConfirmedAt`, `uncertaintySec`를 확인한다.
+- T-DATA current state는 현재 현시 표시용이고, UTIC operating plan은 문서 파싱용이다. 현재 phase를 반복해 미래 phase를 만들지 않는다.
+- `waitSec=0`은 검증된 계획과 도착 시각 계산 결과 실제 대기 0초일 때만 가능하다. 미확인 crossing, unmapped PED, missing/stale plan, missing epoch, route coverage 미완료는 모두 `waitSec=null`이다.
+
+검증:
+
+```bash
+npm run signals -- validate
+npm run signals -- report
+```
+
+`report`는 crossings total/verified, plans total/verified, direction mapped, epoch known, width known, survey covered, prediction eligible/excluded와 excluded reason을 출력한다.
+
 ## 3. 화면·버튼별 동작
 
 표의 ‘구현’은 코드 연결을 의미한다. 외부 서버의 운영 검증까지 완료됐다는 뜻이 아니다.

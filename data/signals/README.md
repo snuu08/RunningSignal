@@ -29,6 +29,8 @@
 
 ```bash
 npm run signals -- help
+npm run signals -- validate
+npm run signals -- report
 npm run signals -- contracts
 npm run signals -- capture --itstId 1537
 npm run signals -- etl --kind crossings --input data/signals/inbox/crossings.csv --mapping data/signals/mappings/crossing-csv.json
@@ -49,6 +51,36 @@ npm run signals -- pack-verified --crossings data/signals/verified/crossings.jso
 ```
 
 `pack-verified`는 `samples/`를 넣지 않습니다. 공개 예측은 `SIGNAL_PUBLIC_PREDICTION=true`와 `SIGNAL_PREDICTION_SCOPES=field:교차로ID`가 있을 때만 켜집니다.
+
+## 예측 입력 관계
+
+예측 입력은 아래 관계가 모두 검증된 경우에만 `FixedPlan`으로 변환합니다.
+
+```text
+route
+↓
+crossing geometry
+↓
+crossing direction
+↓
+sourceIntersectionId
+↓
+pedestrianSignalGroupId
+↓
+operating plan
+↓
+cycle / phase / epoch
+↓
+validity
+```
+
+어느 단계라도 불확실하면 해당 crossing의 `waitSec`는 `null`입니다. `0`은 검증된 계획과 도착 시각 계산 결과 실제 대기가 0초인 경우에만 사용합니다.
+
+`crossingLengthM`은 실제 진행 방향으로 건너는 거리입니다. 도색 폭은 `paintedWidthM`에 따로 기록하며, 차도 폭 추정치를 `crossingLengthM`으로 넣지 않습니다. `directionEvidence`에는 PED 그룹이 해당 횡단 방향에 연결된 근거를 적습니다. PED1~PED8이 실제 횡단 방향과 연결되지 않았으면 `pedestrianSignalGroupId=unmapped` 또는 `directionLabel=unmapped`로 두고 예측에서 제외합니다.
+
+T-DATA phase/timing은 현재 상태입니다. UTIC CROP/weekday/holiday/reserve는 운영계획 문서입니다. 현재 상태를 반복해 미래 현시를 만들거나, UTIC offset만으로 `epochMs`를 추측하지 않습니다.
+
+`npm run signals -- report`는 다음 집계를 출력합니다: crossings total, crossings verified, plans total, plans verified, direction mapped, epoch known, width known, survey covered, prediction eligible, prediction excluded, excluded reasons.
 
 합성 예시 ETL (실서비스 로드 금지):
 

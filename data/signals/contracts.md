@@ -2,6 +2,8 @@
 
 실시간 대기 예측은 이 목록과 무관하게 비활성입니다. 목록 URL이 있다고 호출하지 않습니다.
 
+현재 상태와 운영계획은 다른 계약입니다. T-DATA phase/timing은 "지금 신호가 무엇인지"를 보여주는 current state이고, UTIC Plan/SigMap은 "운영계획 문서가 무엇인지"를 보여주는 자료입니다. current phase를 반복해서 미래 phase를 추정하지 않고, 주기만 있고 offset/epoch가 검증되지 않은 자료는 `missing_epoch` 또는 `missing_plan`으로 예측에서 제외합니다.
+
 | id | 상태 | 호출 | 문서 |
 |---|---|---|---|
 | tdata-phase | documented-openapi | 예 (캡처 전용) | https://t-data.seoul.go.kr/dataprovide/trafficdataviewopenapi.do?data_id=10119 |

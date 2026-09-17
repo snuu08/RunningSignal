@@ -21,6 +21,7 @@ const crossingRow = {
   exitLat: "37.5667",
   bearingDeg: "45",
   directionLabel: "NE",
+  directionEvidence: "field survey matched PED group to NE crossing",
   pedestrianSignalGroupId: "tdata:1537:ntPdsg",
   crossingLengthM: "22",
   paintedWidthM: "4",
@@ -51,6 +52,7 @@ describe("crossing and plan schema", () => {
       exitLon: crossingRow.entryLon,
       exitLat: crossingRow.entryLat,
       directionLabel: "SW",
+      directionEvidence: "field survey matched PED group to SW crossing",
       bearingDeg: "225",
     }).ok!;
     const stage2 = validateCrossing({
@@ -160,10 +162,10 @@ b,1537,200,95,`;
     ).toBe(true);
   });
   it("upserts by namespaced id without merging nearest coordinates", () => {
-    const csv = `source,sourceCrossingId,sourceIntersectionId,entryLon,entryLat,exitLon,exitLat,bearingDeg,directionLabel,pedestrianSignalGroupId,crossingLengthM,geometryType,stage,synthetic
-field,A,1,126.9780,37.5665,126.9782,37.5667,45,NE,g,22,crossing-endpoints,normalized,false
-field,A,1,126.9780,37.5665,126.9782,37.5667,45,NE,g,22,crossing-endpoints,normalized,false
-field,B,1,126.9780,37.5665,126.9782,37.5667,45,NE,g,22,crossing-endpoints,normalized,false`;
+    const csv = `source,sourceCrossingId,sourceIntersectionId,entryLon,entryLat,exitLon,exitLat,bearingDeg,directionLabel,directionEvidence,pedestrianSignalGroupId,crossingLengthM,geometryType,stage,synthetic
+field,A,1,126.9780,37.5665,126.9782,37.5667,45,NE,field note,g,22,crossing-endpoints,normalized,false
+field,A,1,126.9780,37.5665,126.9782,37.5667,45,NE,field note,g,22,crossing-endpoints,normalized,false
+field,B,1,126.9780,37.5665,126.9782,37.5667,45,NE,field note,g,22,crossing-endpoints,normalized,false`;
     const report = etlCrossings(csv, {
       source: "field",
       crs: "EPSG:4326",
@@ -174,8 +176,8 @@ field,B,1,126.9780,37.5665,126.9782,37.5667,45,NE,g,22,crossing-endpoints,normal
     expect(report.exclusions.some((e) => e.reason === "duplicate_upsert_key")).toBe(true);
   });
   it("loads the synthetic sample as marked synthetic and not as a live crossing plan", () => {
-    const csv = `source,sourceCrossingId,sourceIntersectionId,entryLon,entryLat,exitLon,exitLat,bearingDeg,directionLabel,pedestrianSignalGroupId,crossingLengthM,paintedWidthM,geometryType,hasRefugeIsland,stageIndex,stageCount,planVerifiedAt,observedAt,fetchedAt,currentPlanConfirmedAt,synthetic,stage
-synthetic,SYN-N-1,SYN-ITST,126.9780,37.5665,126.9782,37.5667,45,NE,synthetic:group:ntPdsg,22,4,crossing-endpoints,false,1,1,,,,,true,raw`;
+    const csv = `source,sourceCrossingId,sourceIntersectionId,entryLon,entryLat,exitLon,exitLat,bearingDeg,directionLabel,directionEvidence,pedestrianSignalGroupId,crossingLengthM,paintedWidthM,geometryType,hasRefugeIsland,stageIndex,stageCount,planVerifiedAt,observedAt,fetchedAt,currentPlanConfirmedAt,synthetic,stage
+synthetic,SYN-N-1,SYN-ITST,126.9780,37.5665,126.9782,37.5667,45,NE,synthetic fixture,synthetic:group:ntPdsg,22,4,crossing-endpoints,false,1,1,,,,,true,raw`;
     const report = etlCrossings(csv, {
       source: "synthetic",
       crs: "EPSG:4326",
@@ -277,6 +279,7 @@ describe("engine mapping does not enable live prediction", () => {
       validToMs: "1800003600000",
       uncertaintySec: "0",
       operationMode: "fixed",
+      planVerifiedAt: "1800000000000",
       currentPlanConfirmedAt: "1800000000000",
       stage: "verified",
     }).ok as OperatingPlanRecord;
@@ -320,6 +323,7 @@ describe("engine mapping does not enable live prediction", () => {
       validToMs: "1800003600000",
       uncertaintySec: "0",
       operationMode: "fixed",
+      planVerifiedAt: "1800000000000",
       currentPlanConfirmedAt: "1800000000000",
       stage: "verified",
     }).ok as OperatingPlanRecord;

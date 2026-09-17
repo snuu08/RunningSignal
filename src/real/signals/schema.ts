@@ -14,6 +14,8 @@ export type TravelDirection = {
   bearingDeg: number;
   /** Compass label from the source document, not inferred from a name. */
   label: string;
+  /** Human-readable evidence tying this pedestrian group to this crossing direction. */
+  evidence: string;
 };
 
 export type OperationMode =

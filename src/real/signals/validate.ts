@@ -133,7 +133,14 @@ export function validateCrossing(raw: Record<string, unknown>): {
     return { ok: null, reason: "crossingLengthM_equals_paintedWidth_check_direction" };
   const bearingDeg = asFinite(raw.bearingDeg, 0, 360);
   const label = asString(raw.directionLabel ?? raw.travelLabel, 40);
-  if (CROSSING_GEOMETRY.includes(geometryType) && (bearingDeg === null || !label))
+  const directionEvidence = asString(
+    raw.directionEvidence ?? raw.directionEvidenceNote ?? raw.directionSource,
+    200,
+  );
+  if (
+    CROSSING_GEOMETRY.includes(geometryType) &&
+    (bearingDeg === null || !label || !directionEvidence)
+  )
     return { ok: null, reason: "missing_travel_direction" };
   const stage = (asString(raw.stage) as RecordStage | null) ?? "raw";
   if (!STAGES.includes(stage)) return { ok: null, reason: "unknown_stage" };
@@ -155,6 +162,7 @@ export function validateCrossing(raw: Record<string, unknown>): {
     travel: {
       bearingDeg: bearingDeg ?? 0,
       label: label ?? "unspecified",
+      evidence: directionEvidence ?? "",
     },
     pedestrianSignalGroupId: pedestrianSignalGroupId ?? "",
     crossingLengthM: crossingLengthM ?? 0,
@@ -241,9 +249,11 @@ export function validatePlan(raw: Record<string, unknown>): {
         .split(/[|,]/)
         .map((s) => s.trim())
         .filter(Boolean);
+  const stage = (asString(raw.stage) as RecordStage | null) ?? "raw";
+  if (!STAGES.includes(stage)) return { ok: null, reason: "unknown_stage" };
   return {
     ok: {
-      stage: ((asString(raw.stage) as RecordStage | null) ?? "raw") as RecordStage,
+      stage,
       synthetic,
       source,
       sourcePlanId,

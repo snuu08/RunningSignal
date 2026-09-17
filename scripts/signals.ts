@@ -9,7 +9,9 @@ import type { MappingFile } from "../src/real/signals/etl.ts";
 import { collectUrl } from "../src/real/signals/collect.ts";
 import { evaluateObservations } from "../src/real/signals/mae.ts";
 import { objectsToCsv, xlsxToObjects } from "../src/real/signals/xlsx.ts";
-import { parseVerifiedBundle } from "../src/real/signals/provider.ts";
+import { parsePredictionScopes, parseVerifiedBundle } from "../src/real/signals/provider.ts";
+import { auditVerifiedBundle, type SignalAuditReport } from "../src/real/signals/audit.ts";
+import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
 import { validateObservation } from "../src/real/signals/validate.ts";
 import { parseCsv } from "../src/real/signals/csv.ts";
 import { runLiveProbe } from "./live-probe.ts";
@@ -61,6 +63,8 @@ Commands:
   npm run signals -- collect --provider tdata --service phase --itstId 1537
   npm run signals -- xlsx-csv --input data/signals/inbox/file.xlsx
   npm run signals -- mae --input data/signals/inbox/field-observation.csv
+  npm run signals -- validate
+  npm run signals -- report
   npm run signals -- pack-verified --crossings data/signals/verified/crossings.json --plans data/signals/verified/plans.json
   npm run signals -- etl --kind crossings --input data/signals/inbox/crossings.csv --mapping data/signals/mappings/crossing-csv.json
   npm run signals -- etl --kind plans --input data/signals/inbox/plans.csv --mapping data/signals/mappings/plan-csv.json
@@ -86,6 +90,36 @@ function readJsonList(path: string, key: string): unknown[] {
   return [];
 }
 
+function auditFromEnv(): SignalAuditReport {
+  return auditVerifiedBundle(
+    loadVerifiedBundle(process.env),
+    parsePredictionScopes(process.env.SIGNAL_PREDICTION_SCOPES),
+  );
+}
+
+function printAudit(report: SignalAuditReport) {
+  const lines = [
+    ["crossings total", report.crossingsTotal],
+    ["crossings verified", report.crossingsVerified],
+    ["plans total", report.plansTotal],
+    ["plans verified", report.plansVerified],
+    ["direction mapped", report.directionMapped],
+    ["epoch known", report.epochKnown],
+    ["width known", report.widthKnown],
+    ["survey covered", report.surveyCovered],
+    ["prediction eligible", report.predictionEligible],
+    ["prediction excluded", report.predictionExcluded],
+  ];
+  for (const [label, value] of lines) console.log(`${label}: ${value}`);
+  console.log("excluded reasons:");
+  const reasons = Object.entries(report.excludedReasons).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  if (!reasons.length) console.log("  none: 0");
+  for (const [reason, count] of reasons) console.log(`  ${reason}: ${count}`);
+  console.log(`predictionReady: ${report.predictionReady}`);
+}
+
 export async function main(argv = process.argv.slice(2)) {
   loadEnvLocal();
   const cmd = argv[0] ?? "help";
@@ -102,6 +136,34 @@ export async function main(argv = process.argv.slice(2)) {
       listedEndpoint: c.listedEndpoint,
     }));
     console.log(JSON.stringify({ unverified: unverifiedContracts().map((c) => c.id), all: rows }, null, 2));
+    return;
+  }
+  if (cmd === "validate") {
+    const report = auditFromEnv();
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          predictionReady: false,
+          relationship: report.relationship,
+          counts: {
+            crossingsTotal: report.crossingsTotal,
+            crossingsVerified: report.crossingsVerified,
+            plansTotal: report.plansTotal,
+            plansVerified: report.plansVerified,
+            predictionEligible: report.predictionEligible,
+            predictionExcluded: report.predictionExcluded,
+          },
+          excludedReasons: report.excludedReasons,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "report") {
+    printAudit(auditFromEnv());
     return;
   }
   if (cmd === "capture") {
