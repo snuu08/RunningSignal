@@ -25,7 +25,8 @@ import {
 
 const GPS_SETTLE_MS = LOCATION_ACCURACY.COLLECTION_MS;
 const GPS_STABLE_RADIUS_M = LOCATION_ACCURACY.STABLE_RADIUS_METERS;
-const DISPLAY_SETTLE_MS = 4_000;
+const DISPLAY_SETTLE_MS = 10_000;
+const DISPLAY_MAXIMUM_AGE_MS = 60_000;
 
 export function stabilizedFix(
   fixes: Fix[],
@@ -229,21 +230,37 @@ export async function acquireLocation(options: {
         ),
       purpose === "display" ? DISPLAY_SETTLE_MS : GPS_SETTLE_MS,
     );
+    const watchOptions: PositionOptions =
+      purpose === "display"
+        ? {
+            enableHighAccuracy: true,
+            maximumAge: 5_000,
+            timeout: DISPLAY_SETTLE_MS,
+          }
+        : { enableHighAccuracy: true, maximumAge: 0, timeout: 15_000 };
+    const currentOptions: PositionOptions =
+      purpose === "display"
+        ? {
+            enableHighAccuracy: false,
+            maximumAge: DISPLAY_MAXIMUM_AGE_MS,
+            timeout: DISPLAY_SETTLE_MS,
+          }
+        : {
+            enableHighAccuracy: true,
+            maximumAge: 0,
+            timeout: GPS_SETTLE_MS,
+          };
     const id = navigator.geolocation.watchPosition(
       receive,
       fail,
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
+      watchOptions,
     );
     watchId = id;
     if (settled) {
       navigator.geolocation.clearWatch(id);
       return;
     }
-    navigator.geolocation.getCurrentPosition(receive, fail, {
-      enableHighAccuracy: true,
-      maximumAge: 0,
-      timeout: GPS_SETTLE_MS,
-    });
+    navigator.geolocation.getCurrentPosition(receive, fail, currentOptions);
   });
 }
 export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {

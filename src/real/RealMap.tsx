@@ -360,6 +360,7 @@ export function RealMap({
   straight,
   pois = [],
   fitToken = 0,
+  positionFocusToken,
   follow = false,
   heading = null,
   onUserPan,
@@ -372,6 +373,7 @@ export function RealMap({
   pois?: MapPoint[];
   positionAccuracyM?: number | null;
   fitToken?: number | string;
+  positionFocusToken?: number | string;
   follow?: boolean;
   heading?: number | null;
   onUserPan?: () => void;
@@ -382,6 +384,7 @@ export function RealMap({
     pick = useRef(onPick),
     pan = useRef(onUserPan),
     easing = useRef(false),
+    lastPositionFocus = useRef<number | string | undefined>(undefined),
     overlay = useRef({ coordinates, segments, straight, pois, position, positionAccuracyM }),
     landmarks = useRef<Landmark[]>([]);
   overlay.current = { coordinates, segments, straight, pois, position, positionAccuracyM };
@@ -545,6 +548,11 @@ export function RealMap({
         .setLngLat(position)
         .addTo(m);
     else marker.current.setLngLat(position);
+    mapDebug("marker-updated", {
+      longitude: position[0],
+      latitude: position[1],
+      accuracyM: positionAccuracyM ?? null,
+    });
     if (follow) {
       easing.current = true;
       m.easeTo({
@@ -558,7 +566,33 @@ export function RealMap({
         easing.current = false;
       }, 450);
     }
-  }, [position, heading, follow, ready]);
+  }, [position, positionAccuracyM, heading, follow, ready]);
+  useEffect(() => {
+    const m = map.current;
+    if (
+      !m ||
+      !ready ||
+      !position ||
+      positionFocusToken === undefined ||
+      positionFocusToken === lastPositionFocus.current
+    )
+      return;
+    lastPositionFocus.current = positionFocusToken;
+    easing.current = true;
+    m.easeTo({
+      center: position,
+      zoom: Math.max(m.getZoom(), 15),
+      duration: 400,
+    });
+    mapDebug("camera-focused", {
+      longitude: position[0],
+      latitude: position[1],
+      token: positionFocusToken,
+    });
+    window.setTimeout(() => {
+      easing.current = false;
+    }, 450);
+  }, [position, positionFocusToken, ready]);
   return (
     <div className="real-map-wrap">
       <div
@@ -586,4 +620,9 @@ export function RealMap({
       )}
     </div>
   );
+}
+
+function mapDebug(event: string, detail: Record<string, unknown>) {
+  if (typeof import.meta !== "undefined" && import.meta.env.DEV)
+    console.debug("[map]", event, detail);
 }

@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import { useGpsRun } from "./useGpsRun.ts";
+import { acquireLocation, useGpsRun } from "./useGpsRun.ts";
 import type { Route } from "./core.ts";
 import {
   defaultProfile,
@@ -31,6 +31,7 @@ vi.mock("./RealMap.tsx", () => ({
         data-follow={String(!!props.follow)}
         data-position={JSON.stringify(props.position ?? null)}
         data-accuracy={String(props.positionAccuracyM ?? "")}
+        data-focus-token={String(props.positionFocusToken ?? "")}
         data-route-points={String(props.coordinates?.length ?? 0)}
         data-pois={JSON.stringify(props.pois ?? [])}
       >
@@ -218,6 +219,45 @@ describe("GPS lifecycle", () => {
       }),
     ).rejects.toThrow("100m");
     expect(result.current.live).toBeNull();
+  });
+
+  it("waits long enough for laptop display geolocation before timing out", async () => {
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: {
+        getCurrentPosition: vi.fn((success) =>
+          window.setTimeout(
+            () =>
+              success({
+                coords: { longitude: 127.12, latitude: 37.44, accuracy: 65 },
+                timestamp: Date.now(),
+              } as GeolocationPosition),
+            6_000,
+          ),
+        ),
+        watchPosition: vi.fn(() => 7),
+        clearWatch: vi.fn(),
+      },
+    });
+
+    const acquired = acquireLocation({ purpose: "display" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    await expect(acquired).resolves.toMatchObject({
+      fix: { coord: [127.12, 37.44], accuracy: 65 },
+      quality: "usable",
+    });
+    expect(navigator.geolocation.getCurrentPosition).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.any(Function),
+      expect.objectContaining({
+        enableHighAccuracy: false,
+        maximumAge: 60_000,
+        timeout: 10_000,
+      }),
+    );
   });
   it("starts a mapped run when startup GPS samples cluster around the departure", async () => {
     const fixes = [
@@ -452,6 +492,7 @@ describe("real-mode screen flow", () => {
         positionAccuracyM: 12,
       }),
     );
+    expect(latestMapProps().positionFocusToken).toBeGreaterThan(0);
     expect(screen.getByText(/정확도 ±12m/)).toBeTruthy();
 
     const destination = screen.getByRole("combobox", { name: "목적지" });
