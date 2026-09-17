@@ -385,9 +385,7 @@ describe("real-mode screen flow", () => {
       screen.getByRole("button", { name: "선택한 칸에 저장" }),
     );
     await waitFor(() =>
-      expect(
-        (screen.getByLabelText("페이스 분") as HTMLInputElement).value,
-      ).toBe("5"),
+      expect(screen.getByText(/5분 00초\/km/)).toBeTruthy(),
     );
   });
   it("selects places by keyboard, swaps endpoints, and invalidates an edited selection", async () => {

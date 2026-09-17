@@ -89,6 +89,20 @@ npm run signals -- report
 
 `report`는 crossings total/verified, plans total/verified, direction mapped, epoch known, width known, survey covered, prediction eligible/excluded와 excluded reason을 출력한다.
 
+### 파일럿 구간 신호 검증
+
+PHASE 4는 작은 field pilot corridor만 검증한다. 전국 또는 서울 전체 지원으로 해석하지 않는다.
+
+- verified data는 `data/signals/verified/bundle.json`에 보관하고, source document/retrievedAt/verifiedAt/verifiedBy/verificationMethod/notes metadata와 evidence를 남긴다.
+- route survey는 route coordinates, expected crossing IDs, 실제 포함 crossing IDs를 함께 보관한다. `complete=true`는 전체 pilot route를 확인했을 때만 쓴다.
+- forecast 검증은 `2026-09-17T15:00:00+09:00`, pace `6:00/km`, crossing A 약 `500m` 도착 `15:03:00` replay로 고정한다.
+- `crossSec = crossingWidth / 1.2m/s + 3s buffer`가 latest entry 계산에 반영되어야 한다.
+- 첫 신호 대기는 다음 신호 ETA에 누적된다. `signal A ETA → wait A → signal B ETA += wait A → wait B` 구조를 테스트한다.
+- route 비교는 TMAP 후보 A/B/C의 distance, sharpTurns, zigzags, crossings, forecast wait, max wait, stops를 비교하되 `detourRatio`, `detourMaxM`, `extraSharpTurns`, `waitThresholdSec` 한도를 유지한다.
+- 신호로 추천이 바뀌면 “기본 경로보다 Nm 길지만 예상 신호 대기가 약 Ns 적습니다.”를 보여준다. 신호 coverage가 unknown이면 “신호 데이터가 확인되지 않아 보행 경로 품질을 기준으로 추천했습니다.”를 보여준다.
+- activation은 crossing/direction/plan/epoch/freshness/survey/tests/field comparison이 모두 통과한 특정 scope에서만 검토한다. 예: `SIGNAL_PREDICTION_SCOPES=field:pilot-corridor-20260917`.
+- `SIGNAL_PUBLIC_PREDICTION=true`는 실제 검증 후 후보로만 검토한다. 이 단계에서 자동 변경하지 않는다.
+
 ## 3. 화면·버튼별 동작
 
 표의 ‘구현’은 코드 연결을 의미한다. 외부 서버의 운영 검증까지 완료됐다는 뜻이 아니다.

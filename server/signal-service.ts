@@ -93,6 +93,16 @@ export async function evaluateSignalCandidates(
   ) as Record<string, Forecast>;
   const signalCoverage = coverageOf(entries.map((e) => e.forecast));
   const chosen = entries.find((e) => e.route.id === recommendedId)?.route ?? routes[0];
+  const chosenEntry = entries.find((e) => e.route.id === recommendedId);
+  const baseline = entries[0];
+  const waitSavedSec =
+    baseline?.forecast.waitSec != null && chosenEntry?.forecast.waitSec != null
+      ? baseline.forecast.waitSec - chosenEntry.forecast.waitSec
+      : null;
+  const extraMForCopy =
+    reason === "signal-compare" && baseline
+      ? Math.max(0, chosen.distanceM - baseline.route.distanceM)
+      : (chosen?.extraM ?? 0);
   return {
     recommendedId,
     recommendationReason: reason,
@@ -102,8 +112,9 @@ export async function evaluateSignalCandidates(
       reason,
       coverage: signalCoverage,
       liveSignals: reason === "signal-compare",
-      extraM: chosen?.extraM ?? 0,
+      extraM: extraMForCopy,
       sharpTurns: chosen?.sharpTurns ?? 0,
+      waitSavedSec,
     }),
   };
 }
@@ -135,6 +146,17 @@ export async function planReturnedRoutes(
       : assessment.recommendationReason;
   const chosen =
     walking.routes.find((r) => r.id === recommendedId) ?? walking.routes[0];
+  const baseline = walking.routes[0];
+  const baselineForecast = baseline ? assessment.forecasts[baseline.id] : null;
+  const chosenForecast = chosen ? assessment.forecasts[chosen.id] : null;
+  const waitSavedSec =
+    baselineForecast?.waitSec != null && chosenForecast?.waitSec != null
+      ? baselineForecast.waitSec - chosenForecast.waitSec
+      : null;
+  const extraMForCopy =
+    reason === "signal-compare" && baseline && chosen
+      ? Math.max(0, chosen.distanceM - baseline.distanceM)
+      : (chosen?.extraM ?? 0);
   return {
     emptyReason: walking.emptyReason,
     avoidance: walking.avoidance,
@@ -147,8 +169,9 @@ export async function planReturnedRoutes(
         reason,
         coverage: assessment.signalCoverage,
         liveSignals: reason === "signal-compare",
-        extraM: chosen?.extraM ?? 0,
+        extraM: extraMForCopy,
         sharpTurns: chosen?.sharpTurns ?? 0,
+        waitSavedSec,
       }),
     },
   };

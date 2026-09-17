@@ -47,6 +47,15 @@ export type Evidence = {
   atMs?: number;
 };
 
+export type VerificationMetadata = {
+  sourceDocument?: string;
+  sourceRetrievedAt?: string;
+  verifiedAt?: string;
+  verifiedBy?: string;
+  verificationMethod?: string;
+  notes?: string;
+};
+
 export type CrossingRecord = {
   stage: RecordStage;
   synthetic: boolean;
@@ -67,6 +76,7 @@ export type CrossingRecord = {
   stageIndex: number;
   stageCount: number;
   evidence: Evidence[];
+  metadata?: VerificationMetadata;
   planVerifiedAt: number | null;
   observedAt: number | null;
   fetchedAt: number | null;
@@ -104,6 +114,7 @@ export type OperatingPlanRecord = {
   uncertaintySec: number;
   operationMode: OperationMode;
   evidence: Evidence[];
+  metadata?: VerificationMetadata;
   planVerifiedAt: number | null;
   observedAt: number | null;
   fetchedAt: number | null;

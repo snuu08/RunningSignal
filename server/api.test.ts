@@ -46,7 +46,7 @@ describe("server provider boundary", () => {
     expect(status.signalPrediction).toBe(false);
     expect(status.signal.configured.seoul).toBe(false);
     expect(status.signal.reachable.seoul).toBeNull();
-    expect(status.signal.mappingReady).toBe(false);
+    expect(status.signal.mappingReady).toBe(true);
     expect(status.signal.predictionReady).toBe(false);
     expect(status.signal.predictionByRegion["서울"]).toBe(false);
   });
@@ -646,6 +646,89 @@ describe("route recommendation contract", () => {
     expect(result.recommendationReason).toBe("signal-compare");
     expect(result.recommendedId).not.toBe("tmap-30");
   });
+  it("compares TMAP A/B/C with signal waits without recommending excessive detours", async () => {
+    const f = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const option = JSON.parse(String(init?.body)).searchOption;
+      if (option === "4")
+        return Response.json(
+          tmapPayload(1000, [
+            [127, 37],
+            [127, 37.009],
+          ]),
+        );
+      if (option === "30")
+        return Response.json(
+          tmapPayload(1070, [
+            [127, 37],
+            [127.0004, 37.009],
+          ]),
+        );
+      return Response.json(
+        tmapPayload(1400, [
+          [127, 37],
+          [127.004, 37.004],
+          [127, 37.009],
+        ]),
+      );
+    });
+    const r = await handleApi(
+      request({
+        policy: {
+          detourRatio: 0.1,
+          detourMaxM: 300,
+          extraSharpTurns: 2,
+          waitThresholdSec: 15,
+        },
+      }),
+      { TMAP_APP_KEY: "key" },
+      f,
+      {
+        inspect: async (route, departureMs) => {
+          const now = Math.floor(Date.now() / 1000) * 1000;
+          const plan: FixedPlan = {
+            cycleSec: 60,
+            epochMs: departureMs,
+            entryStartSec: 42,
+            entryEndSec: 55,
+            clearEndSec: 60,
+            validFromMs: departureMs - 1000,
+            validToMs: departureMs + 3_600_000,
+            verifiedAtMs: now,
+            uncertaintySec: 0,
+          };
+          const crossing: Crossing = {
+            id: "pilot-a",
+            name: "pilot-a",
+            atM: 500,
+            widthM: 10,
+            plan,
+          };
+          return {
+            completeCoverage: true,
+            crossings: route.id === "tmap-4" ? [crossing] : [],
+            source: "pilot-comparison",
+          };
+        },
+      },
+    );
+    const result = await r.json();
+    expect(result.routes.map((row: { id: string }) => row.id)).toContain("tmap-4");
+    expect(result.routes.map((row: { id: string }) => row.id)).toContain("tmap-30");
+    expect(result.routes.map((row: { id: string }) => row.id)).not.toContain("tmap-10");
+    expect(result.recommendedId).toBe("tmap-30");
+    expect(result.recommendationReason).toBe("signal-compare");
+    expect(result.forecasts["tmap-4"].waitSec).toBeCloseTo(42, 6);
+    expect(result.forecasts["tmap-4"].maxWaitSec).toBeCloseTo(42, 6);
+    expect(result.forecasts["tmap-4"].stops).toBe(1);
+    expect(result.forecasts["tmap-4"].crossings).toHaveLength(1);
+    expect(result.forecasts["tmap-30"].waitSec).toBe(0);
+    expect(result.routes[0].distanceM).toBe(1070);
+    expect(result.routes[0].sharpTurns).toBe(0);
+    expect(result.routes[0].zigzags).toBe(0);
+    expect(result.recommendSentences[0]).toBe(
+      "기본 경로보다 70m 길지만 예상 신호 대기가 약 42초 적습니다.",
+    );
+  });
   it("marks Seoul reachable after a successful probe without enabling prediction", async () => {
     const f = vi.fn(async () => Response.json([{ itstId: "123" }]));
     const probe = await handleApi(
@@ -662,7 +745,7 @@ describe("route recommendation contract", () => {
     ).json();
     expect(status.signal.configured.seoul).toBe(true);
     expect(status.signal.reachable.seoul).toBe(true);
-    expect(status.signal.mappingReady).toBe(false);
+    expect(status.signal.mappingReady).toBe(true);
     expect(status.signal.predictionReady).toBe(false);
     expect(status.signalPrediction).toBe(false);
   });

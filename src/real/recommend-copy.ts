@@ -30,12 +30,21 @@ export function recommendSentences(input: {
   liveSignals: boolean;
   extraM: number;
   sharpTurns: number;
+  waitSavedSec?: number | null;
 }): string[] {
   const lines: string[] = [];
   if (input.reason === "signal-compare" && input.liveSignals) {
+    const saved =
+      typeof input.waitSavedSec === "number" && Number.isFinite(input.waitSavedSec)
+        ? Math.max(0, Math.round(input.waitSavedSec))
+        : null;
     lines.push(
-      "확인된 신호 대기를 비교해 직진 후보와 우회 후보를 가렸어요. 15초 이상이면 우회를 검토하되, 돌아간 거리와 방향 전환이 더 크면 직진을 유지합니다.",
+      saved === null
+        ? "확인된 신호 대기를 비교해 추천 경로를 골랐습니다. 지나치게 먼 우회는 추천하지 않습니다."
+        : `기본 경로보다 ${Math.round(input.extraM)}m 길지만 예상 신호 대기가 약 ${saved}초 적습니다.`,
     );
+  } else if (input.coverage === "unknown") {
+    lines.push("신호 데이터가 확인되지 않아 보행 경로 품질을 기준으로 추천했습니다.");
   } else {
     lines.push(
       `실제 보행 경로 거리와 방향 전환을 비교한 기본 추천입니다. 우회 약 ${Math.round(input.extraM)}m · 급회전 ${input.sharpTurns}회.`,

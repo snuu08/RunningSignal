@@ -82,6 +82,19 @@ T-DATA phase/timing은 현재 상태입니다. UTIC CROP/weekday/holiday/reserve
 
 `npm run signals -- report`는 다음 집계를 출력합니다: crossings total, crossings verified, plans total, plans verified, direction mapped, epoch known, width known, survey covered, prediction eligible, prediction excluded, excluded reasons.
 
+## verified pilot corridor
+
+`verified/bundle.json`은 작은 field pilot corridor만 담습니다. 서울 전체나 전국 지원을 뜻하지 않습니다.
+
+- verified record에는 가능한 한 `sourceDocument`, `sourceRetrievedAt`, `verifiedAt`, `verifiedBy`, `verificationMethod`, `notes` metadata와 evidence를 남깁니다.
+- route survey는 route coordinates, expected crossing IDs, 실제 포함 crossing IDs를 함께 보관합니다.
+- `complete=true`는 `verified/pilot-corridor.md`에 적힌 동쪽 진행 pilot route 전체를 확인한 경우에만 유지합니다. 인접 도로, 역방향, 다른 TMAP 후보에는 복사하지 않습니다.
+- 정적 verified data도 시간이 지나면 stale입니다. live prediction은 `currentPlanConfirmedAt` freshness 검사를 통과해야 합니다.
+- 활성화는 `SIGNAL_PREDICTION_SCOPES=field:pilot-corridor-20260917`처럼 제한된 scope부터 검토합니다.
+- `SIGNAL_PUBLIC_PREDICTION=true`는 crossing, direction, plan, epoch, freshness, survey coverage, tests, field comparison을 모두 재확인한 뒤에만 후보로 검토합니다. 자동 변경하지 않습니다.
+
+파일럿 forecast replay와 누적 대기 검증은 `verified/pilot-corridor.md`에 기록합니다.
+
 합성 예시 ETL (실서비스 로드 금지):
 
 ```bash

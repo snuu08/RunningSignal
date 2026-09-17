@@ -1,5 +1,9 @@
 import { progressOnRoute, samplePath, type Coord, type Crossing, type Route } from "../core.ts";
-import type { CrossingRecord, OperatingPlanRecord } from "./schema.ts";
+import type {
+  CrossingRecord,
+  OperatingPlanRecord,
+  VerificationMetadata,
+} from "./schema.ts";
 import { crossingsAlongRoute } from "./along-route.ts";
 import { selectOperatingPlan } from "./select-plan.ts";
 import { planFitsCrossing, toRuntimeCrossing } from "./to-engine.ts";
@@ -8,7 +12,9 @@ export type CoverageSurvey = {
   id: string;
   complete: boolean;
   coordinates: Coord[];
+  expectedCrossingInternalIds?: string[];
   crossingInternalIds: string[];
+  metadata?: VerificationMetadata;
 };
 
 export type VerifiedBundle = {

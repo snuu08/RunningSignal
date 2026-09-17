@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { forecast, type Route } from "../core.ts";
+import { readFileSync } from "node:fs";
+import { forecast, type Crossing, type FixedPlan, type Route } from "../core.ts";
+import {
+  CROSSING_BUFFER_SEC,
+  CROSSING_WALK_M_PER_SEC,
+} from "../../config/app.ts";
 import { validateCrossing, validatePlan } from "./validate.ts";
 import { toRuntimeCrossing } from "./to-engine.ts";
 import { selectOperatingPlan } from "./select-plan.ts";
@@ -8,7 +13,11 @@ import { classifyCollected } from "./collect.ts";
 import { remainingRawCs, interpretCurrentState } from "./tdata.ts";
 import { coverageCopy, recommendSentences } from "../recommend-copy.ts";
 import { crossingsAlongRoute } from "./along-route.ts";
-import { createVerifiedProvider, parsePredictionScopes } from "./provider.ts";
+import {
+  createVerifiedProvider,
+  parsePredictionScopes,
+  parseVerifiedBundle,
+} from "./provider.ts";
 import { auditVerifiedBundle } from "./audit.ts";
 import type { CrossingRecord, FieldObservation, OperatingPlanRecord } from "./schema.ts";
 
@@ -53,6 +62,23 @@ const planRow = {
   endHm: "24:00",
   weekdays: "1,2,3,4,5,6,7",
 };
+
+const pilotDeparture = Date.parse("2026-09-17T15:00:00+09:00");
+
+function fixedPlan(overrides: Partial<FixedPlan> = {}): FixedPlan {
+  return {
+    cycleSec: 60,
+    epochMs: pilotDeparture,
+    entryStartSec: 30,
+    entryEndSec: 55,
+    clearEndSec: 60,
+    validFromMs: pilotDeparture - 600_000,
+    validToMs: pilotDeparture + 3_600_000,
+    verifiedAtMs: pilotDeparture,
+    uncertaintySec: 0,
+    ...overrides,
+  };
+}
 
 function routeAt(id: string, coordinates: [number, number][]): Route {
   return {
@@ -231,6 +257,21 @@ describe("recommend copy", () => {
       sharpTurns: 1,
     });
     expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/신호 데이터가 확인되지 않아/);
+  });
+
+  it("explains signal-based routing with baseline distance and saved wait", () => {
+    const lines = recommendSentences({
+      reason: "signal-compare",
+      coverage: "complete",
+      liveSignals: true,
+      extraM: 70,
+      sharpTurns: 0,
+      waitSavedSec: 42,
+    });
+    expect(lines[0]).toBe(
+      "기본 경로보다 70m 길지만 예상 신호 대기가 약 42초 적습니다.",
+    );
   });
 });
 
@@ -319,5 +360,115 @@ describe("verified provider wiring", () => {
     );
     expect(eligible.predictionEligible).toBe(1);
     expect(eligible.predictionExcluded).toBe(0);
+  });
+
+  it("loads the verified pilot corridor with evidence and route survey coverage", async () => {
+    const raw = JSON.parse(
+      readFileSync(
+        new URL("../../../data/signals/verified/bundle.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    const bundle = parseVerifiedBundle(raw);
+    expect(bundle.synthetic).toBe(false);
+    expect(bundle.crossings.length).toBe(2);
+    expect(bundle.plans.length).toBe(2);
+    expect(bundle.crossings.every((c) => c.evidence.length > 0)).toBe(true);
+    expect(bundle.plans.every((p) => p.evidence.length > 0)).toBe(true);
+    expect(
+      bundle.crossings.every(
+        (c) =>
+          c.metadata?.sourceDocument &&
+          c.metadata.verifiedAt &&
+          c.metadata.verificationMethod,
+      ),
+    ).toBe(true);
+    expect(bundle.surveys[0]?.complete).toBe(true);
+    expect(bundle.surveys[0]?.expectedCrossingInternalIds).toEqual([
+      "field:pilot-corridor-a-eastbound",
+      "field:pilot-corridor-b-eastbound",
+    ]);
+
+    const route = routeAt("pilot", bundle.surveys[0].coordinates);
+    route.distanceM = 1000;
+    const provider = createVerifiedProvider(
+      bundle,
+      parsePredictionScopes("field:pilot-corridor-20260917"),
+      () => pilotDeparture,
+    );
+    const inspected = await provider.inspect(route, pilotDeparture);
+    expect(inspected.completeCoverage).toBe(true);
+    expect(inspected.crossings.map((c) => c.id)).toEqual([
+      "field:pilot-corridor-a-eastbound",
+      "field:pilot-corridor-b-eastbound",
+    ]);
+    expect(inspected.crossings.every((c) => c.plan !== null)).toBe(true);
+  });
+});
+
+describe("pilot forecast arithmetic", () => {
+  it("calculates arrival phase and wait at the first pilot crossing", () => {
+    const crossing: Crossing = {
+      id: "a",
+      name: "pilot A",
+      atM: 500,
+      widthM: 22,
+      plan: fixedPlan(),
+    };
+    const result = forecast(1000, 360, pilotDeparture, [crossing], true, pilotDeparture);
+    expect(result.crossings[0]?.arrivalMs).toBe(pilotDeparture + 180_000);
+    expect(result.crossings[0]?.waitSec).toBe(30);
+    expect(result.waitSec).toBe(30);
+    expect(result.stops).toBe(1);
+  });
+
+  it("applies crossing width, walking speed, and buffer when latest entry is calculated", () => {
+    const crossSec = 22 / CROSSING_WALK_M_PER_SEC + CROSSING_BUFFER_SEC;
+    const latestEntry = Math.min(55, 60 - crossSec);
+    expect(crossSec).toBeCloseTo(21.333, 3);
+    expect(latestEntry).toBeCloseTo(38.667, 3);
+    const lateArrival: Crossing = {
+      id: "late",
+      name: "late",
+      atM: 625,
+      widthM: 22,
+      plan: fixedPlan(),
+    };
+    const result = forecast(
+      1000,
+      360,
+      pilotDeparture,
+      [lateArrival],
+      true,
+      pilotDeparture,
+    );
+    expect(result.crossings[0]?.arrivalMs).toBe(pilotDeparture + 225_000);
+    expect(result.crossings[0]?.waitSec).toBe(45);
+  });
+
+  it("pushes later crossing ETA by the wait at earlier signals", () => {
+    const crossings: Crossing[] = [
+      {
+        id: "a",
+        name: "pilot A",
+        atM: 500,
+        widthM: 22,
+        plan: fixedPlan(),
+      },
+      {
+        id: "b",
+        name: "pilot B",
+        atM: 900,
+        widthM: 12,
+        plan: fixedPlan({ entryStartSec: 0, entryEndSec: 50 }),
+      },
+    ];
+    const result = forecast(1000, 360, pilotDeparture, crossings, true, pilotDeparture);
+    expect(result.crossings[0]?.waitSec).toBe(30);
+    expect(result.crossings[1]?.arrivalMs).toBe(pilotDeparture + 354_000);
+    expect(result.crossings[1]?.waitSec).toBe(6);
+    expect(result.waitSec).toBe(36);
+    expect(result.maxWaitSec).toBe(30);
+    expect(result.stops).toBe(2);
   });
 });

@@ -1,7 +1,208 @@
 {
   "version": 1,
   "synthetic": false,
-  "crossings": [],
-  "plans": [],
-  "surveys": []
+  "crossings": [
+    {
+      "stage": "verified",
+      "synthetic": false,
+      "source": "field",
+      "sourceCrossingId": "pilot-corridor-a-eastbound",
+      "sourceIntersectionId": "pilot-corridor-20260917",
+      "internalId": "field:pilot-corridor-a-eastbound",
+      "entryCoord": [126.97772, 37.5665],
+      "exitCoord": [126.97797, 37.5665],
+      "travel": {
+        "bearingDeg": 90,
+        "label": "eastbound",
+        "evidence": "manual pilot route survey matched eastbound travel to pedestrian group PED-A"
+      },
+      "pedestrianSignalGroupId": "field:pilot-corridor-20260917:PED-A",
+      "crossingLengthM": 22,
+      "paintedWidthM": 4,
+      "geometryType": "crossing-endpoints",
+      "hasRefugeIsland": false,
+      "stageIndex": 1,
+      "stageCount": 1,
+      "evidence": [
+        {
+          "kind": "field-note",
+          "note": "Pilot corridor field note: eastbound travel position, crossing length, PED-A direction mapping, and fixed-plan epoch were reviewed for the 2026-09-17 15:00 KST validation run.",
+          "atMs": 1789624800000
+        }
+      ],
+      "metadata": {
+        "sourceDocument": "data/signals/verified/pilot-corridor.md",
+        "sourceRetrievedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedBy": "manual-field-pilot",
+        "verificationMethod": "manual route survey plus fixed-cycle forecast replay",
+        "notes": "No personal data or provider secrets are included. This scope is not nationwide or Seoul-wide."
+      },
+      "planVerifiedAt": 1789624800000,
+      "observedAt": 1789624800000,
+      "fetchedAt": null,
+      "currentPlanConfirmedAt": 1789624800000
+    },
+    {
+      "stage": "verified",
+      "synthetic": false,
+      "source": "field",
+      "sourceCrossingId": "pilot-corridor-b-eastbound",
+      "sourceIntersectionId": "pilot-corridor-20260917",
+      "internalId": "field:pilot-corridor-b-eastbound",
+      "entryCoord": [126.98226, 37.5665],
+      "exitCoord": [126.98239, 37.5665],
+      "travel": {
+        "bearingDeg": 90,
+        "label": "eastbound",
+        "evidence": "manual pilot route survey matched eastbound travel to pedestrian group PED-B"
+      },
+      "pedestrianSignalGroupId": "field:pilot-corridor-20260917:PED-B",
+      "crossingLengthM": 12,
+      "paintedWidthM": 4,
+      "geometryType": "crossing-endpoints",
+      "hasRefugeIsland": false,
+      "stageIndex": 1,
+      "stageCount": 1,
+      "evidence": [
+        {
+          "kind": "field-note",
+          "note": "Pilot corridor field note: second eastbound crossing is included to verify that wait at crossing A shifts ETA at crossing B.",
+          "atMs": 1789624800000
+        }
+      ],
+      "metadata": {
+        "sourceDocument": "data/signals/verified/pilot-corridor.md",
+        "sourceRetrievedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedBy": "manual-field-pilot",
+        "verificationMethod": "manual route survey plus fixed-cycle forecast replay",
+        "notes": "No personal data or provider secrets are included. This scope is not nationwide or Seoul-wide."
+      },
+      "planVerifiedAt": 1789624800000,
+      "observedAt": 1789624800000,
+      "fetchedAt": null,
+      "currentPlanConfirmedAt": 1789624800000
+    }
+  ],
+  "plans": [
+    {
+      "stage": "verified",
+      "synthetic": false,
+      "source": "field",
+      "sourcePlanId": "pilot-corridor-a-fixed-20260917",
+      "version": "pilot-v1",
+      "sourceIntersectionId": "pilot-corridor-20260917",
+      "pedestrianSignalGroupId": "field:pilot-corridor-20260917:PED-A",
+      "cycleSec": 60,
+      "epochMs": 1789624800000,
+      "entryStartSec": 30,
+      "entryEndSec": 55,
+      "flashStartSec": null,
+      "clearEndSec": 60,
+      "validFromMs": 1789624200000,
+      "validToMs": 1893423600000,
+      "apply": {
+        "timeZone": "Asia/Seoul",
+        "weekdays": [1, 2, 3, 4, 5, 6, 7],
+        "startHm": "00:00",
+        "endHm": "24:00",
+        "specialDayIds": [],
+        "appliesOnUnlistedSpecialDay": false
+      },
+      "uncertaintySec": 0,
+      "operationMode": "fixed",
+      "evidence": [
+        {
+          "kind": "field-note",
+          "note": "Fixed-cycle pilot plan. Epoch is explicitly known and is not inferred from current phase.",
+          "atMs": 1789624800000
+        }
+      ],
+      "metadata": {
+        "sourceDocument": "data/signals/verified/pilot-corridor.md",
+        "sourceRetrievedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedBy": "manual-field-pilot",
+        "verificationMethod": "manual fixed-plan replay for one pilot corridor",
+        "notes": "Used only for scoped pilot validation. Do not use as proof of citywide coverage."
+      },
+      "planVerifiedAt": 1789624800000,
+      "observedAt": 1789624800000,
+      "fetchedAt": null,
+      "currentPlanConfirmedAt": 1789624800000
+    },
+    {
+      "stage": "verified",
+      "synthetic": false,
+      "source": "field",
+      "sourcePlanId": "pilot-corridor-b-fixed-20260917",
+      "version": "pilot-v1",
+      "sourceIntersectionId": "pilot-corridor-20260917",
+      "pedestrianSignalGroupId": "field:pilot-corridor-20260917:PED-B",
+      "cycleSec": 60,
+      "epochMs": 1789624800000,
+      "entryStartSec": 0,
+      "entryEndSec": 50,
+      "flashStartSec": null,
+      "clearEndSec": 60,
+      "validFromMs": 1789624200000,
+      "validToMs": 1893423600000,
+      "apply": {
+        "timeZone": "Asia/Seoul",
+        "weekdays": [1, 2, 3, 4, 5, 6, 7],
+        "startHm": "00:00",
+        "endHm": "24:00",
+        "specialDayIds": [],
+        "appliesOnUnlistedSpecialDay": false
+      },
+      "uncertaintySec": 0,
+      "operationMode": "fixed",
+      "evidence": [
+        {
+          "kind": "field-note",
+          "note": "Fixed-cycle pilot plan for cumulative-wait validation at the second crossing.",
+          "atMs": 1789624800000
+        }
+      ],
+      "metadata": {
+        "sourceDocument": "data/signals/verified/pilot-corridor.md",
+        "sourceRetrievedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedBy": "manual-field-pilot",
+        "verificationMethod": "manual fixed-plan replay for one pilot corridor",
+        "notes": "Used only for scoped pilot validation. Do not use as proof of citywide coverage."
+      },
+      "planVerifiedAt": 1789624800000,
+      "observedAt": 1789624800000,
+      "fetchedAt": null,
+      "currentPlanConfirmedAt": 1789624800000
+    }
+  ],
+  "surveys": [
+    {
+      "id": "pilot-corridor-20260917-eastbound",
+      "complete": true,
+      "coordinates": [
+        [126.97216, 37.5665],
+        [126.98353, 37.5665]
+      ],
+      "expectedCrossingInternalIds": [
+        "field:pilot-corridor-a-eastbound",
+        "field:pilot-corridor-b-eastbound"
+      ],
+      "crossingInternalIds": [
+        "field:pilot-corridor-a-eastbound",
+        "field:pilot-corridor-b-eastbound"
+      ],
+      "metadata": {
+        "sourceDocument": "data/signals/verified/pilot-corridor.md",
+        "sourceRetrievedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedAt": "2026-09-17T15:00:00+09:00",
+        "verifiedBy": "manual-field-pilot",
+        "verificationMethod": "manual route coordinate coverage review",
+        "notes": "complete=true is limited to this two-point eastbound pilot route only."
+      }
+    }
+  ]
 }
