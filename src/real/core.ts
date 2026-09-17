@@ -72,7 +72,14 @@ export type Forecast = {
   stops: number | null;
   maxWaitSec: number | null;
   totalSec: number | null;
-  crossings: { id: string; arrivalMs: number | null; waitSec: number | null }[];
+  crossings: {
+    id: string;
+    arrivalMs: number | null;
+    waitSec: number | null;
+    atM?: number;
+    widthM?: number;
+    plan?: FixedPlan | null;
+  }[];
 };
 export type WalkingEmptyReason =
   | "none"
@@ -365,7 +372,14 @@ export function forecast(
       !(c.widthM > 0)
     ) {
       known = false;
-      rows.push({ id: c.id, arrivalMs: null, waitSec: null });
+      rows.push({
+        id: c.id,
+        arrivalMs: null,
+        waitSec: null,
+        atM: c.atM,
+        widthM: c.widthM,
+        plan: c.plan,
+      });
       continue;
     }
     arrival += ((c.atM - previousM) / 1000) * pace * 1000;
@@ -387,7 +401,14 @@ export function forecast(
       arrival > p.validToMs
     ) {
       known = false;
-      rows.push({ id: c.id, arrivalMs: arrival, waitSec: null });
+      rows.push({
+        id: c.id,
+        arrivalMs: arrival,
+        waitSec: null,
+        atM: c.atM,
+        widthM: c.widthM,
+        plan: c.plan,
+      });
       continue;
     }
     const phase =
@@ -398,7 +419,14 @@ export function forecast(
       Math.min(p.entryEndSec, p.clearEndSec - crossSec) - p.uncertaintySec;
     if (latestEntry <= entryStart) {
       known = false;
-      rows.push({ id: c.id, arrivalMs: arrival, waitSec: null });
+      rows.push({
+        id: c.id,
+        arrivalMs: arrival,
+        waitSec: null,
+        atM: c.atM,
+        widthM: c.widthM,
+        plan: c.plan,
+      });
       continue;
     }
     const w =
@@ -409,10 +437,24 @@ export function forecast(
           : p.cycleSec - phase + entryStart;
     if (arrival + (w + crossSec) * 1000 > p.validToMs) {
       known = false;
-      rows.push({ id: c.id, arrivalMs: arrival, waitSec: null });
+      rows.push({
+        id: c.id,
+        arrivalMs: arrival,
+        waitSec: null,
+        atM: c.atM,
+        widthM: c.widthM,
+        plan: c.plan,
+      });
       continue;
     }
-    rows.push({ id: c.id, arrivalMs: arrival, waitSec: w });
+    rows.push({
+      id: c.id,
+      arrivalMs: arrival,
+      waitSec: w,
+      atM: c.atM,
+      widthM: c.widthM,
+      plan: c.plan,
+    });
     arrival += w * 1000;
     wait += w;
     if (w > 0) stops++;
@@ -533,6 +575,38 @@ export type Track = {
   stoppedSec: number;
   anchor?: Fix;
 };
+export function rollingPace(
+  track: Track,
+  nowMs: number,
+  windowSec: number,
+): number | null {
+  if (!Number.isFinite(nowMs) || !(windowSec > 0) || track.fixes.length < 2)
+    return null;
+  const startMs = nowMs - windowSec * 1000;
+  let movingM = 0,
+    movingSec = 0;
+  for (let i = 1; i < track.fixes.length; i++) {
+    const a = track.fixes[i - 1],
+      b = track.fixes[i];
+    if (a.at < startMs || b.at > nowMs) continue;
+    const dt = (b.at - a.at) / 1000;
+    if (
+      dt <= 0 ||
+      dt > 15 ||
+      b.segmentStart ||
+      a.accuracy > 80 ||
+      b.accuracy > 80
+    )
+      continue;
+    const d = meters(a.coord, b.coord),
+      speed = d / dt;
+    if (speed < 0.5 || speed > 7) continue;
+    movingM += d;
+    movingSec += dt;
+  }
+  if (movingM < 10 || movingSec <= 0) return null;
+  return (movingSec / movingM) * 1000;
+}
 export function appendFix(track: Track, fix: Fix): Track {
   if (
     !validCoord(fix.coord) ||

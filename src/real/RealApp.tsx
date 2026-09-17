@@ -16,10 +16,12 @@ import {
   bearingDeg,
   cueEtaSec,
   crossingCount,
+  forecast,
   meters,
   nextPoi,
   paceLabel,
   progressOnRoute,
+  rollingPace,
   routeKey,
   routeCompleted,
   trackSegments,
@@ -740,6 +742,80 @@ export function RealApp() {
           run.live.track.fixes.at(-1)!.coord,
         )
       : null);
+  const liveNow = run.live?.lastTick ?? null;
+  const rollingPace30 =
+    run.live?.phase === "running" && liveNow !== null
+      ? rollingPace(run.live.track, liveNow, 30)
+      : null;
+  const rollingPace60 =
+    run.live?.phase === "running" && liveNow !== null
+      ? rollingPace(run.live.track, liveNow, 60)
+      : null;
+  const livePace = rollingPace30 ?? rollingPace60 ?? pace;
+  const routeForecast = liveSignals && route ? forecasts[route.id] : null;
+  const liveSignal = (() => {
+    if (!routeForecast || !along || !validPace(livePace) || liveNow === null)
+      return null;
+    const next = routeForecast.crossings.find(
+      (c) => typeof c.atM === "number" && c.atM > along.traveledM + 5,
+    );
+    if (!next || typeof next.atM !== "number")
+      return {
+        current: "현재 보행신호: 실시간 진단 화면에서만 확인",
+        arrival: "예상 도착 시 신호: 미확인",
+        guidance: "실제 신호를 직접 확인한 뒤 건너세요.",
+        waitSec: null as number | null,
+        remainM: null as number | null,
+        etaSec: null as number | null,
+      };
+    const remainM = Math.max(0, next.atM - along.traveledM),
+      etaSec = (remainM / 1000) * livePace;
+    if (!next.plan || !(next.widthM && next.widthM > 0))
+      return {
+        current: "현재 보행신호: 실시간 진단 화면에서만 확인",
+        arrival: "예상 도착 시 신호: 미확인",
+        guidance: "실제 신호를 직접 확인한 뒤 건너세요.",
+        waitSec: null as number | null,
+        remainM,
+        etaSec,
+      };
+    const projected = forecast(
+      remainM,
+      livePace,
+      liveNow,
+      [
+        {
+          id: next.id,
+          name: next.id,
+          atM: remainM,
+          widthM: next.widthM,
+          plan: next.plan,
+        },
+      ],
+      true,
+      liveNow,
+    );
+    const waitSec = projected.crossings[0]?.waitSec ?? null,
+      nearCrossing = remainM < 30;
+    return {
+      current: "현재 보행신호: 실시간 진단 화면에서만 확인",
+      arrival:
+        waitSec === null
+          ? "예상 도착 시 신호: 미확인"
+          : `예상 도착 시 신호: 대기 약 ${Math.round(waitSec)}초`,
+      guidance:
+        waitSec === null
+          ? "실제 신호를 직접 확인한 뒤 건너세요."
+          : nearCrossing
+            ? "횡단보도 앞입니다. 속도보다 안전 확인이 먼저입니다."
+            : waitSec >= 5 && waitSec <= 45
+              ? "현재 속도보다 약간 천천히 가면 다음 녹색 구간에 도착할 가능성이 있습니다."
+              : "현재 페이스를 유지해도 됩니다. 실제 신호를 직접 확인한 뒤 건너세요.",
+      waitSec,
+      remainM,
+      etaSec,
+    };
+  })();
   const [offSamples, setOffSamples] = useState<
     { offRouteM: number; accuracy: number }[]
   >([]);
@@ -1729,6 +1805,30 @@ export function RealApp() {
             </p>
           )}
           <p>권장 페이스는 입력한 {paceLabel(pace)}/km입니다.</p>
+          <p>
+            최근 30초 페이스 {paceLabel(rollingPace30)}
+            {rollingPace30 === null
+              ? " · 최근 60초 " + paceLabel(rollingPace60)
+              : ""}
+          </p>
+          {liveSignals && liveSignal && (
+            <div>
+              <h2>다음 신호 ETA</h2>
+              <p>{liveSignal.current}</p>
+              <p>{liveSignal.arrival}</p>
+              {liveSignal.remainM !== null && liveSignal.etaSec !== null && (
+                <p>
+                  다음 검증 crossing까지 약 {Math.round(liveSignal.remainM)}m ·
+                  현재 페이스 기준 약 {Math.round(liveSignal.etaSec)}초
+                </p>
+              )}
+              {liveSignal.waitSec !== null && (
+                <p>현재 페이스 유지: 예상 대기 약 {Math.round(liveSignal.waitSec)}초</p>
+              )}
+              <p>{liveSignal.guidance}</p>
+              <small>앱 예측은 신호 확인을 대체하지 않습니다.</small>
+            </div>
+          )}
           <small>
             GPS 정지 추정은 신호 대기와 다른 값입니다. 화면을 끄면 웹은 연속
             GPS를 보장하지 않습니다.

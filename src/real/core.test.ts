@@ -10,6 +10,7 @@ import {
   preferSignalRoute,
   progressOnRoute,
   rankRoutes,
+  rollingPace,
   routeCompleted,
   routeKey,
   samplePath,
@@ -191,6 +192,22 @@ describe("arrival-aware signal policy", () => {
     expect(remainingRawDisplay(null)).toBe("잔여값 없음");
     expect(candidateIndex([{ id: "a" }, { id: "b" }], "b")).toBe(1);
     expect(candidateIndex([{ id: "a" }], "missing")).toBe(0);
+  });
+});
+
+describe("rolling GPS pace", () => {
+  it("uses moving recent fixes and skips stops plus poor accuracy", () => {
+    const fixes: Track["fixes"] = [
+      { coord: [127, 37], at: epoch, accuracy: 5 },
+      { coord: [127, 37.00025], at: epoch + 10_000, accuracy: 5 },
+      { coord: [127, 37.00025], at: epoch + 20_000, accuracy: 5 },
+      { coord: [127, 37.0005], at: epoch + 30_000, accuracy: 5 },
+      { coord: [127, 37.001], at: epoch + 40_000, accuracy: 120 },
+    ];
+    const track: Track = { fixes, distanceM: 0, gapSec: 0, stoppedSec: 30 };
+    expect(rollingPace(track, epoch + 40_000, 10)).toBeNull();
+    expect(rollingPace(track, epoch + 40_000, 60)).toBeGreaterThan(300);
+    expect(rollingPace(track, epoch + 40_000, 60)).toBeLessThan(420);
   });
 });
 describe("shared walking policy", () => {
