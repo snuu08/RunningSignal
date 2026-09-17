@@ -12,6 +12,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { useGpsRun } from "./useGpsRun.ts";
+import type { Route } from "./core.ts";
 import {
   defaultProfile,
   listRuns,
@@ -20,8 +21,29 @@ import {
   type RunRecord,
 } from "./storage.ts";
 import { RealApp } from "./RealApp.tsx";
+const realMapRenders = vi.hoisted(() => [] as Record<string, any>[]);
 vi.mock("./RealMap.tsx", () => ({
-  RealMap: () => <div>Map component test boundary</div>,
+  RealMap: (props: Record<string, any>) => {
+    realMapRenders.push(props);
+    return (
+      <div
+        data-testid="real-map"
+        data-follow={String(!!props.follow)}
+        data-position={JSON.stringify(props.position ?? null)}
+        data-accuracy={String(props.positionAccuracyM ?? "")}
+        data-route-points={String(props.coordinates?.length ?? 0)}
+        data-pois={JSON.stringify(props.pois ?? [])}
+      >
+        Map component test boundary
+        <button type="button" onClick={() => props.onUserPan?.()}>
+          mock manual pan
+        </button>
+        <button type="button" onClick={() => props.onPick?.([127.2, 37.8])}>
+          mock map pick
+        </button>
+      </div>
+    );
+  },
 }));
 vi.mock("./backend.ts", async () => {
   const actual =
@@ -37,8 +59,107 @@ function resetIdb() {
   });
 }
 
+function statusBody() {
+  return {
+    places: true,
+    routes: true,
+    seoulSignals: false,
+    reverseGeocode: true,
+    signalPrediction: false,
+    signalDetail: "테스트",
+    signal: {
+      configured: { seoul: false, utic: false, national: false },
+      reachable: { seoul: null, utic: null, national: null },
+      mappingReady: false,
+      predictionReady: false,
+      predictionByRegion: { 서울: false, 인천: false, 대구: false, 성남: false },
+    },
+    utic: { configured: false, ready: false, detail: "테스트" },
+    national: { configured: false, ready: false, detail: "테스트" },
+  };
+}
+
+function routeFixture(partial: Partial<Route> = {}): Route {
+  return {
+    id: "route-a",
+    name: "테스트 경로",
+    coordinates: [
+      [127, 37],
+      [127.001, 37],
+      [127.002, 37],
+    ],
+    distanceM: 220,
+    sharpTurns: 0,
+    zigzags: 0,
+    option: "4",
+    instructions: [],
+    nearbyPois: [],
+    ...partial,
+  };
+}
+
+function routesBody(route = routeFixture(), partial = false) {
+  return {
+    routes: [route],
+    partial,
+    recommendedId: route.id,
+    recommendationReason: "walking-baseline",
+    recommendSentences: ["보행 조건과 우회 제한을 적용한 기본 추천입니다."],
+    forecasts: {},
+    departureMs: Date.now(),
+    signalCoverage: "unknown",
+  };
+}
+
+function installGoodGeolocation(
+  coord = { longitude: 127, latitude: 37, accuracy: 8 },
+) {
+  let watchSuccess: ((p: GeolocationPosition) => void) | null = null;
+  const position = (
+    next = coord,
+    timestamp = Date.now(),
+  ): GeolocationPosition =>
+    ({ coords: next, timestamp }) as GeolocationPosition;
+  Object.defineProperty(navigator, "geolocation", {
+    configurable: true,
+    value: {
+      getCurrentPosition: vi.fn((success) => success(position())),
+      watchPosition: vi.fn((success) => {
+        watchSuccess = success;
+        const start = Date.now();
+        success(position(coord, start));
+        success(
+          position(
+            { ...coord, longitude: coord.longitude + 0.000001 },
+            start + 800,
+          ),
+        );
+        success(
+          position(
+            { ...coord, latitude: coord.latitude + 0.000001 },
+            start + 1_700,
+          ),
+        );
+        return 42;
+      }),
+      clearWatch: vi.fn(),
+    },
+  });
+  return (next = coord, timestamp = Date.now()) => {
+    if (!watchSuccess) throw new Error("watchPosition was not registered");
+    watchSuccess(position(next, timestamp));
+  };
+}
+
+function latestMapProps() {
+  const props = realMapRenders.at(-1);
+  if (!props) throw new Error("RealMap was not rendered");
+  return props;
+}
+
 afterEach(async () => {
   cleanup();
+  realMapRenders.length = 0;
   vi.useRealTimers();
   vi.restoreAllMocks();
   sessionStorage.clear();
@@ -295,6 +416,204 @@ describe("real-mode screen flow", () => {
     expect((destination as HTMLInputElement).value).toBe("서울숲");
     fireEvent.change(origin, { target: { value: "새" } });
     expect((screen.getByRole("button", { name: "러닝 경로 찾기" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it("moves the map to current location, shows endpoints, route, accuracy, and TMAP partial notice", async () => {
+    await saveState("profile:guest", { ...defaultProfile, onboarded: true });
+    installGoodGeolocation({ longitude: 127.1, latitude: 37.4, accuracy: 12 });
+    const route = routeFixture({
+      coordinates: [
+        [127.1, 37.4],
+        [127.15, 37.42],
+        [127.2, 37.44],
+      ],
+    });
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("status")) return Response.json(statusBody());
+      if (url.includes("places/reverse"))
+        return Response.json({
+          place: { id: "rev:current", name: "현재 위치", coord: [127.1, 37.4] },
+        });
+      if (url.includes("places?")) {
+        const name = new URL(url, "http://localhost").searchParams.get("q")!;
+        return Response.json({
+          places: [{ id: name, name, coord: [127.2, 37.44] }],
+        });
+      }
+      if (url.includes("routes")) return Response.json(routesBody(route, true));
+      return Response.json({});
+    });
+
+    render(<MemoryRouter initialEntries={["/real/home"]}><RealApp /></MemoryRouter>);
+    await screen.findByRole("combobox", { name: "출발지" });
+    fireEvent.click(screen.getByRole("button", { name: "현재 위치" }));
+
+    await waitFor(() =>
+      expect(latestMapProps()).toMatchObject({
+        position: [127.1, 37.4],
+        positionAccuracyM: 12,
+      }),
+    );
+    expect(screen.getByText(/정확도 ±12m/)).toBeTruthy();
+
+    const destination = screen.getByRole("combobox", { name: "목적지" });
+    fireEvent.change(destination, { target: { value: "성남시청" } });
+    await screen.findByRole("option", { name: "성남시청" });
+    fireEvent.keyDown(destination, { key: "ArrowDown" });
+    fireEvent.keyDown(destination, { key: "Enter" });
+    await waitFor(() =>
+      expect(
+        latestMapProps().pois.some((p: { kind?: string }) => p.kind === "origin"),
+      ).toBe(true),
+    );
+    expect(
+      latestMapProps().pois.some((p: { kind?: string }) => p.kind === "destination"),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "러닝 경로 찾기" }));
+    await screen.findByText("오늘의 경로가 준비됐어요.", undefined, {
+      timeout: 3_000,
+    });
+    expect(screen.getByText("일부 후보 요청이 실패해 확인된 경로만 보여드려요.")).toBeTruthy();
+    expect(latestMapProps().coordinates).toEqual(route.coordinates);
+    expect(
+      latestMapProps().pois.some((p: { kind?: string }) => p.kind === "origin"),
+    ).toBe(true);
+    expect(
+      latestMapProps().pois.some((p: { kind?: string }) => p.kind === "destination"),
+    ).toBe(true);
+  });
+
+  it("keeps map follow mode controllable after manual pan and restore", async () => {
+    const route = routeFixture();
+    const now = Date.now();
+    await saveState("profile:guest", { ...defaultProfile, onboarded: true });
+    await saveState("active:guest", {
+      id: "live-follow",
+      startedAt: now - 10_000,
+      phase: "running",
+      track: {
+        fixes: [{ coord: [127, 37], accuracy: 8, at: now - 10_000 }],
+        distanceM: 0,
+        gapSec: 0,
+        stoppedSec: 0,
+      },
+      activeSec: 0,
+      manualPauseSec: 0,
+      lastTick: now - 10_000,
+      route,
+      departure: route.coordinates[0],
+    });
+    vi.mocked(fetch).mockImplementation(async (input) =>
+      String(input).includes("status") ? Response.json(statusBody()) : Response.json({}),
+    );
+
+    render(<MemoryRouter initialEntries={["/real/run"]}><RealApp /></MemoryRouter>);
+    await screen.findByText("잠시 쉬는 중");
+    await waitFor(() => expect(latestMapProps().follow).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: "mock manual pan" }));
+    await waitFor(() => expect(latestMapProps().follow).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "내 위치 따라가기" }));
+    await waitFor(() => expect(latestMapProps().follow).toBe(true));
+  });
+
+  it("shows reroute after sustained off-route fixes and recalculates from here", async () => {
+    const route = routeFixture();
+    const rerouted = routeFixture({
+      id: "route-rerouted",
+      coordinates: [
+        [127.001, 37.0006],
+        [127.002, 37],
+      ],
+    });
+    const pushFix = installGoodGeolocation({
+      longitude: 127,
+      latitude: 37,
+      accuracy: 8,
+    });
+    const now = Date.now();
+    await saveState("profile:guest", { ...defaultProfile, onboarded: true });
+    await saveState("active:guest", {
+      id: "live-offroute",
+      startedAt: now - 10_000,
+      phase: "running",
+      track: {
+        fixes: [{ coord: [127, 37], accuracy: 8, at: now - 10_000 }],
+        distanceM: 0,
+        gapSec: 0,
+        stoppedSec: 0,
+      },
+      activeSec: 0,
+      manualPauseSec: 0,
+      lastTick: now - 10_000,
+      route,
+      departure: route.coordinates[0],
+    });
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("status")) return Response.json(statusBody());
+      if (url.includes("places/reverse"))
+        return Response.json({
+          place: { id: "rev", name: "현재 위치", coord: [127.001, 37.0006] },
+        });
+      if (url.includes("routes")) return Response.json(routesBody(rerouted));
+      return Response.json({});
+    });
+
+    render(<MemoryRouter initialEntries={["/real/run"]}><RealApp /></MemoryRouter>);
+    await screen.findByText("잠시 쉬는 중");
+    fireEvent.click(screen.getByRole("button", { name: "계속하기" }));
+    await waitFor(() => expect(navigator.geolocation.watchPosition).toHaveBeenCalled());
+    const offRouteAt = Date.now() + 20_000;
+    for (let i = 0; i < 4; i += 1) {
+      const next = {
+        longitude: 127.001 + i * 0.000001,
+        latitude: 37.0006,
+        accuracy: 8,
+      };
+      act(() =>
+        pushFix(
+          next,
+          offRouteAt + i * 3_000,
+        ),
+      );
+      await waitFor(() =>
+        expect(latestMapProps().position).toEqual([
+          next.longitude,
+          next.latitude,
+        ]),
+      );
+    }
+    const reroute = await screen.findByRole("button", {
+      name: "현재 위치에서 경로 다시 찾기",
+    });
+    fireEvent.click(reroute);
+    await screen.findByText("목적지·경유·계단 제외를 유지한 새 보행 경로로 바꿨어요.");
+    expect(latestMapProps().coordinates).toEqual(rerouted.coordinates);
+  });
+
+  it("keeps manual map picking available when Kakao search fails", async () => {
+    await saveState("profile:guest", { ...defaultProfile, onboarded: true });
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("status")) return Response.json(statusBody());
+      if (url.includes("places/reverse"))
+        return Response.json({ error: "Kakao reverse down" }, { status: 503 });
+      if (url.includes("places?"))
+        return Response.json({ error: "Kakao search down" }, { status: 503 });
+      return Response.json({});
+    });
+
+    render(<MemoryRouter initialEntries={["/real/home"]}><RealApp /></MemoryRouter>);
+    const origin = await screen.findByRole("combobox", { name: "출발지" });
+    fireEvent.change(origin, { target: { value: "없는 장소" } });
+    await screen.findByText(/Kakao search down/);
+    fireEvent.click(screen.getByRole("button", { name: "출발점 선택" }));
+    fireEvent.click(screen.getByRole("button", { name: "mock map pick" }));
+    await waitFor(() =>
+      expect((origin as HTMLInputElement).value).toBe("지도에서 선택한 위치"),
+    );
   });
   it("keeps signup unavailable when no real auth server exists", async () => {
     render(

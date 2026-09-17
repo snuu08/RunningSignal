@@ -66,6 +66,7 @@ import {
   type RunRecord,
 } from "./storage.ts";
 import { RealMap } from "./RealMap.tsx";
+import type { MapPoint } from "./RealMap.helpers.ts";
 import {
   applyPaceSlot,
   formatPaceSpoken,
@@ -129,6 +130,33 @@ function permissionLabel(permission: LocationPermissionState) {
 function relativeSecondsLabel(at: number, now = Date.now()) {
   const sec = Math.max(0, Math.round((now - at) / 1000));
   return sec < 2 ? "방금 갱신" : `${sec}초 전 갱신`;
+}
+
+function routeMapPoints(
+  route: Route | null,
+  origin: Place | null,
+  destination: Place | null,
+): MapPoint[] {
+  const start = origin?.coord ?? route?.coordinates[0];
+  const end = destination?.coord ?? route?.coordinates.at(-1);
+  return [
+    ...(start
+      ? [{ coord: start, name: origin?.name ?? "출발", kind: "origin" as const }]
+      : []),
+    ...(end
+      ? [
+          {
+            coord: end,
+            name: destination?.name ?? "도착",
+            kind: "destination" as const,
+          },
+        ]
+      : []),
+    ...((route?.nearbyPois ?? []).map((p) => ({
+      coord: p.coord,
+      name: p.name,
+    })) satisfies MapPoint[]),
+  ];
 }
 function Thumbnail({ route }: { route: Route | null }) {
   const points = route?.coordinates;
@@ -691,6 +719,12 @@ export function RealApp() {
         progressOnRoute(run.live.route.coordinates, currentRawFix.coord))
       : null;
   const rawOffRouteM = run.routeProjection?.offRouteM ?? along?.offRouteM ?? null;
+  const plannerPosition = origin?.coord ?? position;
+  const plannerAccuracyM =
+    positionMeta && position && plannerPosition &&
+    meters(plannerPosition, position) <= Math.max(5, positionMeta.accuracyM)
+      ? positionMeta.accuracyM
+      : null;
   const upcoming = along
     ? nextPoi(run.live?.route?.nearbyPois, along.traveledM)
     : null;
@@ -1437,10 +1471,7 @@ export function RealApp() {
               ? [route.coordinates[0], route.coordinates.at(-1)!]
               : null
           }
-          pois={(route.nearbyPois ?? []).map((p) => ({
-            coord: p.coord,
-            name: p.name,
-          }))}
+          pois={routeMapPoints(route, origin, destination)}
         />
         {routes.length > 1 && <div className="candidate-tabs" aria-label="경로 후보">{routes.map((r, i) => <button key={r.id} aria-pressed={candidate === i} onClick={() => { setCandidate(i); setFit(n => n + 1); }}><span>{i === 0 ? "추천 경로" : `대안 ${i}`}</span><strong>{(r.distanceM / 1000).toFixed(2)} <small>km</small></strong></button>)}</div>}
         <div className="stats">
@@ -1546,6 +1577,8 @@ export function RealApp() {
         <RealMap
           coordinates={route?.coordinates ?? emptyCoords}
           position={position}
+          positionAccuracyM={positionMeta?.accuracyM ?? null}
+          pois={routeMapPoints(route, origin, destination)}
         />
         <p>
           출발지에 도착한 뒤 시작해 주세요. 버튼을 누른 시점부터 실제 위치와
@@ -1605,10 +1638,7 @@ export function RealApp() {
                 ]
               : null
           }
-          pois={(run.live.route?.nearbyPois ?? []).map((p) => ({
-            coord: p.coord,
-            name: p.name,
-          }))}
+          pois={routeMapPoints(run.live.route, origin, destination)}
         />
         <button
           onClick={() => {
@@ -2768,7 +2798,7 @@ export function RealApp() {
           </div>
           <div className={`planner-map${pick ? " is-picking" : ""}`}>
             <div className="map-topline"><span><FlowIcon name="route" size={16} />{pick ? `${pick === "origin" ? "출발지" : "목적지"}를 지도에서 눌러주세요` : "오늘 달릴 곳"}</span>{pick && <button onClick={() => setPick(null)}>선택 취소</button>}</div>
-            <RealMap coordinates={emptyCoords} position={origin?.coord ?? position} fitToken={`${origin?.id ?? ""}:${destination?.id ?? ""}`} pois={[...(origin ? [{ coord: origin.coord, name: "출발 · " + origin.name, kind: "origin" as const }] : []), ...(destination ? [{ coord: destination.coord, name: "도착 · " + destination.name, kind: "destination" as const }] : [])]} onPick={pick ? (coord) => {
+            <RealMap coordinates={emptyCoords} position={plannerPosition} positionAccuracyM={plannerAccuracyM} fitToken={`${origin?.id ?? ""}:${destination?.id ?? ""}`} pois={[...(origin ? [{ coord: origin.coord, name: "출발 · " + origin.name, kind: "origin" as const }] : []), ...(destination ? [{ coord: destination.coord, name: "도착 · " + destination.name, kind: "destination" as const }] : [])]} onPick={pick ? (coord) => {
               const target = pick;
               void action(async () => { const selected = await namedPlace(coord, "지도에서 선택한 위치"); if (target === "origin") setOrigin(selected); else setDestination(selected); setPick(null); });
             } : undefined} />

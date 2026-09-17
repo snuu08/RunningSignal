@@ -12,8 +12,13 @@ import {
 import { api } from "./backend.ts";
 import type { Coord } from "./core.ts";
 import {
+  accuracyCircleData,
   endpointDisplayPoints,
+  emptyFeatureCollection,
+  lineFeatureData,
+  mapInitialCenter,
   mapBoundsPoints,
+  routeGeometryData,
   splitOverlayPoints,
   type MapPoint,
 } from "./RealMap.helpers.ts";
@@ -24,16 +29,7 @@ import {
 } from "./landmarks.ts";
 
 setWorkerUrl(workerUrl);
-const empty = { type: "FeatureCollection" as const, features: [] };
-function lineData(coordinates: Coord[]) {
-  return coordinates.length > 1
-    ? {
-        type: "Feature" as const,
-        properties: {},
-        geometry: { type: "LineString" as const, coordinates },
-      }
-    : empty;
-}
+const empty = emptyFeatureCollection;
 function pointCollection(
   items: { coord: Coord; name: string; kind: string }[],
 ) {
@@ -67,24 +63,6 @@ function applyNaturePaint(m: maplibregl.Map) {
       // Some third-party styles keep fill properties locked behind expressions.
     }
   }
-}
-function accuracyData(center?: Coord | null, radiusM?: number | null) {
-  if (!center || !radiusM || radiusM <= 0) return empty;
-  const points: Coord[] = [];
-  const latScale = radiusM / 111_320;
-  const lngScale = radiusM / (111_320 * Math.max(0.2, Math.cos((center[1] * Math.PI) / 180)));
-  for (let i = 0; i <= 48; i += 1) {
-    const angle = (i / 48) * Math.PI * 2;
-    points.push([
-      center[0] + Math.cos(angle) * lngScale,
-      center[1] + Math.sin(angle) * latScale,
-    ]);
-  }
-  return {
-    type: "Feature" as const,
-    properties: {},
-    geometry: { type: "Polygon" as const, coordinates: [points] },
-  };
 }
 function overlayFont(m: maplibregl.Map): string[] {
   for (const layer of m.getStyle().layers ?? []) {
@@ -302,16 +280,10 @@ function writeOverlays(
   },
 ) {
   (m.getSource("route") as GeoJSONSource | undefined)?.setData(
-    data.segments?.length
-      ? {
-          type: "Feature",
-          properties: {},
-          geometry: { type: "MultiLineString", coordinates: data.segments },
-        }
-      : lineData(data.coordinates),
+    routeGeometryData({ coordinates: data.coordinates, segments: data.segments }),
   );
   (m.getSource("straight") as GeoJSONSource | undefined)?.setData(
-    data.straight ? lineData(data.straight) : empty,
+    data.straight ? lineFeatureData(data.straight) : empty,
   );
   const { regular, endpoints } = splitOverlayPoints(data.pois);
   (m.getSource("pois") as GeoJSONSource | undefined)?.setData(
@@ -321,7 +293,7 @@ function writeOverlays(
     pointCollection(endpointDisplayPoints(endpoints)),
   );
   (m.getSource("accuracy") as GeoJSONSource | undefined)?.setData(
-    accuracyData(data.position, data.positionAccuracyM),
+    accuracyCircleData(data.position, data.positionAccuracyM),
   );
 }
 function writeLandmarks(m: maplibregl.Map, items: Landmark[]) {
@@ -431,7 +403,7 @@ export function RealMap({
         m = new maplibregl.Map({
           container: container.current,
           style,
-          center: [127.03, 37.51],
+          center: mapInitialCenter(overlay.current),
           zoom: 13,
           attributionControl: { compact: true },
         });

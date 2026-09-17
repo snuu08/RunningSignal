@@ -1,5 +1,12 @@
 import type { Coord } from "./core.ts";
 
+export const DEFAULT_MAP_CENTER: Coord = [127.03, 37.51];
+
+export const emptyFeatureCollection = {
+  type: "FeatureCollection" as const,
+  features: [],
+};
+
 export type MapPoint = {
   coord: Coord;
   name: string;
@@ -64,4 +71,63 @@ export function mapBoundsPoints(data: {
   if (routePoints.length || endpoints.length) return [...routePoints, ...endpoints];
   const regularPois = (data.pois ?? []).map((p) => p.coord);
   return data.position ? [...regularPois, data.position] : regularPois;
+}
+
+export function mapInitialCenter(data: {
+  coordinates?: Coord[];
+  segments?: Coord[][];
+  pois?: MapPoint[];
+  position?: Coord | null;
+}): Coord {
+  return data.position ?? mapBoundsPoints(data)[0] ?? DEFAULT_MAP_CENTER;
+}
+
+export function lineFeatureData(coordinates: Coord[]) {
+  return coordinates.length > 1
+    ? {
+        type: "Feature" as const,
+        properties: {},
+        geometry: { type: "LineString" as const, coordinates },
+      }
+    : emptyFeatureCollection;
+}
+
+export function routeGeometryData(data: {
+  coordinates?: Coord[];
+  segments?: Coord[][];
+}) {
+  return data.segments?.length
+    ? {
+        type: "Feature" as const,
+        properties: {},
+        geometry: {
+          type: "MultiLineString" as const,
+          coordinates: data.segments,
+        },
+      }
+    : lineFeatureData(data.coordinates ?? []);
+}
+
+export function accuracyCircleData(
+  center?: Coord | null,
+  radiusM?: number | null,
+) {
+  if (!center || !radiusM || radiusM <= 0) return emptyFeatureCollection;
+  const points: Coord[] = [];
+  const latScale = radiusM / 111_320;
+  const lngScale =
+    radiusM /
+    (111_320 * Math.max(0.2, Math.cos((center[1] * Math.PI) / 180)));
+  for (let i = 0; i <= 48; i += 1) {
+    const angle = (i / 48) * Math.PI * 2;
+    points.push([
+      center[0] + Math.cos(angle) * lngScale,
+      center[1] + Math.sin(angle) * latScale,
+    ]);
+  }
+  return {
+    type: "Feature" as const,
+    properties: {},
+    geometry: { type: "Polygon" as const, coordinates: [points] },
+  };
 }

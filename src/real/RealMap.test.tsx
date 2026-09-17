@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  accuracyCircleData,
   endpointDisplayPoints,
+  lineFeatureData,
+  mapInitialCenter,
   mapBoundsPoints,
+  routeGeometryData,
   splitOverlayPoints,
   type MapPoint,
 } from "./RealMap.helpers.ts";
@@ -53,5 +57,56 @@ describe("real map overlays", () => {
       [126.9, 37.5],
       [127.2, 37.8],
     ]);
+  });
+
+  it("centers on the current location before falling back to route or default", () => {
+    expect(
+      mapInitialCenter({
+        coordinates: [
+          [127.2, 37.8],
+          [127.3, 37.9],
+        ],
+        position: [126.92277, 37.57961],
+      }),
+    ).toEqual([126.92277, 37.57961]);
+    expect(
+      mapInitialCenter({
+        coordinates: [
+          [127.2, 37.8],
+          [127.3, 37.9],
+        ],
+      }),
+    ).toEqual([127.2, 37.8]);
+  });
+
+  it("serializes route lines and recorded route segments for the map source", () => {
+    expect(
+      lineFeatureData([
+        [127, 37],
+        [127.01, 37.01],
+      ]),
+    ).toMatchObject({
+      geometry: { type: "LineString" },
+    });
+    expect(
+      routeGeometryData({
+        segments: [
+          [
+            [127, 37],
+            [127.01, 37.01],
+          ],
+        ],
+      }),
+    ).toMatchObject({
+      geometry: { type: "MultiLineString" },
+    });
+  });
+
+  it("builds an accuracy circle around the active GPS position", () => {
+    const circle = accuracyCircleData([127, 37], 18);
+    expect(circle.type).toBe("Feature");
+    if (circle.type !== "Feature") throw new Error("Expected accuracy feature");
+    expect(circle.geometry.type).toBe("Polygon");
+    expect(circle.geometry.coordinates[0]).toHaveLength(49);
   });
 });

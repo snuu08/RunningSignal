@@ -29,4 +29,13 @@ describe("resolveBasemapStyle", () => {
       FALLBACK_BASEMAP,
     );
   });
+
+  it("falls back when MapTiler cannot be reached", async () => {
+    const request = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    await expect(resolveBasemapStyle("test-key", request)).resolves.toBe(
+      FALLBACK_BASEMAP,
+    );
+  });
 });
