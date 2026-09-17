@@ -84,6 +84,10 @@ export type LocationAcquisitionResult = {
   permission: LocationPermissionState;
 };
 
+export type DisplayLocationResult = LocationAcquisitionResult & {
+  displayOnly: true;
+};
+
 export class LocationAcquisitionError extends Error {
   readonly reason: LocationFailureReason;
   readonly userMessage: string;
@@ -275,6 +279,34 @@ export function validateFix(fix: Fix, now = Date.now()): FixValidation {
   return { ok: true, fix };
 }
 
+export function validateDisplayFix(fix: Fix, now = Date.now()): FixValidation {
+  if (!validCoord(fix.coord))
+    return {
+      ok: false,
+      reason: "unknown",
+      developerMessage: "Invalid or non-finite WGS84 coordinate.",
+    };
+  if (!Number.isFinite(fix.at))
+    return {
+      ok: false,
+      reason: "unknown",
+      developerMessage: "Geolocation timestamp is not finite.",
+    };
+  if (!isFreshLocationFix(fix, now))
+    return {
+      ok: false,
+      reason: "stale",
+      developerMessage: `Geolocation fix is older than ${LOCATION_ACCURACY.MAX_FIX_AGE_MS}ms.`,
+    };
+  if (!Number.isFinite(fix.accuracy) || fix.accuracy <= 0)
+    return {
+      ok: false,
+      reason: "inaccurate",
+      developerMessage: "Geolocation accuracy is missing or invalid.",
+    };
+  return { ok: true, fix };
+}
+
 export function locationSamplesFailureReason(
   fixes: Fix[],
   now = Date.now(),
@@ -443,6 +475,25 @@ export function locationAcquisitionFromFixes(
     requiresConfirmation: corrected.requiresConfirmation,
     source: corrected.source,
     permission,
+  };
+}
+
+export function displayLocationFromFix(
+  fix: Fix,
+  permission: LocationPermissionState = "unknown",
+): DisplayLocationResult {
+  const quality = classifyLocationAccuracy(fix.accuracy);
+  return {
+    fix,
+    quality,
+    confidence:
+      quality === "good" ? 1 : quality === "usable" ? 0.72 : quality === "poor" ? 0.35 : 0.15,
+    clusterSpreadMeters: 0,
+    rawSamples: [fix],
+    requiresConfirmation: quality !== "good",
+    source: "browser-geolocation",
+    permission,
+    displayOnly: true,
   };
 }
 

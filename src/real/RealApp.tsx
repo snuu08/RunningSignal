@@ -105,6 +105,7 @@ type PositionMeta = {
   permission: LocationPermissionState;
   source: "browser-geolocation" | "browser-filtered";
   requiresConfirmation: boolean;
+  address?: string;
 };
 
 function gpsQualityLabel(quality: LocationQuality) {
@@ -814,7 +815,7 @@ export function RealApp() {
       setPermissionStatus(permission);
       if (permission !== "granted") return;
       try {
-        const acquired = await acquireLocation();
+        const acquired = await acquireLocation({ purpose: "display" });
         if (cancelled) return;
         setPosition(acquired.fix.coord);
         setPositionMeta({
@@ -976,8 +977,29 @@ export function RealApp() {
   }
   async function usePosition() {
     let acquired;
+    const applyDisplay = (result: Awaited<ReturnType<typeof acquireLocation>>) => {
+      const f = result.fix;
+      setPosition(f.coord);
+      setPermissionStatus(result.permission);
+      setPositionMeta({
+        accuracyM: f.accuracy,
+        at: f.at,
+        quality: result.quality,
+        permission: result.permission,
+        source: result.source,
+        requiresConfirmation: result.requiresConfirmation,
+      });
+      setOrigin({
+        id: `gps:${f.coord.join(",")}`,
+        name: "현재 위치",
+        coord: f.coord,
+      });
+    };
     try {
-      acquired = await acquireLocation();
+      acquired = await acquireLocation({
+        purpose: "display",
+        onUpdate: applyDisplay,
+      });
     } catch (error) {
       if (
         error instanceof LocationAcquisitionError &&
@@ -987,7 +1009,8 @@ export function RealApp() {
       throw error;
     }
     const f = acquired.fix;
-    setPosition(f.coord);
+    const place = await namedPlace(f.coord, "현재 위치");
+    setPosition(place.coord);
     setPermissionStatus(acquired.permission);
     setPositionMeta({
       accuracyM: f.accuracy,
@@ -996,8 +1019,9 @@ export function RealApp() {
       permission: acquired.permission,
       source: acquired.source,
       requiresConfirmation: acquired.requiresConfirmation,
+      address: place.address ?? (place.name === "현재 위치" ? "주소를 확인하지 못했습니다." : place.name),
     });
-    setOrigin(await namedPlace(f.coord, "현재 위치"));
+    setOrigin(place);
     const quality = acquired.quality;
     if (quality === "usable")
       notice(
@@ -2663,7 +2687,7 @@ export function RealApp() {
                   </strong>
                   <span>
                     {positionMeta
-                      ? `정확도 ±${Math.round(positionMeta.accuracyM)}m · ${gpsQualityLabel(positionMeta.quality)} · ${relativeSecondsLabel(positionMeta.at)}`
+                      ? `${positionMeta.address ? positionMeta.address + " · " : ""}정확도 ±${Math.round(positionMeta.accuracyM)}m · ${gpsQualityLabel(positionMeta.quality)} · ${relativeSecondsLabel(positionMeta.at)}`
                       : permissionStatus === "denied"
                         ? locationFailureUserMessage("permission-denied")
                         : permissionStatus === "prompt"

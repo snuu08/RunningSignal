@@ -3,6 +3,7 @@ import {
   bestAccuracyFix,
   classifyLocationAccuracy,
   correctedBrowserLocation,
+  displayLocationFromFix,
   displayLocationForRoute,
   distinctLocationFixes,
   filterLocationOutliers,
@@ -10,6 +11,7 @@ import {
   isFreshLocationFix,
   locationAcquisitionFromFixes,
   locationSamplesFailureReason,
+  validateDisplayFix,
   validateFix,
 } from "./location-quality.ts";
 import { appendFix, type Coord, type Track } from "./core.ts";
@@ -112,6 +114,42 @@ describe("location quality", () => {
         40_000,
       ),
     ).toBe("inaccurate");
+  });
+
+  it("accepts display locations with low accuracy while running validation rejects them", () => {
+    const fix = { coord: [127, 37] as Coord, accuracy: 350, at: 40_000 };
+
+    expect(validateDisplayFix(fix, 40_000)).toMatchObject({ ok: true });
+    expect(validateFix(fix, 40_000)).toMatchObject({
+      ok: false,
+      reason: "inaccurate",
+    });
+    expect(displayLocationFromFix(fix, "prompt")).toMatchObject({
+      quality: "unreliable",
+      permission: "prompt",
+      requiresConfirmation: true,
+      displayOnly: true,
+    });
+  });
+
+  it("marks display locations with 150m accuracy as low quality but usable for display", () => {
+    const fix = { coord: [127, 37] as Coord, accuracy: 150, at: 40_000 };
+
+    expect(validateDisplayFix(fix, 40_000)).toMatchObject({ ok: true });
+    expect(displayLocationFromFix(fix, "granted")).toMatchObject({
+      quality: "poor",
+      requiresConfirmation: true,
+    });
+  });
+
+  it("marks display locations with 20m accuracy as good", () => {
+    const fix = { coord: [127, 37] as Coord, accuracy: 20, at: 40_000 };
+
+    expect(validateDisplayFix(fix, 40_000)).toMatchObject({ ok: true });
+    expect(displayLocationFromFix(fix, "granted")).toMatchObject({
+      quality: "good",
+      requiresConfirmation: false,
+    });
   });
 
   it("rejects movement above the running speed plausibility threshold", () => {

@@ -6,6 +6,7 @@ import {
   correctedLocationToFix,
   distinctLocationFixes,
   displayLocationForRoute,
+  displayLocationFromFix,
   filterLocationOutliers,
   geolocationErrorReason,
   isFreshLocationFix,
@@ -16,6 +17,7 @@ import {
   locationSamplesFailureReason,
   normalizeGeolocationPosition,
   queryGeolocationPermission,
+  validateDisplayFix,
   validateFix,
   type LocationAcquisitionResult,
   type RouteProjection,
@@ -23,6 +25,7 @@ import {
 
 const GPS_SETTLE_MS = LOCATION_ACCURACY.COLLECTION_MS;
 const GPS_STABLE_RADIUS_M = LOCATION_ACCURACY.STABLE_RADIUS_METERS;
+const DISPLAY_SETTLE_MS = 4_000;
 
 export function stabilizedFix(
   fixes: Fix[],
@@ -99,8 +102,13 @@ function geolocationAvailableInThisContext() {
   return ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
 }
 
-export async function acquireLocation(): Promise<LocationAcquisitionResult> {
+export async function acquireLocation(options: {
+  purpose?: "display" | "running";
+  onUpdate?: (result: LocationAcquisitionResult) => void;
+} = {}): Promise<LocationAcquisitionResult> {
+  const purpose = options.purpose ?? "running";
   const permission = await queryGeolocationPermission();
+  geolocationDebug("request-start", { purpose, permission });
   return new Promise((resolve, reject) => {
     if (!geolocationAvailableInThisContext()) {
       const reason =
@@ -111,6 +119,7 @@ export async function acquireLocation(): Promise<LocationAcquisitionResult> {
       return;
     }
     if (permission === "denied") {
+      geolocationDebug("request-blocked", { purpose, permission });
       reject(new LocationAcquisitionError("permission-denied"));
       return;
     }
@@ -137,8 +146,16 @@ export async function acquireLocation(): Promise<LocationAcquisitionResult> {
         );
     };
     const receive = (p: GeolocationPosition) => {
-      const validation = validateFix(normalizeGeolocationPosition(p));
+      const validation =
+        purpose === "display"
+          ? validateDisplayFix(normalizeGeolocationPosition(p))
+          : validateFix(normalizeGeolocationPosition(p));
       if (!validation.ok) {
+        geolocationDebug("fix-rejected", {
+          purpose,
+          reason: validation.reason,
+          accuracy: normalizeGeolocationPosition(p).accuracy,
+        });
         lastFailure = new LocationAcquisitionError(
           validation.reason,
           locationFailureUserMessage(validation.reason),
@@ -148,6 +165,22 @@ export async function acquireLocation(): Promise<LocationAcquisitionResult> {
       }
       const nextSamples = distinctGpsFixes([...samples, validation.fix]);
       samples.splice(0, samples.length, ...nextSamples);
+      if (purpose === "display") {
+        const result = displayLocationFromFix(validation.fix, permission);
+        geolocationDebug("display-accepted", {
+          accuracy: result.fix.accuracy,
+          longitude: result.fix.coord[0],
+          latitude: result.fix.coord[1],
+        });
+        options.onUpdate?.(result);
+        const best = samples.reduce(
+          (picked, item) => (item.accuracy < picked.accuracy ? item : picked),
+          validation.fix,
+        );
+        if (samples.length >= 2 && best.accuracy <= 30)
+          finish(displayLocationFromFix(best, permission));
+        return;
+      }
       const result = locationAcquisitionFromFixes(
         samples,
         Date.now(),
@@ -170,6 +203,7 @@ export async function acquireLocation(): Promise<LocationAcquisitionResult> {
     };
     const fail = (e: GeolocationPositionError) => {
       const reason = geolocationErrorReason(e);
+      geolocationDebug("request-failed", { purpose, code: e.code, reason });
       const error = new LocationAcquisitionError(
         reason,
         locationFailureUserMessage(reason),
@@ -181,12 +215,19 @@ export async function acquireLocation(): Promise<LocationAcquisitionResult> {
     timer = window.setTimeout(
       () =>
         finish(
-          locationAcquisitionFromFixes(samples, Date.now(), permission),
+          purpose === "display" && samples.length
+            ? displayLocationFromFix(
+                samples.reduce((picked, item) =>
+                  item.accuracy < picked.accuracy ? item : picked,
+                ),
+                permission,
+              )
+            : locationAcquisitionFromFixes(samples, Date.now(), permission),
           samples.length
             ? new LocationAcquisitionError(locationSamplesFailureReason(samples))
             : (lastFailure ?? new LocationAcquisitionError("timeout")),
         ),
-      GPS_SETTLE_MS,
+      purpose === "display" ? DISPLAY_SETTLE_MS : GPS_SETTLE_MS,
     );
     const id = navigator.geolocation.watchPosition(
       receive,
@@ -423,6 +464,11 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
       routeProgressM.current = null;
     },
   };
+}
+
+function geolocationDebug(event: string, detail: Record<string, unknown>) {
+  if (typeof import.meta !== "undefined" && import.meta.env.DEV)
+    console.debug("[gps]", event, detail);
 }
 
 function startDistanceAccuracyCredit(
