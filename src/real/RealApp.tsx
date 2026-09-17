@@ -16,7 +16,6 @@ import {
   bearingDeg,
   cueEtaSec,
   crossingCount,
-  forecast,
   meters,
   nextPoi,
   paceLabel,
@@ -38,8 +37,6 @@ import {
 import {
   candidateIndex,
   waitDisplay,
-  remainingRawDisplay,
-  isCurrentSignalView,
   type RoutesResponse,
   type StatusResponse,
   type SignalCoverage,
@@ -69,6 +66,8 @@ import {
 } from "./storage.ts";
 import { RealMap } from "./RealMap.tsx";
 import type { MapPoint } from "./RealMap.helpers.ts";
+import { CurrentStatePanel } from "./features/signals/CurrentStatePanel.tsx";
+import { liveSignalGuidance } from "./features/signals/liveSignalGuidance.ts";
 import {
   applyPaceSlot,
   formatPaceSpoken,
@@ -579,58 +578,6 @@ function Auth({
   );
 }
 
-function CurrentStatePanel({ payload }: { payload: unknown }) {
-  const rec = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
-  const current = isCurrentSignalView(rec?.current) ? rec.current : null;
-  if (!current)
-    return (
-      <p className="muted">현재 상태 해석 결과가 없습니다. 원문을 확인하세요.</p>
-    );
-  const age =
-    current.sourceAgeMs == null
-      ? "원천 시각 없음"
-      : `${Math.round(current.sourceAgeMs / 1000)}초 전 원천`;
-  return (
-    <article>
-      <h2>현재 보행신호 (예측 아님)</h2>
-      <p>교차로 ID: {current.itstId ?? "없음"}</p>
-      <p>
-        {current.stale ? "지연된 응답 · " : ""}
-        {current.missingSourceTime ? "원천 시각 없음 · " : ""}
-        {age}
-      </p>
-      {current.pedestrian.length ? (
-        <ul>
-          {current.pedestrian.map((row) => (
-            <li key={row.key}>
-              {row.direction} · {row.key}: {row.statusName}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p>보행신호 상태명이 비어 있습니다.</p>
-      )}
-      <h3>잔여값</h3>
-      {current.remainingPedestrian.length ? (
-        <ul>
-          {current.remainingPedestrian.map((row) => (
-            <li key={row.key}>
-              {row.direction} · {row.key}: {remainingRawDisplay(row.raw)}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p>이 응답에는 보행 잔여 필드가 없습니다. 현시(phase)와 잔여(timing)는 다른 서비스입니다.</p>
-      )}
-      <ul>
-        {current.notes.map((note) => (
-          <li key={note}>{note}</li>
-        ))}
-      </ul>
-    </article>
-  );
-}
-
 export function RealApp() {
   const navigate = useNavigate(),
     locationState = useLocation(),
@@ -753,69 +700,12 @@ export function RealApp() {
       : null;
   const livePace = rollingPace30 ?? rollingPace60 ?? pace;
   const routeForecast = liveSignals && route ? forecasts[route.id] : null;
-  const liveSignal = (() => {
-    if (!routeForecast || !along || !validPace(livePace) || liveNow === null)
-      return null;
-    const next = routeForecast.crossings.find(
-      (c) => typeof c.atM === "number" && c.atM > along.traveledM + 5,
-    );
-    if (!next || typeof next.atM !== "number")
-      return {
-        current: "현재 보행신호: 실시간 진단 화면에서만 확인",
-        arrival: "예상 도착 시 신호: 미확인",
-        guidance: "실제 신호를 직접 확인한 뒤 건너세요.",
-        waitSec: null as number | null,
-        remainM: null as number | null,
-        etaSec: null as number | null,
-      };
-    const remainM = Math.max(0, next.atM - along.traveledM),
-      etaSec = (remainM / 1000) * livePace;
-    if (!next.plan || !(next.widthM && next.widthM > 0))
-      return {
-        current: "현재 보행신호: 실시간 진단 화면에서만 확인",
-        arrival: "예상 도착 시 신호: 미확인",
-        guidance: "실제 신호를 직접 확인한 뒤 건너세요.",
-        waitSec: null as number | null,
-        remainM,
-        etaSec,
-      };
-    const projected = forecast(
-      remainM,
-      livePace,
-      liveNow,
-      [
-        {
-          id: next.id,
-          name: next.id,
-          atM: remainM,
-          widthM: next.widthM,
-          plan: next.plan,
-        },
-      ],
-      true,
-      liveNow,
-    );
-    const waitSec = projected.crossings[0]?.waitSec ?? null,
-      nearCrossing = remainM < 30;
-    return {
-      current: "현재 보행신호: 실시간 진단 화면에서만 확인",
-      arrival:
-        waitSec === null
-          ? "예상 도착 시 신호: 미확인"
-          : `예상 도착 시 신호: 대기 약 ${Math.round(waitSec)}초`,
-      guidance:
-        waitSec === null
-          ? "실제 신호를 직접 확인한 뒤 건너세요."
-          : nearCrossing
-            ? "횡단보도 앞입니다. 속도보다 안전 확인이 먼저입니다."
-            : waitSec >= 5 && waitSec <= 45
-              ? "현재 속도보다 약간 천천히 가면 다음 녹색 구간에 도착할 가능성이 있습니다."
-              : "현재 페이스를 유지해도 됩니다. 실제 신호를 직접 확인한 뒤 건너세요.",
-      waitSec,
-      remainM,
-      etaSec,
-    };
-  })();
+  const liveSignal = liveSignalGuidance({
+    routeForecast,
+    traveledM: along?.traveledM ?? null,
+    livePace,
+    nowMs: liveNow,
+  });
   const [offSamples, setOffSamples] = useState<
     { offRouteM: number; accuracy: number }[]
   >([]);
