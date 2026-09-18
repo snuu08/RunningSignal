@@ -63,6 +63,7 @@ Commands:
   npm run signals -- collect --provider tdata --service phase --itstId 1537
   npm run signals -- xlsx-csv --input data/signals/inbox/file.xlsx
   npm run signals -- mae --input data/signals/inbox/field-observation.csv
+  npm run signals -- evaluate --pilot seongnam-namhansanseong-sujin-v1 --observations data/signals/inbox/field-observation.csv
   npm run signals -- validate
   npm run signals -- report
   npm run signals -- pack-verified --crossings data/signals/verified/crossings.json --plans data/signals/verified/plans.json
@@ -352,21 +353,38 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return;
   }
-  if (cmd === "mae") {
-    const input = arg(argv, "--input");
-    if (!input) throw new Error("--input 관측 CSV가 필요합니다.");
+  if (cmd === "mae" || cmd === "evaluate") {
+    const input =
+      cmd === "evaluate" ? arg(argv, "--observations") : arg(argv, "--input");
+    const pilot = arg(argv, "--pilot", "");
+    if (!input)
+      throw new Error(
+        cmd === "evaluate"
+          ? "--observations 관측 CSV가 필요합니다."
+          : "--input 관측 CSV가 필요합니다.",
+      );
     const table = parseCsv(readFileSync(input, "utf8"));
     const rows = table.rows
       .map((r) => validateObservation(r).ok)
       .filter((r): r is NonNullable<typeof r> => !!r);
     const report = evaluateObservations(rows);
-    const out = arg(argv, "--out", join("data/signals/normalized", "mae-report.json"));
+    const out = arg(
+      argv,
+      "--out",
+      join(
+        "data/signals/normalized",
+        cmd === "evaluate" && pilot ? `${pilot}-evaluation.json` : "mae-report.json",
+      ),
+    );
     writeJson(out, {
+      pilot: pilot || null,
       ...report,
       fieldRows: rows.filter((r) => !r.synthetic).length,
       syntheticRows: rows.filter((r) => r.synthetic).length,
+      requiredMinimumSamples: 10,
+      accuracyVerified: report.wait.n >= 10 && report.accuracyClaim !== "unverified",
     });
-    console.log(JSON.stringify({ wrote: out, waitN: report.wait.n, unpredictable: report.unpredictable, accuracyClaim: report.accuracyClaim }, null, 2));
+    console.log(JSON.stringify({ wrote: out, pilot: pilot || null, waitN: report.wait.n, requiredMinimumSamples: 10, unpredictable: report.unpredictable, accuracyClaim: report.accuracyClaim }, null, 2));
     return;
   }
   if (cmd === "pack-verified") {

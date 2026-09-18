@@ -18,10 +18,20 @@ export type RoutesResponse = {
 };
 
 export type SignalReadiness = {
+  apiConfigured?: boolean;
+  apiReachable?: boolean | null;
   configured: { seoul: boolean; utic: boolean; national: boolean };
   reachable: { seoul: boolean | null; utic: null; national: null };
   mappingReady: boolean;
+  planReady?: boolean;
+  freshnessReady?: boolean;
+  coverageReady?: boolean;
+  fieldValidated?: boolean;
+  predictionEligible?: number;
   predictionReady: boolean;
+  activePilot?: string;
+  activeDirection?: string;
+  excludedReasons?: Record<string, number>;
   predictionByRegion: Record<string, boolean>;
 };
 

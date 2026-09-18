@@ -34,6 +34,7 @@ const request = (extra?: Record<string, unknown>) =>
     method: "POST",
     body: JSON.stringify({ ...body, ...extra }),
   });
+const signalNow = Date.now();
 const signalReadyEnv = {
   TMAP_APP_KEY: "key",
   SIGNAL_PUBLIC_PREDICTION: "true",
@@ -46,7 +47,21 @@ const signalReadyEnv = {
         synthetic: false,
         stage: "verified",
         source: "field",
+        sourceCrossingId: "eastbound-a",
         sourceIntersectionId: "1850",
+        internalId: "field:eastbound-a",
+        entryCoord: [127, 37.002],
+        exitCoord: [127, 37.003],
+        travel: {
+          bearingDeg: 0,
+          label: "northbound",
+          evidence: "test route direction mapped to PED-A",
+        },
+        pedestrianSignalGroupId: "field:1850:PED-A",
+        crossingLengthM: 18,
+        paintedWidthM: 4,
+        geometryType: "crossing-endpoints",
+        evidence: [{ kind: "field-note", note: "test" }],
       },
     ],
     plans: [
@@ -54,10 +69,42 @@ const signalReadyEnv = {
         synthetic: false,
         stage: "verified",
         source: "field",
+        sourcePlanId: "plan-a",
+        version: "v1",
         sourceIntersectionId: "1850",
+        pedestrianSignalGroupId: "field:1850:PED-A",
+        cycleSec: 60,
+        epochMs: signalNow - 30_000,
+        entryStartSec: 0,
+        entryEndSec: 30,
+        clearEndSec: 40,
+        validFromMs: signalNow - 3_600_000,
+        validToMs: signalNow + 3_600_000,
+        apply: {
+          timeZone: "Asia/Seoul",
+          weekdays: [],
+          startHm: "00:00",
+          endHm: "24:00",
+          specialDayIds: [],
+          appliesOnUnlistedSpecialDay: false,
+        },
+        uncertaintySec: 0,
+        operationMode: "fixed",
+        evidence: [{ kind: "field-note", note: "test" }],
+        currentPlanConfirmedAt: signalNow,
       },
     ],
-    surveys: [],
+    surveys: [
+      {
+        id: "s1",
+        complete: true,
+        coordinates: [
+          [127, 37],
+          [127, 37.01],
+        ],
+        crossingInternalIds: ["field:eastbound-a"],
+      },
+    ],
   }),
 };
 beforeEach(() => resetApiRuntimeForTests());
@@ -794,7 +841,8 @@ describe("route recommendation contract", () => {
     expect(status.signal.predictionReady).toBe(false);
     expect(status.signalPrediction).toBe(false);
   });
-  it("blocks server predictionReady if any of mapping, scopes, or public flag is missing", async () => {
+  it("requires audited eligible crossings before server predictionReady", async () => {
+    const now = Date.now();
     const fixture = JSON.stringify({
       version: 1,
       synthetic: false,
@@ -803,7 +851,21 @@ describe("route recommendation contract", () => {
           synthetic: false,
           stage: "verified",
           source: "field",
+          sourceCrossingId: "eastbound-a",
           sourceIntersectionId: "1850",
+          internalId: "field:eastbound-a",
+          entryCoord: [127.0001, 37.0001],
+          exitCoord: [127.0003, 37.0001],
+          travel: {
+            bearingDeg: 90,
+            label: "eastbound",
+            evidence: "field survey confirmed eastbound pedestrian group",
+          },
+          pedestrianSignalGroupId: "field:1850:PED-A",
+          crossingLengthM: 18,
+          paintedWidthM: 4,
+          geometryType: "crossing-endpoints",
+          evidence: [{ kind: "field-note", note: "test" }],
         },
       ],
       plans: [
@@ -811,10 +873,42 @@ describe("route recommendation contract", () => {
           synthetic: false,
           stage: "verified",
           source: "field",
+          sourcePlanId: "plan-a",
+          version: "v1",
           sourceIntersectionId: "1850",
+          pedestrianSignalGroupId: "field:1850:PED-A",
+          cycleSec: 60,
+          epochMs: now - 30_000,
+          entryStartSec: 0,
+          entryEndSec: 30,
+          clearEndSec: 40,
+          validFromMs: now - 3_600_000,
+          validToMs: now + 3_600_000,
+          apply: {
+            timeZone: "Asia/Seoul",
+            weekdays: [],
+            startHm: "00:00",
+            endHm: "24:00",
+            specialDayIds: [],
+            appliesOnUnlistedSpecialDay: false,
+          },
+          uncertaintySec: 0,
+          operationMode: "fixed",
+          evidence: [{ kind: "field-note", note: "test" }],
+          currentPlanConfirmedAt: now,
         },
       ],
-      surveys: [],
+      surveys: [
+        {
+          id: "s1",
+          complete: true,
+          coordinates: [
+            [127.0, 37.0001],
+            [127.001, 37.0001],
+          ],
+          crossingInternalIds: ["field:eastbound-a"],
+        },
+      ],
     });
     const full = {
       SIGNAL_VERIFIED_JSON: fixture,
@@ -825,6 +919,7 @@ describe("route recommendation contract", () => {
       await handleApi(new Request("https://app.test/api/status"), full)
     ).json();
     expect(ready.signal.mappingReady).toBe(true);
+    expect(ready.signal.predictionEligible).toBe(1);
     expect(ready.signal.predictionReady).toBe(true);
     for (const missing of [
       { ...full, SIGNAL_PUBLIC_PREDICTION: "false" },
@@ -836,5 +931,16 @@ describe("route recommendation contract", () => {
       ).json();
       expect(blocked.signal.predictionReady).toBe(false);
     }
+    const stale = await (
+      await handleApi(new Request("https://app.test/api/status"), {
+        ...full,
+        SIGNAL_VERIFIED_JSON: fixture.replace(
+          `"currentPlanConfirmedAt":${now}`,
+          `"currentPlanConfirmedAt":${now - 120_000}`,
+        ),
+      })
+    ).json();
+    expect(stale.signal.predictionReady).toBe(false);
+    expect(stale.signal.excludedReasons.stale_plan).toBe(1);
   });
 });

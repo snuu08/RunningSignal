@@ -7,6 +7,7 @@ import {
   createVerifiedProvider,
   parsePredictionScopes,
 } from "../src/real/signals/provider.ts";
+import { auditVerifiedBundle } from "../src/real/signals/audit.ts";
 import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
 import {
   continuity,
@@ -88,21 +89,46 @@ function predictionFromEnv(env: Env) {
   const bundle = loadVerifiedBundle(env);
   const scopes = parsePredictionScopes(env.SIGNAL_PREDICTION_SCOPES);
   const publicOn = env.SIGNAL_PUBLIC_PREDICTION === "true";
-  const mappingReady = bundle.crossings.length > 0;
-  const scopedPlans = bundle.plans.filter((p) =>
-    scopes.some(
-      (s) =>
-        s.source === p.source && s.sourceIntersectionId === p.sourceIntersectionId,
-    ),
-  );
-  const predictionReady = publicOn && scopedPlans.length > 0 && mappingReady;
+  const audit = auditVerifiedBundle(bundle, scopes);
+  const mappingReady = audit.directionMapped > 0 && audit.widthKnown > 0;
+  const planReady = audit.plansVerified > 0 && audit.epochKnown > 0;
+  const freshnessReady =
+    audit.plansVerified > 0 && !("stale_plan" in audit.excludedReasons);
+  const coverageReady =
+    audit.crossingsTotal > 0 &&
+    audit.surveyCovered === audit.crossingsTotal &&
+    !("survey_incomplete" in audit.excludedReasons);
+  const fieldValidated = audit.predictionEligible > 0;
+  const predictionReady = publicOn && audit.predictionEligible > 0;
   const predictionByRegion = {
     서울: predictionReady && scopes.some((s) => s.source === "tdata" || s.source === "field"),
     인천: false,
     대구: false,
-    성남: false,
+    성남:
+      predictionReady &&
+      scopes.some(
+        (s) =>
+          s.source === "field" &&
+          s.sourceIntersectionId.startsWith(
+            "seongnam-namhansanseong-sujin",
+          ),
+      ),
   };
-  return { mappingReady, predictionReady, predictionByRegion, scopes };
+  return {
+    publicOn,
+    mappingReady,
+    planReady,
+    freshnessReady,
+    coverageReady,
+    fieldValidated,
+    predictionEligible: audit.predictionEligible,
+    predictionReady,
+    predictionByRegion,
+    scopes,
+    excludedReasons: audit.excludedReasons,
+    activePilot: "seongnam-namhansanseong-sujin-v1",
+    activeDirection: "남한산성입구역→수진역",
+  };
 }
 const WALKING_EMPTY: Record<string, string> = {
   walkable: "조건에 맞는 보행 경로가 없어요.",
@@ -373,7 +399,19 @@ export async function handleApi(
         : unavailableSignals;
     if (request.method === "GET" && path === "/api/status") {
       const seoulConfigured = !!env.SEOUL_TDATA_API_KEY;
-      const { mappingReady, predictionReady, predictionByRegion } = prediction;
+      const {
+        mappingReady,
+        planReady,
+        freshnessReady,
+        coverageReady,
+        fieldValidated,
+        predictionEligible,
+        predictionReady,
+        predictionByRegion,
+        excludedReasons,
+        activePilot,
+        activeDirection,
+      } = prediction;
       return json({
         places: !!env.KAKAO_REST_API_KEY,
         routes: !!env.TMAP_APP_KEY,
@@ -384,6 +422,11 @@ export async function handleApi(
           ? "검증된 횡단·계획 범위에서만 대기를 계산합니다. 그 외 구간은 미확인입니다."
           : "실제 횡단 방향 매핑·운영계획 검증 전입니다. 신호 대기는 예측하지 않습니다. 키 설정과 예측 가능은 다릅니다.",
         signal: {
+          apiConfigured:
+            seoulConfigured ||
+            !!env.UTIC_SERVICE_KEY ||
+            !!env.DATA_GO_KR_SERVICE_KEY,
+          apiReachable: seoulReachable(),
           configured: {
             seoul: seoulConfigured,
             utic: !!env.UTIC_SERVICE_KEY,
@@ -395,7 +438,15 @@ export async function handleApi(
             national: null,
           },
           mappingReady,
+          planReady,
+          freshnessReady,
+          coverageReady,
+          fieldValidated,
+          predictionEligible,
           predictionReady,
+          activePilot,
+          activeDirection,
+          excludedReasons,
           predictionByRegion,
         },
         utic: {

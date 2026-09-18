@@ -97,6 +97,18 @@ import { FlowIcon, type FlowIconName } from "./FlowIcon.tsx";
 import { RunnerLogo } from "../components/Logo.tsx";
 const regions = ["서울", "인천", "대구", "성남"];
 const emptyCoords: Coord[] = [];
+const GANGNAM_DEMO_ORIGIN: Place = {
+  id: "8144348",
+  name: "강남역 2호선 1번출구",
+  address: "서울 강남구 역삼동 804",
+  coord: [127.02875795264038, 37.498076243713754],
+};
+const GANGNAM_DEMO_DESTINATION: Place = {
+  id: "9248712",
+  name: "국기원",
+  address: "서울 강남구 테헤란로7길 32",
+  coord: [127.03028620611877, 37.50199523828162],
+};
 
 type PositionMeta = {
   accuracyM: number;
@@ -1097,6 +1109,73 @@ export function RealApp() {
       navigate("/real/recommend");
       if (response.partial)
         notice("일부 후보 요청이 실패해 확인된 경로만 보여드려요.");
+    } catch (e) {
+      if (!ctrl.signal.aborted) {
+        navigate("/real/home");
+        throw e;
+      }
+    }
+  }
+  async function loadGangnamDemoRoute() {
+    const demoPace = 360;
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    setTripIntent("destination");
+    setLoop(false);
+    setVia(null);
+    setOrigin(GANGNAM_DEMO_ORIGIN);
+    setDestination(GANGNAM_DEMO_DESTINATION);
+    setPace(demoPace);
+    setRoutes([]);
+    setCandidate(0);
+    setForecasts({});
+    setRecommendReason("walking-baseline");
+    setRecommendNotes([]);
+    setSignalCoverage("unknown");
+    setAvoidanceCheck(null);
+    setDepartureMs(null);
+    navigate("/real/loading");
+    try {
+      const policy = policyFromProfile(profile);
+      const [response] = await Promise.all([
+        api<RoutesResponse>(
+          "routes",
+          {
+            origin: GANGNAM_DEMO_ORIGIN,
+            destination: GANGNAM_DEMO_DESTINATION,
+            waypoints: [],
+            pace: demoPace,
+            policy,
+          },
+          ctrl.signal,
+        ),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+      if (ctrl.signal.aborted) return;
+      const next = response.routes.map((r) =>
+        withGeometry({
+          ...r,
+          name: "강남역 1번출구 → 국기원",
+        }),
+      );
+      if (!next.length) throw new Error("강남 촬영 루트를 확인하지 못했어요.");
+      setRoutes(next);
+      setForecasts(response.forecasts ?? {});
+      setRecommendReason(response.recommendationReason ?? "walking-baseline");
+      setRecommendNotes(
+        response.recommendSentences?.length
+          ? response.recommendSentences
+          : [
+              "강남 촬영용 route입니다. 실제 신호 예측은 현장 검증 전까지 표시하지 않습니다.",
+            ],
+      );
+      setSignalCoverage(response.signalCoverage ?? "unknown");
+      setAvoidanceCheck(response.avoidanceCheck ?? null);
+      setDepartureMs(response.departureMs ?? null);
+      setCandidate(candidateIndex(next, response.recommendedId));
+      navigate("/real/recommend");
+      notice("강남 촬영 루트를 불러왔어요. 실제 신호는 직접 확인해 주세요.");
     } catch (e) {
       if (!ctrl.signal.aborted) {
         navigate("/real/home");
@@ -2678,6 +2757,14 @@ export function RealApp() {
                 <button aria-pressed={pick === "origin"} onClick={() => setPick(pick === "origin" ? null : "origin")}>출발점 선택</button>
                 <button aria-pressed={pick === "destination"} onClick={() => setPick(pick === "destination" ? null : "destination")}>도착점 선택</button>
               </div>
+              <button
+                className="demo-route-button"
+                disabled={busy}
+                onClick={() => void action(loadGangnamDemoRoute)}
+              >
+                <FlowIcon name="route" size={16} />
+                강남 촬영 루트 불러오기
+              </button>
               <div className="gps-status-panel" role="status">
                 <div>
                   <strong>

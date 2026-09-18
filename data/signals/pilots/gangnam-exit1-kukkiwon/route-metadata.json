@@ -1,0 +1,49 @@
+{
+  "pilotId": "gangnam-exit1-kukkiwon-v1",
+  "region": "서울특별시 강남구",
+  "origin": {
+    "name": "강남역 2호선 1번출구",
+    "sourcePlaceId": "8144348",
+    "address": "서울 강남구 역삼동 804",
+    "coord": [127.02875795264038, 37.498076243713754]
+  },
+  "destination": {
+    "name": "국기원",
+    "sourcePlaceId": "9248712",
+    "address": "서울 강남구 테헤란로7길 32",
+    "coord": [127.03028620611877, 37.50199523828162]
+  },
+  "direction": "강남역 1번출구→국기원",
+  "reverseDirectionEnabled": false,
+  "routeSource": "TMAP pedestrian API through production /api/routes",
+  "routeRetrievedAt": "2026-09-18T12:56:32+09:00",
+  "routeStatus": "available",
+  "routeId": "tmap-0",
+  "distanceM": 626,
+  "coordinateSystem": "WGS84",
+  "candidateCount": 1,
+  "containsStairs": true,
+  "containsOverpass": false,
+  "containsAlley": false,
+  "sharpTurns": 2,
+  "zigzags": 0,
+  "crossingCandidateCount": 1,
+  "crossingCandidates": [
+    {
+      "label": "쿡앤쑈 좌측 횡단보도",
+      "coord": [127.0310237121218, 37.498724617379594],
+      "atM": 213.75852169075117,
+      "source": "TMAP instruction",
+      "predictionVerified": false
+    }
+  ],
+  "completeCoverage": false,
+  "predictionEligible": 0,
+  "predictionReady": false,
+  "signalCoverage": "unknown",
+  "waitSec": null,
+  "promoUse": {
+    "safeClaim": "같은 목적지에서 실제 보행 route와 횡단 후보를 비교한다.",
+    "unsafeClaimUntilFieldVerified": "Flow Run route is guaranteed to hit green lights."
+  }
+}

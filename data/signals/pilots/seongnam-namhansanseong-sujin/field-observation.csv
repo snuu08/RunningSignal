@@ -1,0 +1,2 @@
+observation_id,crossing_internal_id,observed_at,day_type,direction,signal_group,vehicle_or_pedestrian,state,green_started_at,green_ended_at,red_started_at,cycle_sec,green_sec,red_sec,flashing_sec,weather,observer,evidence_file,notes
+,,,,남한산성입구역→수진역,,pedestrian,,,,,,,,,,,Do not record vehicle signal as pedestrian signal.
