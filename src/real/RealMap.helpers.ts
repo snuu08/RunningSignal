@@ -10,7 +10,14 @@ export const emptyFeatureCollection = {
 export type MapPoint = {
   coord: Coord;
   name: string;
-  kind?: "pin" | "origin" | "destination";
+  kind?:
+    | "pin"
+    | "origin"
+    | "destination"
+    | "demo-signal-red"
+    | "demo-signal-green"
+    | "demo-signal-next"
+    | "demo-signal-past";
 };
 
 const endpointKinds = new Set(["origin", "destination"]);

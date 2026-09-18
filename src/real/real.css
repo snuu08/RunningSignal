@@ -673,6 +673,28 @@
 .map-mode-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
 .real-shell .map-mode-row button { flex: 1; min-width: 128px; padding: 10px 12px; min-height: 42px; border: 1px solid #ffffff14; background: #ffffff08; color: #d6dbd7; font-size: 13px; }
 .real-shell .map-mode-row button[aria-pressed=true] { background: var(--accent); color: #171b06; border-color: var(--accent); font-weight: 700; }
+.demo-badge { align-self: center; padding: 7px 10px; border: 1px solid #e5f45c4a; border-radius: 999px; background: #e5f45c12; color: var(--accent); font-size: 12px; font-weight: 700; }
+.signal-demo-hero { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 14px 0; padding: 16px; border: 1px solid #e5f45c38; border-radius: 18px; background: #11170b; }
+.signal-demo-hero span { color: #b9c0aa; font-size: 13px; }
+.signal-demo-hero strong, .signal-demo-hero b { color: #f5ff8a; font-size: clamp(24px, 7vw, 38px); line-height: 1.1; letter-spacing: 0; }
+.signal-demo-hero em { grid-column: 1 / -1; color: #e6ecc2; font-style: normal; font-weight: 800; font-size: clamp(17px, 4vw, 22px); }
+.signal-demo-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.signal-demo-card { min-width: 0; padding: 12px 10px; border-radius: 14px; border: 1px solid #ffffff16; background: #141719; color: #d6dbd4; transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease; }
+.signal-demo-card strong, .signal-demo-card span, .signal-demo-card small { display: block; }
+.signal-demo-card strong { font-size: 13px; }
+.signal-demo-card span { margin-top: 7px; font-size: 14px; font-weight: 800; }
+.signal-demo-card small { margin-top: 5px; font-size: 11px; }
+.signal-demo-card.is-red { border-color: #ff5a5a44; }
+.signal-demo-card.is-green { border-color: #50ff7888; background: #10361d; box-shadow: 0 0 28px #50ff7840; animation: signalPulse 900ms ease-out; }
+.signal-demo-card.is-next { transform: translateY(-3px); }
+.signal-demo-card.is-past { opacity: 0.45; }
+.signal-demo-note, .signal-demo-final { padding: 12px 14px; border-radius: 14px; background: #e5f45c12; color: #f0f7b7; font-weight: 800; }
+.signal-demo-final { background: #ffffff0b; color: #f4f5f6; }
+@keyframes signalPulse {
+  0% { transform: scale(0.96); box-shadow: 0 0 0 #50ff7800; }
+  45% { transform: scale(1.04); box-shadow: 0 0 36px #50ff7890; }
+  100% { transform: scale(1); box-shadow: 0 0 28px #50ff7840; }
+}
 .planner-action > small { text-align: center; font-size: 12px; }
 .planner-map { position: relative; min-width: 0; min-height: 420px; height: 100%; align-self: stretch; border-radius: 24px; overflow: hidden; border: 1px solid var(--line); background: #141819; }
 .planner-map > .real-map-wrap, .planner-map .real-map { position: absolute; inset: 0; border: 0; border-radius: 0; height: auto; min-height: 0; width: auto; }
@@ -744,6 +766,11 @@
   .planner-panel { padding: 20px; }
   .beta-label { display: none; }
   .home-bottom-grid { gap: 22px; }
+}
+@media (max-width: 560px) {
+  .signal-demo-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .signal-demo-hero { grid-template-columns: 1fr; }
+  .signal-demo-hero strong, .signal-demo-hero b { font-size: 28px; }
 }
 @media (max-width: 700px) {
   .real-shell { padding: 0 20px calc(108px + env(safe-area-inset-bottom)); }

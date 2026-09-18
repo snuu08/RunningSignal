@@ -19,6 +19,7 @@ import {
   movementHeadingFromFixes,
   nextPoi,
   paceLabel,
+  pathLength,
   progressOnRoute,
   rollingPace,
   routeKey,
@@ -67,6 +68,13 @@ import {
 } from "./storage.ts";
 import { RealMap } from "./RealMap.tsx";
 import type { MapPoint } from "./RealMap.helpers.ts";
+import {
+  SIGNAL_DEMO_ROUTE,
+  demoRunnerState,
+  signalDemoEnabled,
+  demoSignalPoints,
+  demoSignalPredictions,
+} from "./signal-demo.ts";
 import { CurrentStatePanel } from "./features/signals/CurrentStatePanel.tsx";
 import { liveSignalGuidance } from "./features/signals/liveSignalGuidance.ts";
 import {
@@ -632,6 +640,9 @@ export function RealApp() {
       "idle" | "granted" | "denied" | "unsupported"
     >("idle"),
     [runHeading, setRunHeading] = useState<number | null>(null),
+    [signalDemoRunning, setSignalDemoRunning] = useState(false),
+    [signalDemoStartedAt, setSignalDemoStartedAt] = useState<number | null>(null),
+    [signalDemoElapsedSec, setSignalDemoElapsedSec] = useState(0),
     [persistOn, setPersistOn] = useState(persistLoginEnabled());
   const spoken = useRef("");
   const lastTrustedHeading = useRef<number | null>(null);
@@ -737,6 +748,18 @@ export function RealApp() {
     }
   }
   const route = routes[candidate] ?? null;
+  const signalDemo = signalDemoEnabled(locationState.search);
+  const demoDurationSec = 38;
+  const demoDistanceM = pathLength(SIGNAL_DEMO_ROUTE.coordinates);
+  const demoProgressM = Math.min(
+    demoDistanceM,
+    (signalDemoElapsedSec / demoDurationSec) * demoDistanceM,
+  );
+  const demoRunner = demoRunnerState(SIGNAL_DEMO_ROUTE, demoProgressM);
+  const demoPredictions = demoSignalPredictions(demoProgressM, pace);
+  const demoNextSignal =
+    demoPredictions.find((p) => p.atM > demoProgressM + 5) ?? null;
+  const demoAllPassed = signalDemoElapsedSec >= demoDurationSec;
   const liveSignals = showSignalWait(status?.signal?.predictionReady === true);
   const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
   const travelSec = route ? (route.distanceM / 1000) * pace : 0;
@@ -793,6 +816,17 @@ export function RealApp() {
     livePace,
     nowMs: liveNow,
   });
+  useEffect(() => {
+    if (!signalDemoRunning || signalDemoStartedAt === null) return;
+    const tick = () => {
+      const elapsed = (Date.now() - signalDemoStartedAt) / 1000;
+      setSignalDemoElapsedSec(Math.min(demoDurationSec, elapsed));
+      if (elapsed >= demoDurationSec) setSignalDemoRunning(false);
+    };
+    tick();
+    const timer = window.setInterval(tick, 100);
+    return () => window.clearInterval(timer);
+  }, [signalDemoRunning, signalDemoStartedAt, demoDurationSec]);
   const [offSamples, setOffSamples] = useState<
     { offRouteM: number; accuracy: number }[]
   >([]);
@@ -1763,7 +1797,95 @@ export function RealApp() {
       </section>
     );
   else if (page === "run")
-    content = run.live ? (
+    content = signalDemo ? (
+      <section>
+        <div className="section-title">
+          <h1>신호 타이밍 시연</h1>
+          <span className="demo-badge">행사 시연 · 예측 시뮬레이션</span>
+        </div>
+        <RealMap
+          coordinates={SIGNAL_DEMO_ROUTE.coordinates}
+          position={demoRunner.coord}
+          positionAccuracyM={8}
+          fitToken="signal-demo"
+          follow={true}
+          heading={demoRunner.heading}
+          mapBearingMode="course"
+          pois={[
+            { coord: SIGNAL_DEMO_ROUTE.coordinates[0], name: "강남역 1번출구", kind: "origin" },
+            { coord: SIGNAL_DEMO_ROUTE.coordinates.at(-1)!, name: "국기원", kind: "destination" },
+            ...demoSignalPoints(demoProgressM, demoPredictions),
+          ]}
+        />
+        <div className="signal-demo-hero">
+          <span>현재 페이스</span>
+          <strong>6&apos;00&quot;/km</strong>
+          <span>
+            다음 신호까지{" "}
+            {demoNextSignal ? `${Math.max(0, Math.round(demoNextSignal.atM - demoProgressM))}m` : "완료"}
+          </span>
+          <b>
+            {demoNextSignal
+              ? `도착 예상 ${Math.round(demoNextSignal.etaSec)}초 후`
+              : "시연 완료"}
+          </b>
+          <em>
+            {demoNextSignal
+              ? `현재 페이스 유지 · 예상 대기 ${Math.round(demoNextSignal.waitSec)}초`
+              : "신호등을 피한 것이 아닙니다. 도착 시간을 예측해 대기가 적은 경로를 선택했습니다."}
+          </em>
+        </div>
+        <div className="signal-demo-row">
+          {demoPredictions.map((p) => {
+            const passed = p.atM < demoProgressM - 8;
+            const next = demoNextSignal?.signalId === p.signalId;
+            return (
+              <div
+                key={p.signalId}
+                className={`signal-demo-card ${p.predictedState === "green" ? "is-green" : "is-red"} ${next ? "is-next" : ""} ${passed ? "is-past" : ""}`}
+              >
+                <strong>{p.signalId}</strong>
+                <span>{p.predictedState === "green" ? "초록 예측" : "대기 예측"}</span>
+                <small>ETA {Math.round(p.etaSec)}초 · wait {Math.round(p.waitSec)}초</small>
+              </div>
+            );
+          })}
+        </div>
+        <p className="signal-demo-note">
+          {demoNextSignal?.waitSec === 0
+            ? "타이밍 일치 · 대기 없이 통과 예상"
+            : "도착 시간을 계산 중입니다."}
+        </p>
+        {demoAllPassed && (
+          <p className="signal-demo-final">
+            신호등을 피한 것이 아닙니다. 도착 시간을 예측해 대기가 적은 경로를 선택했습니다.
+          </p>
+        )}
+        <div className="button-row">
+          <button
+            className="primary"
+            onClick={() => {
+              setSignalDemoElapsedSec(0);
+              setSignalDemoStartedAt(Date.now());
+              setSignalDemoRunning(true);
+            }}
+          >
+            {signalDemoRunning ? "시연 중" : "시연 시작"}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => {
+              setSignalDemoElapsedSec(0);
+              setSignalDemoStartedAt(null);
+              setSignalDemoRunning(false);
+            }}
+          >
+            다시 보기
+          </button>
+        </div>
+        <small>데모 데이터입니다. 실제 서울 신호 데이터로 표시하지 않습니다.</small>
+      </section>
+    ) : run.live ? (
       <section>
         <div className="section-title">
           <h1>
