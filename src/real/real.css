@@ -649,6 +649,8 @@
 .real-shell .location-tools button:first-child, .real-shell .location-tools button[aria-pressed=true] { color: var(--accent); }
 .real-shell .demo-route-button { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin: 0 0 14px; border: 1px solid #e5f45c35; border-radius: 12px; background: #e5f45c0b; color: var(--accent); font-size: 13px; font-weight: 700; }
 .real-shell .demo-route-button:hover:not(:disabled) { background: #e5f45c15; }
+.real-shell .signal-demo-button { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; margin: 0 0 14px; border: 1px solid #50ff7860; border-radius: 12px; background: #50ff7815; color: #dfffe5; font-size: 14px; font-weight: 800; box-shadow: 0 0 26px #50ff7818; }
+.real-shell .signal-demo-button:hover:not(:disabled) { background: #50ff7824; }
 .gps-status-panel { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; padding: 12px 14px; border: 1px solid #ffffff12; border-radius: 14px; background: #0d1112; color: #c6ccca; }
 .gps-status-panel > div:first-child { display: grid; gap: 4px; min-width: 0; }
 .gps-status-panel strong { color: #f0f3ea; font-size: 13px; }

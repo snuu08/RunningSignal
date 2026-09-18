@@ -70,7 +70,9 @@ import { RealMap } from "./RealMap.tsx";
 import type { MapPoint } from "./RealMap.helpers.ts";
 import {
   SIGNAL_DEMO_ROUTE,
+  SIGNAL_DEMO_PACE_SEC_PER_KM,
   demoRunnerState,
+  demoSignalDisplayState,
   signalDemoEnabled,
   demoSignalPoints,
   demoSignalPredictions,
@@ -118,6 +120,7 @@ const GANGNAM_DEMO_DESTINATION: Place = {
   address: "서울 강남구 테헤란로7길 32",
   coord: [127.03028620611877, 37.50199523828162],
 };
+const SIGNAL_DEMO_SESSION_KEY = "flow-signal-demo";
 
 type PositionMeta = {
   accuracyM: number;
@@ -748,7 +751,10 @@ export function RealApp() {
     }
   }
   const route = routes[candidate] ?? null;
-  const signalDemo = signalDemoEnabled(locationState.search);
+  const signalDemo =
+    signalDemoEnabled(locationState.search) ||
+    (typeof sessionStorage !== "undefined" &&
+      sessionStorage.getItem(SIGNAL_DEMO_SESSION_KEY) === "yes");
   const demoDurationSec = 38;
   const demoDistanceM = pathLength(SIGNAL_DEMO_ROUTE.coordinates);
   const demoProgressM = Math.min(
@@ -756,10 +762,14 @@ export function RealApp() {
     (signalDemoElapsedSec / demoDurationSec) * demoDistanceM,
   );
   const demoRunner = demoRunnerState(SIGNAL_DEMO_ROUTE, demoProgressM);
-  const demoPredictions = demoSignalPredictions(demoProgressM, pace);
+  const demoPredictions = demoSignalPredictions(demoProgressM, SIGNAL_DEMO_PACE_SEC_PER_KM);
   const demoNextSignal =
     demoPredictions.find((p) => p.atM > demoProgressM + 5) ?? null;
   const demoAllPassed = signalDemoElapsedSec >= demoDurationSec;
+  useEffect(() => {
+    if (signalDemoEnabled(locationState.search))
+      sessionStorage.setItem(SIGNAL_DEMO_SESSION_KEY, "yes");
+  }, [locationState.search]);
   const liveSignals = showSignalWait(status?.signal?.predictionReady === true);
   const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
   const travelSec = route ? (route.distanceM / 1000) * pace : 0;
@@ -875,7 +885,7 @@ export function RealApp() {
       notice("진행 중인 러닝을 종료한 뒤 이동해 주세요.");
       return;
     }
-    navigate(`/real/${next}`);
+    navigate(`/real/${next}${signalDemo ? "?demo=signal" : ""}`);
     setMessage("");
   };
   useEffect(() => {
@@ -1500,7 +1510,7 @@ export function RealApp() {
         <p>FLOW RUN을 준비하고 있어요.</p>
       </section>
     );
-  else if ((!user && !guest) || page === "auth")
+  else if (((!user && !guest) || page === "auth") && !signalDemo)
     content = (
       <Auth
         recovering={recovering}
@@ -1508,11 +1518,14 @@ export function RealApp() {
         onGuest={() => {
           setGuest(true);
           sessionStorage.setItem("flow-real-guest", "yes");
-          go("home");
+          if (signalDemo) {
+            sessionStorage.setItem(SIGNAL_DEMO_SESSION_KEY, "yes");
+            navigate("/real/run?demo=signal");
+          } else go("home");
         }}
       />
     );
-  else if (!profile.onboarded)
+  else if (!profile.onboarded && !signalDemo)
     content = (
       <section>
         <p className="eyebrow">WELCOME TO FLOW RUN</p>
@@ -1837,15 +1850,21 @@ export function RealApp() {
         </div>
         <div className="signal-demo-row">
           {demoPredictions.map((p) => {
-            const passed = p.atM < demoProgressM - 8;
-            const next = demoNextSignal?.signalId === p.signalId;
+            const state = demoSignalDisplayState(
+              p,
+              demoProgressM,
+              demoNextSignal?.signalId ?? null,
+            );
+            const passed = state === "past";
+            const next = state === "next-green" || state === "next-red";
+            const green = state === "next-green";
             return (
               <div
                 key={p.signalId}
-                className={`signal-demo-card ${p.predictedState === "green" ? "is-green" : "is-red"} ${next ? "is-next" : ""} ${passed ? "is-past" : ""}`}
+                className={`signal-demo-card ${green ? "is-green" : "is-red"} ${next ? "is-next" : ""} ${passed ? "is-past" : ""}`}
               >
                 <strong>{p.signalId}</strong>
-                <span>{p.predictedState === "green" ? "초록 예측" : "대기 예측"}</span>
+                <span>{green ? "초록 예측" : passed ? "통과" : "대기 예측"}</span>
                 <small>ETA {Math.round(p.etaSec)}초 · wait {Math.round(p.waitSec)}초</small>
               </div>
             );
@@ -1881,6 +1900,17 @@ export function RealApp() {
             }}
           >
             다시 보기
+          </button>
+          <button
+            onClick={() => {
+              sessionStorage.removeItem(SIGNAL_DEMO_SESSION_KEY);
+              setSignalDemoRunning(false);
+              setSignalDemoStartedAt(null);
+              setSignalDemoElapsedSec(0);
+              navigate("/real/home");
+            }}
+          >
+            일반 모드로 돌아가기
           </button>
         </div>
         <small>데모 데이터입니다. 실제 서울 신호 데이터로 표시하지 않습니다.</small>
@@ -2999,6 +3029,18 @@ export function RealApp() {
                 <FlowIcon name="route" size={16} />
                 강남 촬영 루트 불러오기
               </button>
+              {guest && (
+                <button
+                  className="signal-demo-button"
+                  onClick={() => {
+                    sessionStorage.setItem(SIGNAL_DEMO_SESSION_KEY, "yes");
+                    navigate("/real/run?demo=signal");
+                  }}
+                >
+                  <FlowIcon name="activity" size={16} />
+                  행사 신호 시연
+                </button>
+              )}
               <div className="gps-status-panel" role="status">
                 <div>
                   <strong>

@@ -43,11 +43,13 @@ export const SIGNAL_DEMO_ROUTE: Route = {
 };
 
 export const SIGNAL_DEMO_SIGNALS = [
-  { id: "demo-01", label: "신호 1", atM: 95, cycleSec: 12, greenStartSec: 0, greenEndSec: 8 },
-  { id: "demo-02", label: "신호 2", atM: 215, cycleSec: 12, greenStartSec: 0, greenEndSec: 8 },
-  { id: "demo-03", label: "신호 3", atM: 360, cycleSec: 12, greenStartSec: 0, greenEndSec: 8 },
-  { id: "demo-04", label: "신호 4", atM: 505, cycleSec: 12, greenStartSec: 0, greenEndSec: 8 },
+  { id: "demo-01", label: "신호 1", atM: 95, cycleSec: 20, greenStartSec: 0, greenEndSec: 14 },
+  { id: "demo-02", label: "신호 2", atM: 215, cycleSec: 20, greenStartSec: 0, greenEndSec: 14 },
+  { id: "demo-03", label: "신호 3", atM: 360, cycleSec: 20, greenStartSec: 0, greenEndSec: 14 },
+  { id: "demo-04", label: "신호 4", atM: 505, cycleSec: 20, greenStartSec: 0, greenEndSec: 14 },
 ] as const;
+export const SIGNAL_DEMO_PACE_SEC_PER_KM = 360;
+export const SIGNAL_DEMO_GREEN_HOLD_SEC = 2;
 
 export function signalDemoEnabled(search: string) {
   return (
@@ -79,14 +81,18 @@ export function demoRunnerState(route: Route, progressM: number) {
 
 export function demoSignalPredictions(
   progressM: number,
-  paceSecPerKm = 360,
+  paceSecPerKm = SIGNAL_DEMO_PACE_SEC_PER_KM,
 ): DemoSignalPrediction[] {
   return SIGNAL_DEMO_SIGNALS.map((signal) => {
     const remainM = Math.max(0, signal.atM - progressM);
     const etaSec = (remainM / 1000) * paceSecPerKm;
-    const phase = etaSec;
+    const phase = ((etaSec % signal.cycleSec) + signal.cycleSec) % signal.cycleSec;
     const inGreen = phase >= signal.greenStartSec && phase <= signal.greenEndSec;
-    const waitSec = inGreen ? 0 : Math.max(0, signal.greenStartSec - phase);
+    const waitSec = inGreen
+      ? 0
+      : phase < signal.greenStartSec
+        ? signal.greenStartSec - phase
+        : signal.cycleSec - phase + signal.greenStartSec;
     return {
       signalId: signal.id,
       atM: signal.atM,
@@ -103,20 +109,29 @@ export function demoSignalPredictions(
 export function demoSignalPoints(progressM: number, predictions: DemoSignalPrediction[]): MapPoint[] {
   const next = predictions.find((p) => p.atM > progressM + 5);
   return predictions.map((p) => {
-    const passed = p.atM < progressM - 8;
-    const state = passed
-      ? "demo-signal-past"
-      : next?.signalId === p.signalId
-        ? p.predictedState === "green"
+    const display = demoSignalDisplayState(p, progressM, next?.signalId ?? null);
+    const state =
+      display === "past"
+        ? "demo-signal-past"
+        : display === "next-green"
           ? "demo-signal-green"
-          : "demo-signal-next"
-        : p.predictedState === "green"
-          ? "demo-signal-green"
-          : "demo-signal-red";
+          : display === "next-red"
+            ? "demo-signal-next"
+            : "demo-signal-red";
     return {
       coord: coordAtDistance(SIGNAL_DEMO_ROUTE, p.atM),
       name: `${p.signalId} · 예상 대기 ${Math.round(p.waitSec)}초`,
       kind: state,
     };
   });
+}
+
+export function demoSignalDisplayState(
+  signal: DemoSignalPrediction,
+  progressM: number,
+  nextSignalId: string | null,
+): "past" | "next-red" | "next-green" | "red" {
+  if (signal.atM < progressM - 8) return "past";
+  if (signal.signalId !== nextSignalId) return "red";
+  return signal.predictedState === "green" ? "next-green" : "next-red";
 }

@@ -432,6 +432,39 @@ describe("real-mode screen flow", () => {
       expect(screen.getByText(/5분 00초\/km/)).toBeTruthy(),
     );
   });
+
+  it("opens the signal demo directly without login or onboarding", async () => {
+    sessionStorage.removeItem("flow-real-guest");
+    render(
+      <MemoryRouter initialEntries={["/real/run?demo=signal"]}>
+        <RealApp />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("신호 타이밍 시연")).toBeTruthy();
+    expect(screen.getByText("행사 시연 · 예측 시뮬레이션")).toBeTruthy();
+    expect(screen.getByText("6'00\"/km")).toBeTruthy();
+    await waitFor(() =>
+      expect(sessionStorage.getItem("flow-signal-demo")).toBe("yes"),
+    );
+  });
+
+  it("enters the signal demo from the guest home and keeps demo state after reload", async () => {
+    await saveState("profile:guest", { ...defaultProfile, onboarded: true });
+    render(<MemoryRouter initialEntries={["/real/home"]}><RealApp /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", { name: "행사 신호 시연" }));
+    expect(await screen.findByText("신호 타이밍 시연")).toBeTruthy();
+    expect(sessionStorage.getItem("flow-signal-demo")).toBe("yes");
+
+    cleanup();
+    realMapRenders.length = 0;
+    render(<MemoryRouter initialEntries={["/real/run"]}><RealApp /></MemoryRouter>);
+    expect(await screen.findByText("신호 타이밍 시연")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "일반 모드로 돌아가기" }));
+    await waitFor(() =>
+      expect(sessionStorage.getItem("flow-signal-demo")).toBeNull(),
+    );
+  });
+
   it("selects places by keyboard, swaps endpoints, and invalidates an edited selection", async () => {
     await saveState("profile:guest", { ...defaultProfile, onboarded: true });
     vi.mocked(fetch).mockImplementation(async (input) => {
