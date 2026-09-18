@@ -148,10 +148,10 @@ describe("arrival-aware signal policy", () => {
       ).waitSec,
     ).toBeNull();
   });
-  it("keeps a straight route under 15 seconds but considers alternatives at exactly 15", () => {
+  it("compares whole-route signal simulation instead of a hard max-wait threshold", () => {
     const base = { route: route("1"), forecast: prediction(14.999) },
       alternative = { route: route("2", 1050), forecast: prediction(0, 0) };
-    expect(preferSignalRoute([base, alternative])?.route.id).toBe("1");
+    expect(preferSignalRoute([base, alternative])?.route.id).toBe("2");
     expect(
       preferSignalRoute([{ ...base, forecast: prediction(15) }, alternative])
         ?.route.id,
@@ -192,6 +192,36 @@ describe("arrival-aware signal policy", () => {
     expect(remainingRawDisplay(null)).toBe("잔여값 없음");
     expect(candidateIndex([{ id: "a" }, { id: "b" }], "b")).toBe(1);
     expect(candidateIndex([{ id: "a" }], "missing")).toBe(0);
+  });
+  it("lets many synchronized signals beat fewer signals with larger total delay", () => {
+    const manyZero: Forecast = {
+      waitSec: 0,
+      maxWaitSec: 0,
+      stops: 0,
+      totalSec: 1500,
+      crossings: Array.from({ length: 5 }, (_, i) => ({
+        id: `a${i}`,
+        arrivalMs: epoch + i * 300_000,
+        waitSec: 0,
+      })),
+    };
+    const fewerWait: Forecast = {
+      waitSec: 55,
+      maxWaitSec: 30,
+      stops: 2,
+      totalSec: 1525,
+      crossings: Array.from({ length: 3 }, (_, i) => ({
+        id: `b${i}`,
+        arrivalMs: epoch + i * 300_000,
+        waitSec: i === 0 ? 30 : i === 1 ? 25 : 0,
+      })),
+    };
+    expect(
+      preferSignalRoute([
+        { route: route("1", 4900), forecast: fewerWait },
+        { route: route("2", 5000), forecast: manyZero },
+      ])?.route.id,
+    ).toBe("2");
   });
 });
 
@@ -423,6 +453,28 @@ describe("straight-line and remaining distance", () => {
   it("uses walk speed for crossing time, not the runner pace", () => {
     const fast = forecast(0, 180, epoch + 19000, [crossing(0)], true, epoch);
     expect(fast.waitSec).toBeGreaterThan(0);
+  });
+  it("adds crossing duration to downstream ETA without double-counting entry-to-exit distance", () => {
+    const crossings: Crossing[] = [
+      {
+        ...crossing(100, "a"),
+        exitAtM: 112,
+        widthM: 12,
+        plan: { ...plan, entryStartSec: 15, entryEndSec: 25, clearEndSec: 50 },
+      },
+      {
+        ...crossing(200, "b"),
+        exitAtM: 212,
+        widthM: 1,
+        plan: { ...plan, entryStartSec: 50, entryEndSec: 58, clearEndSec: 60 },
+      },
+    ];
+    const result = forecast(300, 300, epoch, crossings, true, epoch);
+    expect(result.crossings[0].arrivalMs).toBe(epoch + 30_000);
+    expect(result.crossings[0].waitSec).toBe(45);
+    expect(result.crossings[0].crossingSec).toBe(13);
+    expect(result.crossings[1].arrivalMs).toBe(epoch + 114_400);
+    expect(result.totalSec).toBeCloseTo(144.633, 3);
   });
   it("marks overpass avoidance unconfirmed when no facility flags exist", () => {
     const out = applyWalkingPolicy([route("0")], {

@@ -30,6 +30,7 @@ export function toRuntimeCrossing(
   plan: OperatingPlanRecord | null,
   nowMs: number,
   atM: number,
+  exitAtM?: number,
 ): Crossing | null {
   if (!isCrossingGeometry(crossing.geometryType)) return null;
   if (crossing.synthetic) return null;
@@ -75,6 +76,7 @@ export function toRuntimeCrossing(
       id: crossing.internalId,
       name: crossing.travel.label,
       atM,
+      exitAtM,
       widthM: crossing.crossingLengthM,
       plan: null,
     };
@@ -94,6 +96,7 @@ export function toRuntimeCrossing(
     id: crossing.internalId,
     name: crossing.travel.label,
     atM,
+    exitAtM,
     widthM: crossing.crossingLengthM,
     plan: runtime,
   };

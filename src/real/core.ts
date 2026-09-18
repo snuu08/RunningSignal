@@ -64,6 +64,7 @@ export type Crossing = {
   id: string;
   name: string;
   atM: number;
+  exitAtM?: number;
   widthM: number;
   plan: FixedPlan | null;
 };
@@ -77,7 +78,9 @@ export type Forecast = {
     arrivalMs: number | null;
     waitSec: number | null;
     atM?: number;
+    exitAtM?: number;
     widthM?: number;
+    crossingSec?: number;
     plan?: FixedPlan | null;
   }[];
 };
@@ -369,7 +372,6 @@ export function applyWalkingPolicy(
 
   next = rankRoutes(next, policy.detourRatio, policy.detourMaxM);
   if (!next.length) return { routes: [], emptyReason: "detour", avoidance };
-  next = preferFewerCrossings(next, policy);
   return { routes: next, emptyReason: "none", avoidance };
 }
 /** Unknown coverage is never converted to zero stops. Earlier waiting shifts every later ETA. */
@@ -389,11 +391,15 @@ export function forecast(
     known = validPace(pace) && completeCoverage;
   const rows: Forecast["crossings"] = [];
   for (const c of [...crossings].sort((a, b) => a.atM - b.atM)) {
+    const hasExitAtM = Number.isFinite(c.exitAtM);
+    const exitAtM = hasExitAtM ? c.exitAtM! : c.atM;
     if (
       !known ||
       !Number.isFinite(c.atM) ||
       c.atM < previousM ||
+      exitAtM < c.atM ||
       c.atM > routeM ||
+      exitAtM > routeM ||
       !(c.widthM > 0)
     ) {
       known = false;
@@ -402,6 +408,7 @@ export function forecast(
         arrivalMs: null,
         waitSec: null,
         atM: c.atM,
+        exitAtM: c.exitAtM,
         widthM: c.widthM,
         plan: c.plan,
       });
@@ -431,6 +438,7 @@ export function forecast(
         arrivalMs: arrival,
         waitSec: null,
         atM: c.atM,
+        exitAtM: c.exitAtM,
         widthM: c.widthM,
         plan: c.plan,
       });
@@ -449,7 +457,9 @@ export function forecast(
         arrivalMs: arrival,
         waitSec: null,
         atM: c.atM,
+        exitAtM: c.exitAtM,
         widthM: c.widthM,
+        crossingSec: crossSec,
         plan: c.plan,
       });
       continue;
@@ -467,7 +477,9 @@ export function forecast(
         arrivalMs: arrival,
         waitSec: null,
         atM: c.atM,
+        exitAtM: c.exitAtM,
         widthM: c.widthM,
+        crossingSec: crossSec,
         plan: c.plan,
       });
       continue;
@@ -477,19 +489,25 @@ export function forecast(
       arrivalMs: arrival,
       waitSec: w,
       atM: c.atM,
+      exitAtM: c.exitAtM,
       widthM: c.widthM,
+      crossingSec: crossSec,
       plan: c.plan,
     });
-    arrival += w * 1000;
+    arrival += (w + (hasExitAtM ? crossSec : 0)) * 1000;
     wait += w;
     if (w > 0) stops++;
     max = Math.max(max, w);
+    previousM = exitAtM;
   }
+  const totalSec = known
+    ? (arrival + ((routeM - previousM) / 1000) * pace * 1000 - departureMs) / 1000
+    : null;
   return {
     waitSec: known ? wait : null,
     stops: known ? stops : null,
     maxWaitSec: known ? max : null,
-    totalSec: known ? (routeM / 1000) * pace + wait : null,
+    totalSec,
     crossings: rows,
   };
 }
@@ -498,18 +516,14 @@ export function preferSignalRoute(
   policy: RealRoutingPolicy = TRIAL_ROUTING_POLICY,
 ): (typeof candidates)[number] | null {
   const base = candidates[0];
-  if (
-    !base ||
-    base.forecast.maxWaitSec === null ||
-    base.forecast.maxWaitSec < policy.waitThresholdSec
-  )
-    return base ?? null;
+  if (!base || base.forecast.totalSec === null) return base ?? null;
   const extra = allowedExtraMeters(base.route.distanceM, policy);
   const valid = candidates.filter(
     (c) =>
       c.forecast.waitSec !== null &&
       c.forecast.stops !== null &&
       c.forecast.maxWaitSec !== null &&
+      c.forecast.totalSec !== null &&
       c.route.zigzags <= base.route.zigzags &&
       c.route.sharpTurns <= base.route.sharpTurns + policy.extraSharpTurns &&
       c.route.distanceM <= base.route.distanceM + extra,
@@ -517,8 +531,10 @@ export function preferSignalRoute(
   return (
     valid.sort(
       (a, b) =>
-        a.forecast.stops! - b.forecast.stops! ||
+        a.forecast.totalSec! - b.forecast.totalSec! ||
         a.forecast.waitSec! - b.forecast.waitSec! ||
+        a.forecast.stops! - b.forecast.stops! ||
+        a.forecast.maxWaitSec! - b.forecast.maxWaitSec! ||
         a.route.distanceM - b.route.distanceM,
     )[0] ?? base
   );

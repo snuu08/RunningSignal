@@ -276,6 +276,53 @@ describe("recommend copy", () => {
 });
 
 describe("verified provider wiring", () => {
+  it("matches crossings by entry, exit, route order, and direction instead of midpoint", () => {
+    const base = validateCrossing({
+      ...crossingRow,
+      entryLon: "127.00030",
+      entryLat: "37.00000",
+      exitLon: "127.00040",
+      exitLat: "37.00000",
+      bearingDeg: "90",
+      directionLabel: "E",
+      directionEvidence: "test eastbound entry-to-exit mapping",
+    }).ok as CrossingRecord;
+    const route = routeAt("east", [
+      [127.0, 37.0],
+      [127.001, 37.0],
+    ]);
+    const accepted = crossingsAlongRoute(route, [base], 15);
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].atM).toBe(accepted[0].entryAtM);
+    expect(accepted[0].exitAtM).toBeGreaterThan(accepted[0].entryAtM);
+
+    const opposite = validateCrossing({
+      ...crossingRow,
+      sourceCrossingId: "opposite",
+      entryLon: "127.00040",
+      entryLat: "37.00000",
+      exitLon: "127.00030",
+      exitLat: "37.00000",
+      bearingDeg: "270",
+      directionLabel: "W",
+      directionEvidence: "test westbound opposite direction",
+    }).ok as CrossingRecord;
+    expect(crossingsAlongRoute(route, [opposite], 15)).toHaveLength(0);
+
+    const midpointFalsePositive = validateCrossing({
+      ...crossingRow,
+      sourceCrossingId: "midpoint-only",
+      entryLon: "127.00050",
+      entryLat: "37.00063",
+      exitLon: "127.00050",
+      exitLat: "36.99942",
+      bearingDeg: "180",
+      directionLabel: "S",
+      directionEvidence: "midpoint touches route but endpoints do not",
+    }).ok as CrossingRecord;
+    expect(crossingsAlongRoute(route, [midpointFalsePositive], 15)).toHaveLength(0);
+  });
+
   it("places crossings on the polyline and strips plans until a survey+scope exists", async () => {
     const crossing = validateCrossing(crossingRow).ok as CrossingRecord;
     const plan = validatePlan(planRow).ok as OperatingPlanRecord;
@@ -313,6 +360,7 @@ describe("verified provider wiring", () => {
     );
     const ready = await surveyed.inspect(path, epoch);
     expect(ready.completeCoverage).toBe(true);
+    expect(ready.crossings[0].exitAtM).toBeGreaterThan(ready.crossings[0].atM);
     const runtime = toRuntimeCrossing(crossing, plan, epoch, ready.crossings[0].atM);
     expect(runtime?.plan).not.toBeNull();
     expect(

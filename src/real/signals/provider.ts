@@ -119,7 +119,13 @@ export function createVerifiedProvider(
           plan = null;
           exclusions.push({ id: crossing.internalId, reason: "scope_inactive" });
         }
-        const runtime = toRuntimeCrossing(crossing, plan, freshnessNow, hit.atM);
+        const runtime = toRuntimeCrossing(
+          crossing,
+          plan,
+          freshnessNow,
+          hit.entryAtM,
+          hit.exitAtM,
+        );
         if (runtime) located.push(runtime);
       }
       const covering = bundle.surveys.find((s) => surveyCoversRoute(s, route));

@@ -10,10 +10,6 @@ import type { CrossingRecord } from "./schema.ts";
 export const ALONG_ROUTE_MATCH_M = 40;
 export const ALONG_ROUTE_BEARING_DEG = 50;
 
-function midpoint(a: Coord, b: Coord): Coord {
-  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-}
-
 function angleDiffDeg(a: number, b: number): number {
   const d = Math.abs(a - b) % 360;
   return d > 180 ? 360 - d : d;
@@ -34,29 +30,41 @@ function pathBearingAt(path: Coord[], atM: number): number | null {
 
 export type AlongHit = {
   crossing: CrossingRecord;
+  entryAtM: number;
+  exitAtM: number;
   atM: number;
+  entryOffPathM: number;
+  exitOffPathM: number;
   offPathM: number;
   bearingOk: boolean;
 };
 
-/** Place a crossing on the runner path. atM follows the polyline, not a straight cut. */
+/** Place a crossing on the runner path. atM is the ENTRY distance, not midpoint. */
 export function locateCrossingOnRoute(
   route: Route,
   crossing: CrossingRecord,
   matchM = ALONG_ROUTE_MATCH_M,
 ): AlongHit | null {
-  const mid = midpoint(crossing.entryCoord, crossing.exitCoord);
-  const along = progressOnRoute(route.coordinates, mid);
-  if (along.offRouteM > matchM) return null;
-  const travel = pathBearingAt(route.coordinates, along.traveledM);
+  const entry = progressOnRoute(route.coordinates, crossing.entryCoord);
+  const exit = progressOnRoute(route.coordinates, crossing.exitCoord);
+  if (entry.offRouteM > matchM || exit.offRouteM > matchM) return null;
+  if (exit.traveledM <= entry.traveledM) return null;
+  const travel = pathBearingAt(
+    route.coordinates,
+    (entry.traveledM + exit.traveledM) / 2,
+  );
   const bearingOk =
     travel === null
       ? false
       : angleDiffDeg(travel, crossing.travel.bearingDeg) <= ALONG_ROUTE_BEARING_DEG;
   return {
     crossing,
-    atM: along.traveledM,
-    offPathM: along.offRouteM,
+    entryAtM: entry.traveledM,
+    exitAtM: exit.traveledM,
+    atM: entry.traveledM,
+    entryOffPathM: entry.offRouteM,
+    exitOffPathM: exit.offRouteM,
+    offPathM: Math.max(entry.offRouteM, exit.offRouteM),
     bearingOk,
   };
 }
