@@ -113,7 +113,11 @@ function routesBody(route = routeFixture(), partial = false) {
 }
 
 function installGoodGeolocation(
-  coord = { longitude: 127, latitude: 37, accuracy: 8 },
+  coord: { longitude: number; latitude: number; accuracy: number; heading?: number | null } = {
+    longitude: 127,
+    latitude: 37,
+    accuracy: 8,
+  },
 ) {
   let watchSuccess: ((p: GeolocationPosition) => void) | null = null;
   const position = (
@@ -555,6 +559,50 @@ describe("real-mode screen flow", () => {
     await waitFor(() => expect(latestMapProps().follow).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "내 위치 따라가기" }));
     await waitFor(() => expect(latestMapProps().follow).toBe(true));
+  });
+
+  it("passes trusted GPS heading and movement heading to the running map", async () => {
+    const route = routeFixture();
+    const pushFix = installGoodGeolocation({
+      longitude: 127,
+      latitude: 37,
+      accuracy: 8,
+      heading: 92,
+    });
+    const now = Date.now();
+    await saveState("profile:guest", { ...defaultProfile, onboarded: true });
+    await saveState("active:guest", {
+      id: "live-heading",
+      startedAt: now - 10_000,
+      phase: "running",
+      track: {
+        fixes: [{ coord: [127, 37], accuracy: 8, at: now - 10_000 }],
+        distanceM: 0,
+        gapSec: 0,
+        stoppedSec: 0,
+      },
+      activeSec: 0,
+      manualPauseSec: 0,
+      lastTick: now - 10_000,
+      route,
+      departure: route.coordinates[0],
+    });
+    vi.mocked(fetch).mockImplementation(async (input) =>
+      String(input).includes("status") ? Response.json(statusBody()) : Response.json({}),
+    );
+
+    render(<MemoryRouter initialEntries={["/real/run"]}><RealApp /></MemoryRouter>);
+    await screen.findByText("잠시 쉬는 중");
+    fireEvent.click(screen.getByRole("button", { name: "계속하기" }));
+    await waitFor(() => expect(latestMapProps().heading).toBeCloseTo(92, 0));
+
+    act(() =>
+      pushFix(
+        { longitude: 127.001, latitude: 37, accuracy: 8, heading: null },
+        now + 15_000,
+      ),
+    );
+    await waitFor(() => expect(latestMapProps().heading).toBeCloseTo(90, 0));
   });
 
   it("shows reroute after sustained off-route fixes and recalculates from here", async () => {

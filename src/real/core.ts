@@ -598,6 +598,41 @@ export function bearingDeg(a: Coord, b: Coord): number {
   const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δ);
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
+export function normalizeHeading(value: number | null | undefined): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  return ((value % 360) + 360) % 360;
+}
+export function shortestHeadingDelta(from: number, to: number): number {
+  return ((to - from + 540) % 360) - 180;
+}
+export function smoothHeading(previous: number | null, next: number | null): number | null {
+  const normalized = normalizeHeading(next);
+  if (normalized === null) return previous;
+  if (previous === null || !Number.isFinite(previous)) return normalized;
+  return previous + shortestHeadingDelta(previous, normalized);
+}
+export function movementHeadingFromFixes(
+  fixes: Pick<Fix, "coord" | "accuracy" | "at" | "segmentStart">[],
+  previous: number | null = null,
+): number | null {
+  const usable = fixes
+    .filter((fix) => Number.isFinite(fix.accuracy) && fix.accuracy > 0 && fix.accuracy <= 50)
+    .slice(-5);
+  if (usable.length < 2) return previous;
+  for (let i = usable.length - 1; i > 0; i--) {
+    const a = usable[i - 1],
+      b = usable[i];
+    if (b.segmentStart) continue;
+    const dt = (b.at - a.at) / 1000;
+    if (dt <= 0 || dt > 20) continue;
+    const d = meters(a.coord, b.coord);
+    if (d < Math.max(4, Math.min(a.accuracy, b.accuracy) * 0.6)) continue;
+    const speed = d / dt;
+    if (speed < 0.5 || speed > 8) continue;
+    return smoothHeading(previous, bearingDeg(a.coord, b.coord));
+  }
+  return previous;
+}
 export function cueEtaSec(remainM: number, pace: number): number | null {
   if (!validPace(pace) || !(remainM > 0)) return null;
   return (remainM / 1000) * pace;

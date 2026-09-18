@@ -267,6 +267,45 @@
 .lg-store::before { background: #9ee6a8; }
 .lg-origin::before { background: #b4f6ce; }
 .lg-destination::before { background: #ff8a80; }
+.runner-marker {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 8px 16px #000b);
+}
+.runner-marker-arrow {
+  width: 0;
+  height: 0;
+  border-left: 13px solid transparent;
+  border-right: 13px solid transparent;
+  border-bottom: 33px solid #e5f45c;
+  position: relative;
+  transform: rotate(var(--runner-heading, 0deg));
+  transform-origin: 50% 62%;
+  transition: transform 180ms ease-out;
+}
+.runner-marker-arrow::after {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 9px;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 17px solid #101312;
+}
+.runner-marker::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #101312;
+  border: 2px solid #e5f45c;
+}
+.runner-marker-unknown {
+  opacity: 0.72;
+}
 .real-shell .real-nav {
   position: fixed;
   bottom: 0;
@@ -628,6 +667,12 @@
 .real-shell .pace-slots button.slot-on small { color: #d0d89f; }
 .real-shell .planner-action { margin-top: 20px; }
 .real-shell .planner-action .primary, .real-shell .free-run-panel .primary { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 10px; }
+.run-direction-panel { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 8px; padding: 12px 14px; border: 1px solid #e5f45c30; border-radius: 12px; background: #e5f45c10; color: #f3fac5; }
+.run-direction-panel strong { font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.run-direction-panel span { flex: 0 0 auto; color: #cbd795; font-size: 12px; font-variant-numeric: tabular-nums; }
+.map-mode-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+.real-shell .map-mode-row button { flex: 1; min-width: 128px; padding: 10px 12px; min-height: 42px; border: 1px solid #ffffff14; background: #ffffff08; color: #d6dbd7; font-size: 13px; }
+.real-shell .map-mode-row button[aria-pressed=true] { background: var(--accent); color: #171b06; border-color: var(--accent); font-weight: 700; }
 .planner-action > small { text-align: center; font-size: 12px; }
 .planner-map { position: relative; min-width: 0; min-height: 420px; height: 100%; align-self: stretch; border-radius: 24px; overflow: hidden; border: 1px solid var(--line); background: #141819; }
 .planner-map > .real-map-wrap, .planner-map .real-map { position: absolute; inset: 0; border: 0; border-radius: 0; height: auto; min-height: 0; width: auto; }

@@ -351,6 +351,12 @@ function restrictedBasemap(error: unknown) {
         : String(error ?? "");
   return status === 401 || status === 403 || /403|401|restricted|unauthorized|forbidden/i.test(message);
 }
+function runnerMarkerElement() {
+  const el = document.createElement("div");
+  el.className = "runner-marker";
+  el.innerHTML = `<div class="runner-marker-arrow" aria-hidden="true"></div>`;
+  return el;
+}
 export function RealMap({
   coordinates = [],
   position,
@@ -363,6 +369,7 @@ export function RealMap({
   positionFocusToken,
   follow = false,
   heading = null,
+  mapBearingMode = "course",
   onUserPan,
 }: {
   coordinates?: Coord[];
@@ -376,6 +383,7 @@ export function RealMap({
   positionFocusToken?: number | string;
   follow?: boolean;
   heading?: number | null;
+  mapBearingMode?: "north" | "course";
   onUserPan?: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null),
@@ -544,21 +552,34 @@ export function RealMap({
       return;
     }
     if (!marker.current)
-      marker.current = new maplibregl.Marker({ color: "#fff" })
+      marker.current = new maplibregl.Marker({
+        element: runnerMarkerElement(),
+        rotationAlignment: "map",
+      })
         .setLngLat(position)
         .addTo(m);
     else marker.current.setLngLat(position);
+    const markerHeading =
+      heading === null
+        ? 0
+        : follow && mapBearingMode === "course"
+          ? 0
+          : heading - m.getBearing();
+    const markerEl = marker.current.getElement();
+    markerEl.style.setProperty("--runner-heading", `${markerHeading}deg`);
+    markerEl.classList.toggle("runner-marker-unknown", heading === null);
     mapDebug("marker-updated", {
       longitude: position[0],
       latitude: position[1],
       accuracyM: positionAccuracyM ?? null,
+      heading,
     });
     if (follow) {
       easing.current = true;
       m.easeTo({
         center: position,
         zoom: Math.max(m.getZoom(), 16),
-        bearing: heading ?? m.getBearing(),
+        bearing: mapBearingMode === "course" && heading !== null ? heading : 0,
         pitch: 50,
         duration: 400,
       });
@@ -566,7 +587,7 @@ export function RealMap({
         easing.current = false;
       }, 450);
     }
-  }, [position, positionAccuracyM, heading, follow, ready]);
+  }, [position, positionAccuracyM, heading, follow, mapBearingMode, ready]);
   useEffect(() => {
     const m = map.current;
     if (

@@ -4,6 +4,7 @@ import {
   applyWalkingPolicy,
   forecast,
   meters,
+  movementHeadingFromFixes,
   nextPoi,
   poisFromInstructions,
   preferFewerCrossings,
@@ -15,6 +16,7 @@ import {
   routeKey,
   samplePath,
   scanFacilities,
+  smoothHeading,
   trackSegments,
   withGeometry,
   type Crossing,
@@ -507,5 +509,41 @@ describe("crossing count rank and facilities", () => {
     expect(
       scanFacilities([{ properties: { description: "육교로 이동" } }]).hasOverpass,
     ).toBe(true);
+  });
+});
+
+describe("heading-aware runner direction", () => {
+  it("smooths across the 0/360 boundary by the short rotation", () => {
+    expect(smoothHeading(350, 10)).toBe(370);
+    expect(smoothHeading(10, 350)).toBe(-10);
+  });
+  it("uses recent movement fixes when browser heading is missing", () => {
+    const heading = movementHeadingFromFixes([
+      { coord: [127, 37], at: epoch, accuracy: 8 },
+      { coord: [127.001, 37], at: epoch + 20000, accuracy: 8 },
+    ]);
+    expect(heading).toBeCloseTo(90, 0);
+  });
+  it("keeps the last trusted heading while stopped or noisy", () => {
+    const previous = 42;
+    const heading = movementHeadingFromFixes(
+      [
+        { coord: [127, 37], at: epoch, accuracy: 8 },
+        { coord: [127.000001, 37.000001], at: epoch + 5000, accuracy: 8 },
+        { coord: [127.000002, 37.000001], at: epoch + 10000, accuracy: 8 },
+      ],
+      previous,
+    );
+    expect(heading).toBe(previous);
+  });
+  it("ignores poor accuracy fixes for movement heading", () => {
+    const heading = movementHeadingFromFixes(
+      [
+        { coord: [127, 37], at: epoch, accuracy: 120 },
+        { coord: [127.001, 37], at: epoch + 5000, accuracy: 120 },
+      ],
+      180,
+    );
+    expect(heading).toBe(180);
   });
 });

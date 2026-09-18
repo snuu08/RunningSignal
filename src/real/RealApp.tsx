@@ -13,10 +13,10 @@ import {
   type PublicRoute,
 } from "./backend.ts";
 import {
-  bearingDeg,
   cueEtaSec,
   crossingCount,
   meters,
+  movementHeadingFromFixes,
   nextPoi,
   paceLabel,
   progressOnRoute,
@@ -27,6 +27,7 @@ import {
   timeLabel,
   validPace,
   withGeometry,
+  smoothHeading,
   validCoord,
   type AvoidanceCheck,
   type Coord,
@@ -119,6 +120,27 @@ type PositionMeta = {
   requiresConfirmation: boolean;
   address?: string;
 };
+
+type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
+  requestPermission?: () => Promise<"granted" | "denied">;
+};
+
+function deviceHeadingFromEvent(event: DeviceOrientationEvent): number | null {
+  const webkitCompassHeading =
+    "webkitCompassHeading" in event
+      ? Number((event as DeviceOrientationEvent & { webkitCompassHeading?: number }).webkitCompassHeading)
+      : NaN;
+  if (Number.isFinite(webkitCompassHeading)) return webkitCompassHeading;
+  return event.alpha != null && Number.isFinite(event.alpha)
+    ? 360 - event.alpha
+    : null;
+}
+
+function canRequestDeviceDirection() {
+  if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined")
+    return false;
+  return typeof (DeviceOrientationEvent as DeviceOrientationEventWithPermission).requestPermission === "function";
+}
 
 function gpsQualityLabel(quality: LocationQuality) {
   return quality === "good"
@@ -604,8 +626,15 @@ export function RealApp() {
     ),
     [greenOk, setGreenOk] = useState(false),
     [follow, setFollow] = useState(true),
+    [mapBearingMode, setMapBearingMode] = useState<"north" | "course">("course"),
+    [deviceHeading, setDeviceHeading] = useState<number | null>(null),
+    [directionPermission, setDirectionPermission] = useState<
+      "idle" | "granted" | "denied" | "unsupported"
+    >("idle"),
+    [runHeading, setRunHeading] = useState<number | null>(null),
     [persistOn, setPersistOn] = useState(persistLoginEnabled());
   const spoken = useRef("");
+  const lastTrustedHeading = useRef<number | null>(null);
   useEffect(() => {
     window.scrollTo?.({ top: 0, behavior: "instant" });
   }, [page]);
@@ -672,6 +701,41 @@ export function RealApp() {
       );
     }
   });
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined") {
+      setDirectionPermission("unsupported");
+      return;
+    }
+    const onOrientation = (event: DeviceOrientationEvent) => {
+      const next = deviceHeadingFromEvent(event);
+      if (next !== null) setDeviceHeading((prev) => smoothHeading(prev, next));
+    };
+    if (!canRequestDeviceDirection()) {
+      setDirectionPermission("granted");
+      window.addEventListener("deviceorientation", onOrientation, true);
+      return () => window.removeEventListener("deviceorientation", onOrientation, true);
+    }
+    if (directionPermission !== "granted") return;
+    window.addEventListener("deviceorientation", onOrientation, true);
+    return () => window.removeEventListener("deviceorientation", onOrientation, true);
+  }, [directionPermission]);
+  async function enableDeviceDirection() {
+    if (!canRequestDeviceDirection()) {
+      setDirectionPermission("unsupported");
+      notice("이 브라우저는 방향 센서 권한 요청을 지원하지 않아요.");
+      return;
+    }
+    try {
+      const result = await (
+        DeviceOrientationEvent as DeviceOrientationEventWithPermission
+      ).requestPermission?.();
+      setDirectionPermission(result === "granted" ? "granted" : "denied");
+      notice(result === "granted" ? "방향 센서를 켰어요." : "방향 센서 권한이 거부됐어요.");
+    } catch {
+      setDirectionPermission("denied");
+      notice("방향 센서 권한을 사용할 수 없어요.");
+    }
+  }
   const route = routes[candidate] ?? null;
   const liveSignals = showSignalWait(status?.signal?.predictionReady === true);
   const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
@@ -692,14 +756,26 @@ export function RealApp() {
     along && run.live?.route
       ? nextInstruction(run.live.route, along.traveledM)
       : null;
-  const heading =
-    run.fix?.heading ??
-    (run.live && run.live.track.fixes.length >= 2
-      ? bearingDeg(
-          run.live.track.fixes.at(-2)!.coord,
-          run.live.track.fixes.at(-1)!.coord,
-        )
-      : null);
+  const headingQuality =
+    run.fix ? classifyLocationAccuracy(run.fix.accuracy) : null;
+  const gpsHeading =
+    run.fix?.heading != null && Number.isFinite(run.fix.heading)
+      ? run.fix.heading
+      : null;
+  const movementHeading = run.live
+    ? movementHeadingFromFixes(run.live.track.fixes)
+    : null;
+  const rawHeading =
+    headingQuality === "poor" || headingQuality === "unreliable"
+      ? lastTrustedHeading.current
+      : gpsHeading ?? movementHeading ?? deviceHeading ?? lastTrustedHeading.current;
+  useEffect(() => {
+    const next = smoothHeading(lastTrustedHeading.current, rawHeading);
+    if (next === null) return;
+    lastTrustedHeading.current = next;
+    setRunHeading(next);
+  }, [rawHeading]);
+  const heading = runHeading;
   const liveNow = run.live?.lastTick ?? null;
   const rollingPace30 =
     run.live?.phase === "running" && liveNow !== null
@@ -1707,6 +1783,7 @@ export function RealApp() {
           fitToken={fit}
           follow={follow}
           heading={heading}
+          mapBearingMode={mapBearingMode}
           onUserPan={() => setFollow(false)}
           straight={
             run.live.route && run.live.route.coordinates.length > 1
@@ -1718,6 +1795,41 @@ export function RealApp() {
           }
           pois={routeMapPoints(run.live.route, origin, destination)}
         />
+        <div className="run-direction-panel">
+          <strong>
+            {headingQuality === "poor" || headingQuality === "unreliable"
+              ? "GPS 불안정 · 방향 확인 필요"
+              : turn && along
+                ? `약 ${Math.max(0, Math.round(turn.atM - along.traveledM))}m 앞 · ${turn.text}`
+                : upcoming && along
+                  ? `약 ${Math.max(0, Math.round(upcoming.atM - along.traveledM))}m 앞 · ${upcoming.name}`
+                  : "진행 방향 표시 중"}
+          </strong>
+          <span>
+            {heading !== null
+              ? `화살표 ${Math.round(((heading % 360) + 360) % 360)}°`
+              : "방향 신호 대기"}
+          </span>
+        </div>
+        <div className="map-mode-row" role="group" aria-label="지도 방향">
+          <button
+            aria-pressed={mapBearingMode === "north"}
+            onClick={() => setMapBearingMode("north")}
+          >
+            북쪽 고정
+          </button>
+          <button
+            aria-pressed={mapBearingMode === "course"}
+            onClick={() => setMapBearingMode("course")}
+          >
+            진행 방향이 위
+          </button>
+          {canRequestDeviceDirection() && directionPermission !== "granted" && (
+            <button onClick={() => void enableDeviceDirection()}>
+              방향 활성화
+            </button>
+          )}
+        </div>
         <button
           onClick={() => {
             setFollow(false);
