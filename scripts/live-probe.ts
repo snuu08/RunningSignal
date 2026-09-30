@@ -321,6 +321,7 @@ async function probeUticSeoul() {
     try {
       const response = await fetch(hub.url, { signal: AbortSignal.timeout(15000) });
       const text = await response.text();
+      const collected = classifyCollected(response.status, response.headers.get("content-type") ?? "", new TextEncoder().encode(text), secrets());
       let body: unknown = text;
       try {
         body = JSON.parse(text);
@@ -332,16 +333,18 @@ async function probeUticSeoul() {
         (r) => r && typeof r === "object" && !("resultCode" in (r as object)),
       );
       const head = rows[0] as Record<string, unknown> | undefined;
-      const code = head?.resultCode != null ? String(head.resultCode) : "";
+      const code = collected.providerResultCode ?? (head?.resultCode != null ? String(head.resultCode) : "");
       let cls: LiveCallClass = classifyStatus(response.status, null, payload.length > 0);
-      if (["20", "22", "30", "31", "32"].includes(code)) cls = "auth";
-      else if (response.status >= 200 && response.status < 300 && payload.length === 0)
+      if (collected.kind === "auth") cls = "auth";
+      else if (collected.regionMissing)
         cls = "region-unavailable";
+      else if (collected.error || collected.kind !== "json") cls = "spec-unknown";
       attempts.push({
         hub: hub.name,
         class: cls,
         httpStatus: response.status,
         resultCode: code || null,
+        requiredAction: collected.requiredAction ?? null,
         payloadRows: payload.length,
       });
       return {
@@ -351,12 +354,15 @@ async function probeUticSeoul() {
         httpStatus: response.status,
         lagMs: Date.now() - requestedAtMs,
         resultCode: code || null,
+        requiredAction: collected.requiredAction ?? null,
         payloadRows: payload.length,
         hub: hub.name,
         attempts,
         note:
-          cls === "region-unavailable"
-            ? "안내 페이지는 온라인 제어기를 인천·대전·대구로 적습니다. L01 빈 응답을 서울 운영계획으로 쓰지 않습니다."
+          code === "32"
+            ? "요청을 보내는 PC/서버의 공인 IP를 UTIC 신청 화면에 등록해야 합니다. 이 오류로 서울 계획 제공 여부를 판단하지 않습니다."
+            : cls === "region-unavailable"
+            ? "이번 응답에 서울 계획 레코드가 없습니다. 서울 전체의 미제공을 확정하지 않습니다."
             : "서울 예측 경로에 사용하지 않습니다.",
       };
     } catch (e) {
