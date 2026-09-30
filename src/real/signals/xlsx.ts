@@ -1,4 +1,5 @@
 import { inflateRawSync } from "node:zlib";
+import { posix } from "node:path";
 
 function u16(buf: Uint8Array, i: number): number {
   return buf[i]! | (buf[i + 1]! << 8);
@@ -49,9 +50,36 @@ function xmlText(node: string): string {
     .replace(/<[^>]+>/g, "")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&amp;/g, "&");
+}
+
+function xmlAttributes(node: string): Record<string, string> {
+  return Object.fromEntries(
+    [...node.matchAll(/([\w:.-]+)\s*=\s*(["'])(.*?)\2/g)].map((m) => [m[1], xmlText(m[3])]),
+  );
+}
+
+function workbookSheets(files: Map<string, Uint8Array>): { name: string; path: string }[] {
+  const decode = (path: string) => new TextDecoder().decode(files.get(path) ?? new Uint8Array());
+  const relationships = new Map<string, string>();
+  for (const match of decode("xl/_rels/workbook.xml.rels").matchAll(/<Relationship\b([^>]*)\/?\s*>/g)) {
+    const attrs = xmlAttributes(match[1]);
+    if (attrs.Id && attrs.Target && attrs.TargetMode !== "External") {
+      const path = posix.normalize(attrs.Target.startsWith("/") ? attrs.Target.slice(1) : `xl/${attrs.Target}`);
+      relationships.set(attrs.Id, path);
+    }
+  }
+  const sheets: { name: string; path: string }[] = [];
+  for (const match of decode("xl/workbook.xml").matchAll(/<sheet\b([^>]*)\/?\s*>/g)) {
+    const attrs = xmlAttributes(match[1]);
+    const path = relationships.get(attrs["r:id"]);
+    if (attrs.name && path && files.has(path)) sheets.push({ name: attrs.name, path });
+  }
+  return sheets;
 }
 
 function sharedStrings(xml: string): string[] {
@@ -76,23 +104,30 @@ function colRow(ref: string): { col: number; row: number } | null {
 }
 
 /**
- * First worksheet to objects. All values stay strings so leading zeros survive.
+ * Explicit worksheet/header selection. All values stay strings so leading zeros survive.
  * Does not execute formulas.
  */
-export function xlsxToObjects(buf: Uint8Array): {
+export function xlsxToObjects(buf: Uint8Array, options: { sheet?: string; headerRow?: number } = {}): {
   sheet: string;
+  sheetName: string | null;
+  headerRow: number;
   headers: string[];
   rows: Record<string, string>[];
 } {
+  const headerRow = options.headerRow ?? 1;
+  if (!Number.isInteger(headerRow) || headerRow < 1) throw new Error("xlsx_header_row_invalid");
   const files = unzipLocalEntries(buf);
   const sstFile =
     files.get("xl/sharedStrings.xml") ?? files.get("xl/SharedStrings.xml");
   const sst = sstFile ? sharedStrings(new TextDecoder("utf-8").decode(sstFile)) : [];
-  const sheetName =
+  const sheets = workbookSheets(files);
+  const selected = options.sheet ? sheets.find((s) => s.name === options.sheet) : sheets[0];
+  if (options.sheet && !selected) throw new Error(`xlsx_sheet_not_found:${options.sheet}`);
+  const sheetPath = selected?.path ??
     [...files.keys()].find((k) => /^xl\/worksheets\/sheet1\.xml$/i.test(k)) ??
     [...files.keys()].find((k) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(k));
-  if (!sheetName) throw new Error("xlsx_sheet_missing");
-  const xml = new TextDecoder("utf-8").decode(files.get(sheetName)!);
+  if (!sheetPath) throw new Error("xlsx_sheet_missing");
+  const xml = new TextDecoder("utf-8").decode(files.get(sheetPath)!);
   const grid = new Map<string, string>();
   const cellRe = /<c\b([^>]*)>([\s\S]*?)<\/c>/gi;
   let m: RegExpExecArray | null;
@@ -133,12 +168,17 @@ export function xlsxToObjects(buf: Uint8Array): {
     return s;
   };
   const headers: string[] = [];
+  if (headerRow > maxRow) throw new Error("xlsx_header_row_missing");
+  let hasHeader = false;
   for (let c = 1; c <= maxCol; c++) {
-    const h = grid.get(`${colLetter(c)}1`)?.trim() || `col_${c}`;
-    headers.push(h);
+    const h = grid.get(`${colLetter(c)}${headerRow}`)?.trim();
+    if (h) hasHeader = true;
+    headers.push(h || `col_${c}`);
   }
+  if (!hasHeader) throw new Error("xlsx_header_row_empty:select_header_row");
+  if (new Set(headers).size !== headers.length) throw new Error("xlsx_duplicate_headers");
   const rows: Record<string, string>[] = [];
-  for (let r = 2; r <= maxRow; r++) {
+  for (let r = headerRow + 1; r <= maxRow; r++) {
     const rec: Record<string, string> = {};
     let empty = true;
     headers.forEach((h, i) => {
@@ -148,7 +188,7 @@ export function xlsxToObjects(buf: Uint8Array): {
     });
     if (!empty) rows.push(rec);
   }
-  return { sheet: sheetName, headers, rows };
+  return { sheet: sheetPath, sheetName: selected?.name ?? null, headerRow, headers, rows };
 }
 
 export function objectsToCsv(headers: string[], rows: Record<string, string>[]): string {

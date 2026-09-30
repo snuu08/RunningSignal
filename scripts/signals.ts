@@ -15,6 +15,7 @@ import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
 import { validateObservation } from "../src/real/signals/validate.ts";
 import { parseCsv } from "../src/real/signals/csv.ts";
 import { runLiveProbe } from "./live-probe.ts";
+import { auditMapCatalog, MAP_CATALOG_COLUMNS, type MapCatalogKind } from "../src/real/signals/catalog-audit.ts";
 
 function loadEnvLocal() {
   try {
@@ -61,7 +62,8 @@ Commands:
   npm run signals -- parse-utic --kind crop --input data/signals/inbox/crop.json
   npm run signals -- collect --provider utic --op getPlanCROPInfo --srchCTId L02
   npm run signals -- collect --provider tdata --service phase --itstId 1537
-  npm run signals -- xlsx-csv --input data/signals/inbox/file.xlsx
+  npm run signals -- xlsx-csv --input data/signals/inbox/file.xlsx --sheet 횡단보도 --header-row 4
+  npm run signals -- catalog-audit --centers centers.csv --lanes lanes.csv --nodes nodes.csv --connections connections.csv --itstId 2207,22207
   npm run signals -- mae --input data/signals/inbox/field-observation.csv
   npm run signals -- evaluate --pilot seongnam-namhansanseong-sujin-v1 --observations data/signals/inbox/field-observation.csv
   npm run signals -- validate
@@ -283,17 +285,36 @@ export async function main(argv = process.argv.slice(2)) {
     if (!input) throw new Error("--input xlsx 경로가 필요합니다.");
     const buf = new Uint8Array(readFileSync(input));
     if (buf[0] === 0xd0) throw new Error("xls_ole_export_csv");
-    const sheet = xlsxToObjects(buf);
+    const sheet = xlsxToObjects(buf, {
+      sheet: arg(argv, "--sheet") || undefined,
+      headerRow: Number(arg(argv, "--header-row", "1")),
+    });
     const out = arg(argv, "--out", join("data/signals/normalized", "xlsx-converted.csv"));
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, objectsToCsv(sheet.headers, sheet.rows), "utf8");
     writeJson(out.replace(/\.csv$/i, "-headers.json"), {
+      sheet: sheet.sheetName ?? sheet.sheet,
+      headerRow: sheet.headerRow,
       headers: sheet.headers,
       rows: sheet.rows.length,
       encoding: "utf8",
       leadingZerosPreserved: true,
     });
-    console.log(JSON.stringify({ wrote: out, headers: sheet.headers, rows: sheet.rows.length }, null, 2));
+    console.log(JSON.stringify({ wrote: out, sheet: sheet.sheetName ?? sheet.sheet, headerRow: sheet.headerRow, headers: sheet.headers, rows: sheet.rows.length }, null, 2));
+    return;
+  }
+  if (cmd === "catalog-audit") {
+    const inputs: Partial<Record<MapCatalogKind, Uint8Array>> = {};
+    for (const kind of Object.keys(MAP_CATALOG_COLUMNS) as MapCatalogKind[]) {
+      const path = arg(argv, `--${kind}`);
+      if (path) inputs[kind] = new Uint8Array(readFileSync(path));
+    }
+    if (!Object.keys(inputs).length) throw new Error("--centers, --lanes, --nodes, --connections 중 받은 파일 경로가 필요합니다.");
+    const targets = arg(argv, "--itstId").split(",").map((id) => id.trim()).filter(Boolean);
+    const report = auditMapCatalog(inputs, targets);
+    const out = arg(argv, "--out");
+    if (out) writeJson(out, report);
+    console.log(JSON.stringify(report, null, 2));
     return;
   }
   if (cmd === "collect") {
@@ -342,6 +363,8 @@ export async function main(argv = process.argv.slice(2)) {
             httpStatus: result.httpStatus,
             bytes: result.bytes,
             error: result.error ?? null,
+            providerResultCode: result.providerResultCode ?? null,
+            requiredAction: result.requiredAction ?? null,
             regionMissing: result.regionMissing,
             predictionReady: false,
           },

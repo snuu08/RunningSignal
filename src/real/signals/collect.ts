@@ -23,6 +23,8 @@ export type CollectResult = {
   csv?: string;
   headers?: string[];
   error?: string;
+  providerResultCode?: string;
+  requiredAction?: "register_requesting_public_ip";
 };
 
 const UTIC_AUTH = new Set(["20", "22", "30", "31", "32"]);
@@ -46,12 +48,29 @@ function previewOf(buf: Uint8Array, secrets: string[]): string {
   return redactText(new TextDecoder("utf-8", { fatal: false }).decode(buf.subarray(0, 240)), secrets);
 }
 
-function uticAuth(body: unknown): boolean {
+function resultCode(body: unknown, depth = 0): string | undefined {
+  if (depth > 4) return undefined;
   const rec = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
-  const first = Array.isArray(body) ? body[0] : rec;
-  if (!first || typeof first !== "object") return false;
-  const code = String((first as Record<string, unknown>).resultCode ?? "");
-  return UTIC_AUTH.has(code);
+  if (Array.isArray(body)) return resultCode(body[0], depth + 1);
+  if (!rec) return undefined;
+  if (rec.resultCode !== undefined) return String(rec.resultCode).trim();
+  for (const key of ["response", "header", "result"]) {
+    const code = resultCode(rec[key], depth + 1);
+    if (code !== undefined) return code;
+  }
+  return undefined;
+}
+
+function authDetails(code: string | undefined): Pick<CollectResult, "error" | "providerResultCode" | "requiredAction"> {
+  return {
+    error: "auth_failed",
+    ...(code !== undefined ? { providerResultCode: code } : {}),
+    ...(code === "32" ? { requiredAction: "register_requesting_public_ip" as const } : {}),
+  };
+}
+
+function xmlResultCode(text: string): string | undefined {
+  return /<(?:[\w.-]+:)?resultCode\b[^>]*>\s*(?:<!\[CDATA\[)?\s*(\d+)\s*(?:\]\]>)?\s*<\/(?:[\w.-]+:)?resultCode\s*>/i.exec(text)?.[1];
 }
 
 function regionMissing(body: unknown): boolean {
@@ -77,7 +96,12 @@ export function classifyCollected(
     preview: previewOf(buf, secrets),
     regionMissing: false,
   };
-  if (kind === "auth") return { ...base, error: "auth_failed" };
+  if (kind === "auth") {
+    const text = new TextDecoder().decode(buf);
+    let code = xmlResultCode(text);
+    try { code = resultCode(JSON.parse(text)) ?? code; } catch { /* non-JSON HTTP error */ }
+    return { ...base, ...authDetails(code) };
+  }
   if (kind === "empty") return { ...base, error: "empty_body" };
   if (kind === "html") return { ...base, error: "html_error_or_login_page" };
   if (kind === "xls") return { ...base, error: "xls_ole_export_csv" };
@@ -97,11 +121,16 @@ export function classifyCollected(
   if (kind === "json") {
     try {
       const body = JSON.parse(new TextDecoder("utf-8").decode(buf));
-      if (uticAuth(body)) return { ...base, kind: "auth", error: "auth_failed", records: body };
+      const code = resultCode(body);
+      if (code !== undefined && UTIC_AUTH.has(code)) return { ...base, kind: "auth", ...authDetails(code), records: body };
       return { ...base, records: body, regionMissing: regionMissing(body) };
     } catch {
       return { ...base, error: "json_parse_failed" };
     }
+  }
+  if (kind === "xml") {
+    const code = xmlResultCode(new TextDecoder().decode(buf));
+    if (code !== undefined && UTIC_AUTH.has(code)) return { ...base, kind: "auth", ...authDetails(code) };
   }
   return base;
 }
