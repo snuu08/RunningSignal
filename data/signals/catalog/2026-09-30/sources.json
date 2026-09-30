@@ -1,0 +1,80 @@
+{
+  "inspectedOn": "2026-09-30",
+  "stage": "raw",
+  "predictionReady": false,
+  "note": "Acquisition date is not data currency, plan applicability or verification time. Downloaded MAP files are snapshots; intersection presence does not certify complete coverage. Position candidates are name matches only; all external mapping columns intentionally remain empty.",
+  "sources": [
+    {
+      "kind": "centers",
+      "file": "v2xCrossroadMapInformation_20241114_final.csv",
+      "catalogUrl": "https://t-data.seoul.go.kr/dataprovide/trafficdataviewfile.do?data_id=10144",
+      "downloadUrl": "https://t-data.seoul.go.kr/dataprovide/download.do?id=11346",
+      "retrievedOn": "2026-09-30",
+      "bytes": 94913,
+      "sha256": "c565cf00dbd1d97f0d86491811c987c3f72b54f706b4e1be123775731248a6d6",
+      "stage": "raw"
+    },
+    {
+      "kind": "lanes",
+      "file": "v2xLaneMapInformation.csv",
+      "catalogUrl": "https://t-data.seoul.go.kr/dataprovide/trafficdataviewfile.do?data_id=10145",
+      "downloadUrl": "https://t-data.seoul.go.kr/dataprovide/download.do?id=11347",
+      "retrievedOn": "2026-09-30",
+      "bytes": 78048,
+      "sha256": "010e7b76405f0d0beb18cf7f2286c3bf685a1b90a31743b413c3682d7010148d",
+      "stage": "raw"
+    },
+    {
+      "kind": "connections",
+      "file": "v2xSignalConnectionMapInformation.csv",
+      "catalogUrl": "https://t-data.seoul.go.kr/dataprovide/trafficdataviewfile.do?data_id=10146",
+      "downloadUrl": "https://t-data.seoul.go.kr/dataprovide/download.do?id=11348",
+      "retrievedOn": "2026-09-30",
+      "bytes": 74897,
+      "sha256": "7156b1837b966b57aa56dd1b5b6d9ee40b8e1e1eaa0e65a19ca925144c3fdbb2",
+      "stage": "raw"
+    },
+    {
+      "kind": "nodes",
+      "file": "v2xNodeMapInformation.csv",
+      "catalogUrl": "https://t-data.seoul.go.kr/dataprovide/trafficdataviewfile.do?data_id=10147",
+      "downloadUrl": "https://t-data.seoul.go.kr/dataprovide/download.do?id=11349",
+      "retrievedOn": "2026-09-30",
+      "bytes": 60772,
+      "sha256": "a20f8db6eb91ae0e851dc17cd956500893e0fcf858fc47169956308b23f33f8d",
+      "stage": "raw"
+    },
+    {
+      "kind": "crosswalk-and-pedestrian-light-points",
+      "sourceFilename": "서울특별시_자치구별 신호등 및 횡단보도 위치 및 현황_20230530.xlsx",
+      "catalogUrl": "https://data.seoul.go.kr/dataList/OA-22364/F/1/datasetView.do",
+      "downloadUrl": "https://datafile.seoul.go.kr/bigfile/iot/inf/nio_download.do?&useCache=false",
+      "method": "POST",
+      "form": {
+        "infId": "OA-22364",
+        "seqNo": "",
+        "seq": "1",
+        "infSeq": "1"
+      },
+      "retrievedOn": "2026-09-30",
+      "bytes": 5610262,
+      "sha256": "d8b681b8db457fbce5f8f775a59dcfcc2b4471440136215c9ce6b081bb5ae097",
+      "sheets": [
+        {
+          "name": "횡단보도",
+          "headerRow": 4,
+          "rows": 39036
+        },
+        {
+          "name": "보행등",
+          "headerRow": 4,
+          "rows": 24717
+        }
+      ],
+      "crs": null,
+      "geometryType": "facility-point",
+      "derivedCandidateFile": "seoul-position-candidates-20230530.csv",
+      "stage": "raw"
+    }
+  ]
+}
