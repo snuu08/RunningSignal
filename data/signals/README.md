@@ -14,6 +14,7 @@
 | `captures/` | T-DATA 교차로 묶음 캡처 (gitignore, 키 제거) |
 | `mappings/` | 컬럼·좌표계 매핑 |
 | `samples/` | 합성 예시. 실서비스 로드 금지 |
+| `catalog/` | 출처·해시가 있는 공개 파일 스냅샷과 수록 범위. raw 단계, 예측 입력 아님 |
 
 작성 양식:
 
@@ -40,6 +41,18 @@ npm run signals -- etl --kind geojson --input data/signals/inbox/crossings.geojs
 ```
 
 XLS/XLSX는 `npm run signals -- xlsx-csv --input …`로 CSV를 만들 수 있습니다. 선행 0은 문자열로 유지합니다. `.xls`(OLE)는 엑셀에서 CSV로 저장하세요. `national-xls-placeholder.json`은 서울 표준데이터와 다른 전국/파일 자리입니다. 헤더를 추측 이름으로 확정하지 마세요.
+
+OA-22364의 `20230530.xlsx`는 두 시트 모두 **4행이 헤더**입니다. 시트 이름과 헤더 행을 직접 지정합니다. 이 변환은 점 자료의 열을 읽으며 횡단선·좌표계·현시 키를 만들지 않습니다.
+
+```bash
+npm run signals -- xlsx-csv --input data/signals/inbox/locations_20230530.xlsx --sheet 횡단보도 --header-row 4 --out data/signals/normalized/seoul-crosswalk-points.csv
+npm run signals -- xlsx-csv --input data/signals/inbox/locations_20230530.xlsx --sheet 보행등 --header-row 4 --out data/signals/normalized/seoul-pedestrian-light-points.csv
+npm run signals -- catalog-audit --centers data/signals/catalog/2026-09-30/v2xCrossroadMapInformation_20241114_final.csv --lanes data/signals/catalog/2026-09-30/v2xLaneMapInformation.csv --nodes data/signals/catalog/2026-09-30/v2xNodeMapInformation.csv --connections data/signals/catalog/2026-09-30/v2xSignalConnectionMapInformation.csv --itstId 2207,22207 --out data/signals/raw/catalog-audit.json
+```
+
+`catalog-audit`는 파일별 열·행 수·교차로 ID·SHA-256을 검사합니다. 미제공 파일의 행 수는 `null`, 제공된 파일에 해당 ID가 없으면 `0`입니다. 이 **행 수**는 대기 초가 아닙니다. 네 파일에 ID가 있어도 보행 횡단선이나 현시 대응이 검증된 것은 아니며 `predictionReady=false`를 유지합니다. 최신 파일로 교체한 뒤 같은 명령을 실행할 수 있고, 서울의 어느 교차로 ID든 검사할 수 있습니다.
+
+2026-09-30의 실제 수령 범위와 부서 요청서는 [서울 신호 원본 확보](../../docs/SEOUL_SIGNAL_INPUTS.md)에 정리했습니다.
 
 수집:
 
@@ -111,3 +124,5 @@ npm run signals -- parse-utic --kind crop --input data/signals/inbox/crop.json
 ```
 
 인증키는 결과 JSON에서 `[redacted]`로 바뀝니다. `.env.local`의 `SEOUL_TDATA_API_KEY`를 로그에 인쇄하지 않습니다.
+
+UTIC JSON·XML의 `resultCode=32`는 `kind=auth`, `providerResultCode=32`, `requiredAction=register_requesting_public_ip`로 남깁니다. HTTP 200이어도 인증 성공이나 서울 계획 없음으로 해석하지 않습니다. 실제 요청을 보낼 PC/서버의 공인 IP 등록은 UTIC 신청 화면에서 진행해야 합니다. 키·IP 등록이 없으면 계획 제공 여부를 확인할 수 없습니다.
