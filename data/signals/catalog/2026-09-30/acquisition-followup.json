@@ -1,0 +1,36 @@
+{
+  "inspectedOn": "2026-09-30",
+  "stage": "source-inspection",
+  "predictionReady": false,
+  "downloadedSpecifications": [
+    { "url": "https://www.utic.go.kr/upload/sig_code.hwp", "bytes": 284672, "sha256": "bb1c0137ec646119c2f2c92160efdd94152a876b83e3b6673588d9f01af89681", "format": "HWP5", "meaning": "Code definitions, including L01 for Seoul; not Seoul operational records." },
+    { "url": "https://www.utic.go.kr/upload/CrossRoadInfoService.hwp", "bytes": 288256, "sha256": "3cb9d7ab03e8e7c331f2b12afa5372de720bf49eb69f220997a3fa21411df39f", "format": "HWP5", "meaning": "Authenticated crossInfo and crossDetailInfo download specification; not the downloaded records." },
+    { "url": "https://www.utic.go.kr/upload/PlanCrossRoadInfoService.hwp", "bytes": 321536, "sha256": "9389feb9798fcc4e54fbe5808833e170a82b577cc8c9c5ab46477852374a5a7f", "format": "HWP5", "meaning": "Weekday, special-day, reserve, operating-plan and signal-map service specification; sample rows are not current plans." },
+    { "url": "https://t-data.seoul.go.kr/dataprovide/download.do?id=10000", "bytes": 106716, "sha256": "cd955ba78687887eee47e24c04caad9ca3bde8312743e1712f26885af44bd795", "format": "PDF", "meaning": "Documented eight-direction pedestrian group convention; see tdata-pedestrian-group-codebook.json." }
+  ],
+  "providerCoverage": {
+    "uticGuideUrl": "https://www.utic.go.kr/guide/utisRefSig.do",
+    "citiesNamedInGuide": ["인천시", "대전시", "대구시"],
+    "seoulRegionCode": "L01",
+    "seoulPlanRecordsObtained": false,
+    "seoulPlanAvailability": "unconfirmed",
+    "note": "A Seoul region code in a specification does not establish that Seoul plans are served. IP registration alone does not prove coverage. No authenticated records were requested because this execution environment has no service key."
+  },
+  "geometrySources": [
+    { "catalogUrl": "https://www.data.go.kr/data/15125685/fileData.do", "advertisedRows": 491082, "delivery": "external-provider-link", "targetUrl": "https://data.seoul.go.kr/dataList/OA-21208/S/1/datasetView.do", "geometryObtained": false, "note": "The advertised file is an external link to the same Seoul page whose attachment is the link/node type codebook." },
+    { "catalogUrl": "https://data.seoul.go.kr/dataList/OA-21208/S/1/datasetView.do", "attachment": "도보네트워크_링크노드유형코드.xlsx", "geometryObtained": false },
+    { "catalogUrl": "https://data.seoul.go.kr/dataList/OA-21209/S/1/datasetView.do", "geometryObtained": false, "note": "No downloadable geometry file was listed. The page's update date does not establish current geometry." }
+  ],
+  "application": {
+    "url": "https://www.utic.go.kr/guide/newUtisDataWrite.do",
+    "requiredInputs": ["affiliation type", "affiliation", "recipient email", "actual requesting public IP", "purpose", "requested data category", "agreement to provider conditions"],
+    "submitted": false,
+    "note": "No proxy/cloud-browser IP is substituted for the user's PC or production backend. No email, service key or private IP is included in this public record."
+  },
+  "targetChecks": [
+    { "source": "seoul-tdata", "itstId": "2207", "name": "국기원입구", "centerEtaSecExample": 89, "crossingEntryEtaSec": null, "pedestrianSignalGroupId": null, "applicablePlan": null, "waitSec": null },
+    { "source": "seoul-tdata", "itstId": "22207", "name": "국기원입구(연등)", "crossingEntryEtaSec": null, "pedestrianSignalGroupId": null, "applicablePlan": null, "waitSec": null }
+  ],
+  "routeTotalWaitSec": null,
+  "unresolvedInputs": ["verified crossing geometry and walking-link correspondence", "physical crossing to documented pedestrian group", "provider intersection ID correspondence", "applicable operating plan and cycle clock", "remaining-time unit clarification if current-state validation is used"]
+}

@@ -1,0 +1,42 @@
+{
+  "inspectedOn": "2026-09-30",
+  "stage": "documented-codebook",
+  "predictionReady": false,
+  "provider": "seoul-tdata",
+  "scope": "The eight-direction signal-group convention documented by T-DATA only. This does not assign any physical crossing to a group or map UTIC ring channels.",
+  "evidence": {
+    "explanationUrl": "https://t-data.seoul.go.kr/dataprovide/download.do?id=10000",
+    "explanationTitle": "신호제어기 잔여시간 정보 서비스 설명서_v1.0.pdf",
+    "explanationSha256": "cd955ba78687887eee47e24c04caad9ca3bde8312743e1712f26885af44bd795",
+    "pages": [1],
+    "statusFieldsUrl": "https://t-data.seoul.go.kr/dataprovide/trafficdataviewopenapi.do?data_id=10119",
+    "remainingFieldsUrl": "https://t-data.seoul.go.kr/dataprovide/trafficdataviewopenapi.do?data_id=10120",
+    "method": "Read the official direction-code diagram and pedestrian-group convention, then match the documented API output field labels. No route geometry or nearest-light heuristic is used."
+  },
+  "entries": [
+    { "signalGroupCode": "10", "vehicleApproachLabel": "북", "fieldPrefix": "nt", "pedestrianStatusField": "ntPdsgStatNm", "pedestrianRemainingField": "ntPdsgRmdrCs" },
+    { "signalGroupCode": "20", "vehicleApproachLabel": "동", "fieldPrefix": "et", "pedestrianStatusField": "etPdsgStatNm", "pedestrianRemainingField": "etPdsgRmdrCs" },
+    { "signalGroupCode": "30", "vehicleApproachLabel": "남", "fieldPrefix": "st", "pedestrianStatusField": "stPdsgStatNm", "pedestrianRemainingField": "stPdsgRmdrCs" },
+    { "signalGroupCode": "40", "vehicleApproachLabel": "서", "fieldPrefix": "wt", "pedestrianStatusField": "wtPdsgStatNm", "pedestrianRemainingField": "wtPdsgRmdrCs" },
+    { "signalGroupCode": "50", "vehicleApproachLabel": "북동", "fieldPrefix": "ne", "pedestrianStatusField": "nePdsgStatNm", "pedestrianRemainingField": "nePdsgRmdrCs" },
+    { "signalGroupCode": "60", "vehicleApproachLabel": "남동", "fieldPrefix": "se", "pedestrianStatusField": "sePdsgStatNm", "pedestrianRemainingField": "sePdsgRmdrCs" },
+    { "signalGroupCode": "70", "vehicleApproachLabel": "남서", "fieldPrefix": "sw", "pedestrianStatusField": "swPdsgStatNm", "pedestrianRemainingField": "swPdsgRmdrCs" },
+    { "signalGroupCode": "80", "vehicleApproachLabel": "북서", "fieldPrefix": "nw", "pedestrianStatusField": "nwPdsgStatNm", "pedestrianRemainingField": "nwPdsgRmdrCs" }
+  ],
+  "documentedExample": {
+    "signalGroupCode": "10",
+    "crossingPositionInExample": "west side of the intersection",
+    "pedestrianRemainingField": "ntPdsgRmdrCs",
+    "note": "The API direction label describes the associated incoming vehicle approach, not the side on which the crossing lies. This example is not a mapping for intersection 2207."
+  },
+  "remainingTimeConversion": {
+    "status": "unverified",
+    "reason": "The portal labels RmdrCs as centiseconds but its value description says 1/10 second. The PDF repeats the centisecond label. A measured sample or provider clarification is still needed."
+  },
+  "physicalCrossingMappings": [],
+  "limitations": [
+    "A crossing management ID, stage and applicable lane/connection must be verified before choosing one entry.",
+    "An arbitrary MAP group or another provider's channel number is not assumed to use this convention.",
+    "The codebook is not an operating plan, a current-state observation or a verified prediction input."
+  ]
+}
