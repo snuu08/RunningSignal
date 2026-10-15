@@ -40,6 +40,7 @@ import {
   candidateIndex,
   waitDisplay,
   type RoutesResponse,
+  type RoutesEvaluationResponse,
   type StatusResponse,
   type SignalCoverage,
 } from "./api-contract.ts";
@@ -78,7 +79,9 @@ import {
   demoSignalPredictions,
 } from "./signal-demo.ts";
 import { CurrentStatePanel } from "./features/signals/CurrentStatePanel.tsx";
+import { GpsFieldCheck } from "./GpsFieldCheck.tsx";
 import { liveSignalGuidance } from "./features/signals/liveSignalGuidance.ts";
+import { evaluationCandidate, useLiveRouteForecast } from "./useLiveRouteForecast.ts";
 import {
   applyPaceSlot,
   formatPaceSpoken,
@@ -98,6 +101,7 @@ import {
 } from "./location-quality.ts";
 import {
   realPage,
+  routingPace,
   showSignalWait,
   suggestedUsualFromRecords,
   sustainedOffRoute,
@@ -635,7 +639,6 @@ export function RealApp() {
     [guest, setGuest] = useState(
       () => sessionStorage.getItem("flow-real-guest") === "yes",
     ),
-    [greenOk, setGreenOk] = useState(false),
     [follow, setFollow] = useState(true),
     [mapBearingMode, setMapBearingMode] = useState<"north" | "course">("course"),
     [deviceHeading, setDeviceHeading] = useState<number | null>(null),
@@ -675,6 +678,7 @@ export function RealApp() {
   const [pace, setPace] = useState(360),
     [routes, setRoutes] = useState<Route[]>([]),
     [candidate, setCandidate] = useState(0),
+    [recommendedId, setRecommendedId] = useState<string | null>(null),
     [forecasts, setForecasts] = useState<Record<string, Forecast>>({}),
     [recommendReason, setRecommendReason] = useState<
       "walking-baseline" | "signal-compare"
@@ -770,7 +774,9 @@ export function RealApp() {
     if (signalDemoEnabled(locationState.search))
       sessionStorage.setItem(SIGNAL_DEMO_SESSION_KEY, "yes");
   }, [locationState.search]);
-  const liveSignals = showSignalWait(status?.signal?.predictionReady === true);
+  const liveSignals = showSignalWait(status?.signal?.predictionReady === true ||
+    status?.signal?.liveFeedConfigured === true ||
+    Object.values(forecasts).some((f) => waitDisplay(f).known));
   const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
   const travelSec = route ? (route.distanceM / 1000) * pace : 0;
   const currentRawFix = run.rawFix ?? run.live?.track.fixes.at(-1) ?? run.fix;
@@ -818,11 +824,25 @@ export function RealApp() {
     run.live?.phase === "running" && liveNow !== null
       ? rollingPace(run.live.track, liveNow, 60)
       : null;
-  const livePace = rollingPace30 ?? rollingPace60 ?? pace;
-  const routeForecast = liveSignals && route ? forecasts[route.id] : null;
+  const measuredPace = routingPace(rollingPace30, rollingPace60, pace);
+  const livePace = measuredPace.pace;
+  const forecastProgressM = along && run.live?.route && along.totalM > 0
+    ? (along.traveledM / along.totalM) * run.live.route.distanceM
+    : 0;
+  const liveAssessment = useLiveRouteForecast({
+    runId: run.live?.id ?? null,
+    route: run.live?.route ?? null,
+    running: run.live?.phase === "running",
+    enabled: liveSignals,
+    pace: livePace,
+    traveledM: forecastProgressM,
+  });
+  const routeForecast = liveSignals && run.live?.route
+    ? liveAssessment.assessment?.forecasts[run.live.route.id] ?? null
+    : null;
   const liveSignal = liveSignalGuidance({
     routeForecast,
-    traveledM: along?.traveledM ?? null,
+    traveledM: along ? forecastProgressM : null,
     livePace,
     nowMs: liveNow,
   });
@@ -1176,6 +1196,7 @@ export function RealApp() {
     request.current = ctrl;
     setRoutes([]);
     setCandidate(0);
+    setRecommendedId(null);
     setForecasts({});
     setRecommendReason("walking-baseline");
     setRecommendNotes([]);
@@ -1226,6 +1247,7 @@ export function RealApp() {
       setAvoidanceCheck(response.avoidanceCheck ?? null);
       setDepartureMs(response.departureMs ?? null);
       setCandidate(candidateIndex(next, response.recommendedId));
+      setRecommendedId(response.recommendedId);
       navigate("/real/recommend");
       if (response.partial)
         notice("일부 후보 요청이 실패해 확인된 경로만 보여드려요.");
@@ -1235,6 +1257,25 @@ export function RealApp() {
         throw e;
       }
     }
+  }
+  async function refreshCandidateSignals(selectRecommended = false) {
+    if (!routes.length) return;
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    const response = await api<RoutesEvaluationResponse>("routes/evaluate", {
+      candidates: routes.map((r) => evaluationCandidate(r)),
+      pace,
+      policy: policyFromProfile(profile),
+    }, ctrl.signal);
+    if (ctrl.signal.aborted) return;
+    setForecasts(response.forecasts);
+    setRecommendReason(response.recommendationReason);
+    setRecommendNotes(response.recommendSentences ?? []);
+    setSignalCoverage(response.signalCoverage);
+    setDepartureMs(response.departureMs);
+    setRecommendedId(response.recommendedId);
+    if (selectRecommended) setCandidate(candidateIndex(routes, response.recommendedId));
   }
   async function loadGangnamDemoRoute() {
     const demoPace = 360;
@@ -1249,6 +1290,7 @@ export function RealApp() {
     setPace(demoPace);
     setRoutes([]);
     setCandidate(0);
+    setRecommendedId(null);
     setForecasts({});
     setRecommendReason("walking-baseline");
     setRecommendNotes([]);
@@ -1294,6 +1336,7 @@ export function RealApp() {
       setAvoidanceCheck(response.avoidanceCheck ?? null);
       setDepartureMs(response.departureMs ?? null);
       setCandidate(candidateIndex(next, response.recommendedId));
+      setRecommendedId(response.recommendedId);
       navigate("/real/recommend");
       notice("강남 촬영 루트를 불러왔어요. 실제 신호는 직접 확인해 주세요.");
     } catch (e) {
@@ -1304,52 +1347,56 @@ export function RealApp() {
     }
   }
   async function rerouteFromHere() {
-    const here = run.fix?.coord ?? run.live?.track.fixes.at(-1)?.coord;
+    const here = run.rawFix?.coord ?? run.live?.track.fixes.at(-1)?.coord;
     const active = run.live?.route;
     if (!here || !active)
       throw new Error("경로 러닝 중에만 현재 위치에서 다시 찾을 수 있어요.");
-    const dest =
-      destination ??
-      (active.coordinates.at(-1)
-        ? await namedPlace(active.coordinates.at(-1)!, "목적지")
-        : null);
+    const end = active.coordinates.at(-1);
+    const dest = end
+      ? destination && meters(destination.coord, end) < 20
+        ? destination
+        : await namedPlace(end, "도착지")
+      : null;
     if (!dest) throw new Error("목적지를 확인할 수 없어요.");
     const orig = await namedPlace(here, "현재 위치");
     request.current?.abort();
     const ctrl = new AbortController();
     request.current = ctrl;
-    const stops = loop ? [dest, ...(via ? [via] : [])] : via ? [via] : [];
+    const traveledM = along?.traveledM ?? 0;
+    const stops = [...(loop && destination ? [destination] : []), ...(via ? [via] : [])]
+      .filter((p) => meters(p.coord, dest.coord) >= 20 &&
+        progressOnRoute(active.coordinates, p.coord).traveledM > traveledM + 20);
     const response = await api<RoutesResponse>("routes", {
       origin: orig,
-      destination: loop ? orig : dest,
+      destination: dest,
       waypoints: stops,
-      pace,
+      pace: livePace,
       policy: policyFromProfile(profile),
     }, ctrl.signal);
     if (ctrl.signal.aborted) return;
     const next = response.routes.map((r) =>
       withGeometry({
         ...r,
-        name: `${orig.name} → ${dest.name}${loop ? " → 출발지" : ""}`,
+        name: `${orig.name} → ${dest.name}`,
       }),
     );
     if (!next.length) throw new Error("조건에 맞는 보행 경로가 없어요.");
     setOrigin(orig);
-    setDestination(dest);
+    if (!loop) setDestination(dest);
     setRoutes(next);
-    setForecasts({});
-    setRecommendReason("walking-baseline");
-    setRecommendNotes([]);
-    setSignalCoverage("unknown");
-    setDepartureMs(null);
+    setForecasts(response.forecasts ?? {});
+    setRecommendReason(response.recommendationReason ?? "walking-baseline");
+    setRecommendNotes(response.recommendSentences ?? []);
+    setSignalCoverage(response.signalCoverage ?? "unknown");
+    setDepartureMs(response.departureMs);
+    setAvoidanceCheck(response.avoidanceCheck ?? null);
+    setRecommendedId(response.recommendedId);
     setCandidate(candidateIndex(next, response.recommendedId));
     run.updateRoute(next[candidateIndex(next, response.recommendedId)]);
     setOffSamples([]);
-    notice("목적지·경유·계단 제외를 유지한 새 보행 경로로 바꿨어요.");
+    notice(`${measuredPace.source} ${paceLabel(livePace)}/km로 남은 경로를 다시 비교했어요. ${response.signalCoverage === "unknown" ? "신호 대기는 미확인입니다." : "확인된 신호 대기를 반영했어요."}`);
   }
   async function startRun(selected: Route | null) {
-    if (liveSignals && selected && !greenOk)
-      throw new Error("출발 전 실제 보행 신호가 녹색인지 확인해 주세요.");
     runOwner.current = owner;
     await run.start(selected, selected ? origin?.coord : null);
     setFollow(profile.followCam);
@@ -1674,7 +1721,15 @@ export function RealApp() {
           }
           pois={routeMapPoints(route, origin, destination)}
         />
-        {routes.length > 1 && <div className="candidate-tabs" aria-label="경로 후보">{routes.map((r, i) => <button key={r.id} aria-pressed={candidate === i} onClick={() => { setCandidate(i); setFit(n => n + 1); }}><span>{i === 0 ? "추천 경로" : `대안 ${i}`}</span><strong>{(r.distanceM / 1000).toFixed(2)} <small>km</small></strong></button>)}</div>}
+        {routes.length > 1 && <div className="candidate-tabs" aria-label="경로 후보">{routes.map((r, i) => {
+          const estimate = waitDisplay(liveSignals ? forecasts[r.id] : null);
+          return <button key={r.id} aria-pressed={candidate === i} onClick={() => { setCandidate(i); setFit(n => n + 1); }}>
+            <span>{r.id === recommendedId ? "추천 경로" : `후보 ${i + 1}`}</span>
+            <strong>{(r.distanceM / 1000).toFixed(2)} <small>km</small></strong>
+            <small>{timeLabel(estimate.totalSec ?? (r.distanceM / 1000) * pace)}</small>
+            <small>{estimate.known ? `대기 ${Math.round(estimate.waitSec!)}초 · 정지 ${estimate.stops}회` : "신호 대기 미확인"}</small>
+          </button>;
+        })}</div>}
         <div className="stats">
           <div>
             <strong>{(route.distanceM / 1000).toFixed(2)}</strong>
@@ -1707,7 +1762,8 @@ export function RealApp() {
           <p>
             경로 안내상 횡단 {crossingCount(route)}곳
           </p>
-          {(recommendNotes.length
+          <p>비교 페이스 {paceLabel(pace)}/km · 서울 보행 경로 기준</p>
+          {(recommendNotes.length && route.id === recommendedId
             ? recommendNotes
             : [
                 recommendReason === "signal-compare"
@@ -1738,9 +1794,9 @@ export function RealApp() {
               포함하지 않습니다.
             </p>
           )}
-          {departureMs !== null && liveSignals && (
-            <p className="muted">검색 시각 기준 예상입니다. 출발 시 다시 계산하지는 않습니다.</p>
-          )}
+          {departureMs !== null && liveSignals && <p className="muted">
+            {new Date(departureMs).toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul", hour12: false })} 출발 기준 · 러닝 시작 후 현재 위치·실측 페이스로 갱신합니다.
+          </p>}
           <p className="muted">
             노란 점은 출발·도착, 파란 점은 지하철, 갈색 점은 카페예요.
           </p>
@@ -1748,7 +1804,13 @@ export function RealApp() {
             <p key={line}>{line}</p>
           ))}
         </article>
-        <button className="primary" onClick={() => go("ready")}>
+        {liveSignals && <button className="secondary" disabled={busy} onClick={() => void action(() => refreshCandidateSignals(true))}>
+          지금 출발하면 좋은 경로 다시 비교
+        </button>}
+        <button className="primary" disabled={busy} onClick={() => void action(async () => {
+          if (liveSignals) await refreshCandidateSignals();
+          go("ready");
+        })}>
           이 경로로 준비하기
         </button>
         <button
@@ -1789,19 +1851,9 @@ export function RealApp() {
           횡단보도 앞에서는 실제 보행신호를 직접 확인하세요. 앱이 신호를 대신
           보지 않습니다.
         </p>
-        {liveSignals && route && (
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={greenOk}
-              onChange={(e) => setGreenOk(e.target.checked)}
-            />
-            지금 보는 보행 신호가 녹색인 것을 확인했습니다
-          </label>
-        )}
         <button
           className="primary"
-          disabled={busy || !route || (liveSignals && !greenOk)}
+          disabled={busy || !route}
           onClick={() => void action(() => startRun(route))}
         >
           러닝 시작
@@ -2039,13 +2091,14 @@ export function RealApp() {
               경로에 붙이지 않습니다.
             </p>
           )}
-          {offRouteNow && run.live.route && (
+          {offRouteNow && <p>경로를 벗어났어요. 현재 위치에서 남은 경로를 다시 찾을 수 있어요.</p>}
+          {run.live.route && (
             <button
               className="secondary"
               disabled={busy}
               onClick={() => void action(rerouteFromHere)}
             >
-              현재 위치에서 경로 다시 찾기
+              현재 페이스로 경로 다시 찾기
             </button>
           )}
           {upcoming ? (
@@ -2053,9 +2106,9 @@ export function RealApp() {
               다음 안내까지 약 {Math.max(0, Math.round(upcoming.atM - (along?.traveledM ?? 0)))}m
               {cueEtaSec(
                 upcoming.atM - (along?.traveledM ?? 0),
-                pace,
+                livePace,
               ) !== null
-                ? ` · 입력 페이스면 약 ${Math.round(cueEtaSec(upcoming.atM - (along?.traveledM ?? 0), pace)!)}초`
+                ? ` · ${measuredPace.source} 기준 약 ${Math.round(cueEtaSec(upcoming.atM - (along?.traveledM ?? 0), livePace)!)}초`
                 : ""}
               · {upcoming.name}
             </p>
@@ -2070,7 +2123,7 @@ export function RealApp() {
                 : ""}
             </p>
           )}
-          <p>권장 페이스는 입력한 {paceLabel(pace)}/km입니다.</p>
+          <p>경로 계산 페이스 {paceLabel(livePace)}/km · {measuredPace.source}</p>
           <p>
             최근 30초 페이스 {paceLabel(rollingPace30)}
             {rollingPace30 === null
@@ -2084,7 +2137,7 @@ export function RealApp() {
               <p>{liveSignal.arrival}</p>
               {liveSignal.remainM !== null && liveSignal.etaSec !== null && (
                 <p>
-                  다음 검증 crossing까지 약 {Math.round(liveSignal.remainM)}m ·
+                  다음 확인된 횡단보도까지 약 {Math.round(liveSignal.remainM)}m ·
                   현재 페이스 기준 약 {Math.round(liveSignal.etaSec)}초
                 </p>
               )}
@@ -2095,6 +2148,8 @@ export function RealApp() {
               <small>앱 예측은 신호 확인을 대체하지 않습니다.</small>
             </div>
           )}
+          {liveSignals && !liveSignal && run.live.phase === "running" && <p>현재 위치와 페이스로 신호를 다시 확인 중입니다.</p>}
+          {liveAssessment.error && <p role="status">{liveAssessment.error}</p>}
           <small>
             GPS 정지 추정은 신호 대기와 다른 값입니다. 화면을 끄면 웹은 연속
             GPS를 보장하지 않습니다.
@@ -2604,6 +2659,10 @@ export function RealApp() {
         )}
       </section>
     );
+  else if (page === "gps-check")
+    content = run.live && run.live.phase !== "ended"
+      ? <section><h1>야외 GPS 검사</h1><p>진행 중인 러닝을 먼저 종료해 주세요.</p><button onClick={() => go("run")}>러닝으로</button></section>
+      : <GpsFieldCheck key={owner} owner={owner} onBack={() => go("diagnostics")} />;
   else if (page === "diagnostics")
     content = (
       <section>
@@ -2613,6 +2672,8 @@ export function RealApp() {
           통행 안내가 아닙니다. 실시간 대기 예측은 꺼져 있습니다.
         </p>
         <article>
+          <p>서버 버전: {status?.release?.id ?? "이전 배포 · 버전 정보 없음"}</p>
+          <button onClick={() => go("gps-check")}>야외 GPS 검사 열기</button>
           <p>
             지도 키: {import.meta.env.VITE_MAPTILER_KEY ? "설정됨" : "미설정"}
           </p>
@@ -2662,7 +2723,7 @@ export function RealApp() {
                   try {
                     setSignalResult(
                       await api(
-                        `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=phase`,
+                        `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=current`,
                       ),
                     );
                   } finally {
@@ -2675,7 +2736,7 @@ export function RealApp() {
                 })
               }
             >
-              현시 확인
+              최신 신호·잔여값 확인
             </button>
             <button
               disabled={

@@ -85,7 +85,7 @@ export function toRuntimeCrossing(
     cycleSec: usable.cycleSec,
     epochMs: usable.epochMs,
     entryStartSec: usable.entryStartSec,
-    entryEndSec: usable.entryEndSec,
+    entryEndSec: Math.min(usable.entryEndSec, usable.flashStartSec ?? usable.entryEndSec),
     clearEndSec: usable.clearEndSec,
     validFromMs: usable.validFromMs,
     validToMs: usable.validToMs,

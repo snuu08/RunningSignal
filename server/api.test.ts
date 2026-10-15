@@ -1,6 +1,7 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { handleApi, parseTmap, resetApiRuntimeForTests } from "./api.ts";
 import type { Crossing, FixedPlan } from "../src/real/core.ts";
+afterEach(() => vi.restoreAllMocks());
 const origin = { id: "a", name: "출발", coord: [127, 37] },
   destination = { id: "b", name: "도착", coord: [127, 37.01] };
 const body = {
@@ -720,6 +721,7 @@ describe("route recommendation contract", () => {
     expect(result.recommendedId).not.toBe("tmap-30");
   });
   it("compares TMAP A/B/C with signal waits without recommending excessive detours", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(signalNow);
     const f = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const option = JSON.parse(String(init?.body)).searchOption;
       if (option === "4")

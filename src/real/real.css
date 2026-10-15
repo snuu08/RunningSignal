@@ -747,6 +747,7 @@
 .candidate-tabs button span { font-size: 13px; display: block; color: var(--muted); }
 .candidate-tabs button strong { display: block; margin-top: 5px; font-size: 22px; }
 .candidate-tabs button small { display: inline; }
+.candidate-tabs button > small { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
 .real-shell .candidate-tabs button[aria-pressed=true] { border-color: #e5f45c80; background: #e5f45c0b; }
 .candidate-tabs button[aria-pressed=true] span { color: var(--accent); }
 .real-shell:not(.page-home) main > section { max-width: 760px; margin-left: auto; margin-right: auto; }

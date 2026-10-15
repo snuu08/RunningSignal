@@ -1,6 +1,6 @@
 import {
   applyWalkingPolicy,
-  forecast,
+  forecastRemaining,
   preferSignalRoute,
   type Crossing,
   type Forecast,
@@ -50,37 +50,30 @@ export async function evaluateSignalCandidates(
   departureMs: number,
   provider: RouteSignalProvider = unavailableSignals,
   policy: RealRoutingPolicy = TRIAL_ROUTING_POLICY,
+  progressByRoute: Record<string, number> = {},
 ) {
-  const entries = await Promise.all(
+  const inspected = await Promise.all(
     routes.map(async (route) => {
       try {
         const result = await provider.inspect(route, departureMs);
-        return {
-          route,
-          forecast: forecast(
-            route.distanceM,
-            pace,
-            departureMs,
-            result.crossings,
-            result.completeCoverage,
-            Date.now(),
-          ),
-        };
+        return { route, crossings: result.crossings, completeCoverage: result.completeCoverage };
       } catch {
-        return {
-          route,
-          forecast: forecast(
-            route.distanceM,
-            pace,
-            departureMs,
-            [],
-            false,
-            Date.now(),
-          ),
-        };
+        return { route, crossings: [] as Crossing[], completeCoverage: false };
       }
     }),
   );
+  // All candidates share the clock after signal responses finish. A newly
+  // received source timestamp must not look "from the future" relative to the
+  // request start, and network time must not be charged as running time.
+  const evaluatedAtMs = Date.now();
+  const actualDepartureMs = Math.max(departureMs, evaluatedAtMs);
+  const entries = inspected.map(({ route, crossings, completeCoverage }) => ({
+    route,
+    forecast: forecastRemaining(
+      route.distanceM, pace, actualDepartureMs, crossings, completeCoverage,
+      progressByRoute[route.id] ?? 0, evaluatedAtMs,
+    ),
+  }));
   const pick = preferSignalRoute(entries, policy);
   const baselineId = entries[0]?.route.id ?? null;
   const recommendedId = pick?.route.id ?? baselineId;
@@ -108,6 +101,8 @@ export async function evaluateSignalCandidates(
     recommendationReason: reason,
     forecasts,
     signalCoverage,
+    paceSecPerKm: pace,
+    departureMs: actualDepartureMs,
     recommendSentences: recommendSentences({
       reason,
       coverage: signalCoverage,

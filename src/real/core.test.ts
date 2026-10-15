@@ -228,6 +228,21 @@ describe("arrival-aware signal policy", () => {
 });
 
 describe("rolling GPS pace", () => {
+  it("does not calculate running pace from stationary Seoul GPS drift", () => {
+    const fixes: Track["fixes"] = Array.from({ length: 61 }, (_, i) => ({
+      coord: [127.03 + (i % 2 ? 1 : -1) * 0.000065, 37.51],
+      at: epoch + i * 1000, accuracy: 20,
+    }));
+    expect(rollingPace({ fixes, distanceM: 0, gapSec: 0, stoppedSec: 0 }, epoch + 60_000, 30)).toBeNull();
+  });
+  it("excludes a signal stop from the subsequent measured running pace", () => {
+    const fixes: Track["fixes"] = Array.from({ length: 41 }, (_, i) => ({
+      coord: [127.03, 37.51 + (Math.max(0, i - 20) * (1000 / 360) / 111195.08)],
+      at: epoch + i * 1000, accuracy: 5,
+    }));
+    const pace = rollingPace({ fixes, distanceM: 0, gapSec: 0, stoppedSec: 20 }, epoch + 40_000, 60);
+    expect(pace).toBeCloseTo(360, 0);
+  });
   it("uses moving recent fixes and skips stops plus poor accuracy", () => {
     const fixes: Track["fixes"] = [
       { coord: [127, 37], at: epoch, accuracy: 5 },
@@ -324,7 +339,15 @@ describe("real distance and GPS", () => {
     });
     expect(steady).not.toBe(first);
     expect(steady.fixes.at(-1)?.accuracy).toBe(70);
-    expect(steady.distanceM).toBeGreaterThan(0);
+    // A usable sample is retained, but its 9m shift is inside GPS uncertainty.
+    expect(steady.distanceM).toBe(0);
+    const moved = appendFix(steady, {
+      coord: [127, 37.0005],
+      accuracy: 70,
+      at: epoch + 11000,
+    });
+    expect(moved.fixes).toHaveLength(3);
+    expect(moved.distanceM).toBeGreaterThan(50);
   });
   it("keeps poor accuracy samples from being connected into distance", () => {
     const first = appendFix(empty, {

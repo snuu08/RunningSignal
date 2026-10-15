@@ -263,18 +263,30 @@ export async function acquireLocation(options: {
     navigator.geolocation.getCurrentPosition(receive, fail, currentOptions);
   });
 }
-export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
+export type GpsRunEvent =
+  | { type: "sample"; at: number; fix: Fix; accepted: boolean; reason: string; distanceM: number }
+  | { type: "start" | "pause" | "resume" | "end" | "hidden" | "visible" | "recover"; at: number }
+  | { type: "error"; at: number; reason: string };
+
+export function useGpsRun(
+  onCheckpoint: (run: LiveRun) => void,
+  onEvent?: (event: GpsRunEvent) => void,
+) {
   const [live, setLive] = useState<LiveRun | null>(null),
     [fix, setFix] = useState<Fix | null>(null),
     [rawFix, setRawFix] = useState<Fix | null>(null),
     [routeProjection, setRouteProjection] = useState<RouteProjection | null>(null),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [watchEpoch, setWatchEpoch] = useState(0);
   const skipNext = useRef(false);
   const watchSamples = useRef<Fix[]>([]);
   const routeProgressM = useRef<number | null>(null);
   const ref = useRef(live),
-    save = useRef(onCheckpoint);
+    save = useRef(onCheckpoint),
+    observer = useRef(onEvent);
   save.current = onCheckpoint;
+  observer.current = onEvent;
+  const emit = (event: GpsRunEvent) => observer.current?.(event);
   const replace = (value: LiveRun | null) => {
     ref.current = value;
     setLive(value);
@@ -302,21 +314,26 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
   const phase = live?.phase;
   useEffect(() => {
     if (phase !== "running" || !navigator.geolocation) return;
+    let active = true;
     const id = navigator.geolocation.watchPosition(
       (p) => {
         const r = ref.current;
-        if (!r || r.phase !== "running") return;
-        const validation = validateFix(normalizeGeolocationPosition(p));
+        if (!active || !r || r.phase !== "running") return;
+        const raw = normalizeGeolocationPosition(p);
+        const sample = (accepted: boolean, reason: string, distanceM = r.track.distanceM) =>
+          emit({ type: "sample", at: Date.now(), fix: raw, accepted, reason, distanceM });
+        const validation = validateFix(raw);
         if (!validation.ok) {
+          sample(false, validation.reason);
           setError(locationFailureUserMessage(validation.reason));
           return;
         }
-        const raw = validation.fix;
         const samples = distinctGpsFixes([...watchSamples.current, raw]).slice(-8);
         const filtered = filterLocationOutliers(samples);
         const accepted = filtered.at(-1);
         watchSamples.current = filtered.slice(-8);
         if (!accepted || accepted.at !== raw.at) {
+          sample(false, "outlier");
           setError(
             "GPS 위치가 갑자기 튀어 이번 샘플은 기록 거리에서 제외했습니다.",
           );
@@ -344,24 +361,48 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
           next.segmentStart = true;
           skipNext.current = false;
         }
-        replace({ ...r, track: appendFix(r.track, next) });
+        const track = appendFix(r.track, next);
+        sample(track !== r.track, track !== r.track ? "recorded" : "duplicate-or-jump", track.distanceM);
+        replace({ ...r, track });
       },
-      (e) =>
+      (e) => {
+        if (!active) return;
+        emit({ type: "error", at: Date.now(), reason: geolocationErrorReason(e) });
         setError(
           geolocationErrorReason(e) === "permission-denied"
             ? "위치 권한이 해제됐어요. 기록을 일시정지하고 권한을 확인해 주세요."
             : locationFailureUserMessage(geolocationErrorReason(e)),
-        ),
+        );
+      },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 },
     );
-    return () => navigator.geolocation.clearWatch(id);
-  }, [phase]);
+    return () => {
+      active = false;
+      navigator.geolocation.clearWatch(id);
+    };
+  }, [phase, watchEpoch]);
   useEffect(() => {
     const hide = () => {
-      if (document.hidden && ref.current?.phase === "running")
+      const r = ref.current;
+      if (!r || r.phase === "ended") return;
+      emit({ type: document.hidden ? "hidden" : "visible", at: Date.now() });
+      // Mobile browsers may freeze before the next interval checkpoint.
+      const current = tick();
+      if (current) save.current(current);
+      if (document.hidden && r.phase === "running")
         setError(
           "화면을 벗어나면 GPS 수신이 중단될 수 있어요. 돌아온 뒤 위치 수신 상태를 확인해 주세요.",
         );
+      else if (!document.hidden && r.phase === "running") {
+        // A suspended watch need not resume on its own. Keep the previous track
+        // timestamp: appendFix records the gap without inventing distance.
+        watchSamples.current = [];
+        setWatchEpoch((n) => n + 1);
+      }
+    };
+    const checkpoint = () => {
+      const r = tick();
+      if (r && r.phase !== "ended") save.current(r);
     };
     const unload = (e: BeforeUnloadEvent) => {
       if (ref.current && ref.current.phase !== "ended") {
@@ -369,10 +410,14 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
       }
     };
     document.addEventListener("visibilitychange", hide);
+    window.addEventListener("pagehide", checkpoint);
     window.addEventListener("beforeunload", unload);
     return () => {
       document.removeEventListener("visibilitychange", hide);
+      window.removeEventListener("pagehide", checkpoint);
       window.removeEventListener("beforeunload", unload);
+      const r = ref.current;
+      if (r && r.phase !== "ended") save.current(r);
     };
   }, []);
   return {
@@ -418,6 +463,8 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
       setRouteProjection(projected.routeProjection);
       watchSamples.current = [projected.recordingFix];
       const now = Date.now();
+      emit({ type: "start", at: now });
+      emit({ type: "sample", at: now, fix: f, accepted: true, reason: "initial", distanceM: 0 });
       replace({
         id: crypto.randomUUID(),
         startedAt: now,
@@ -432,20 +479,29 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     },
     pause() {
       const r = tick();
-      if (r?.phase === "running") replace({ ...r, phase: "paused" });
+      if (r?.phase === "running") {
+        emit({ type: "pause", at: Date.now() });
+        const paused = { ...r, phase: "paused" as const };
+        replace(paused);
+        save.current(paused);
+      }
     },
     resume() {
       const r = tick();
       if (r?.phase !== "paused") return;
       // Mark discontinuity so the next fix never adds movement during manual pause.
       skipNext.current = true;
+      watchSamples.current = [];
+      emit({ type: "resume", at: Date.now() });
       replace({ ...r, phase: "running" });
     },
     end() {
       const r = tick();
-      if (!r) return null;
+      if (!r || r.phase === "ended") return r;
+      emit({ type: "end", at: Date.now() });
       const ended = { ...r, phase: "ended" as const };
       replace(ended);
+      save.current(ended);
       return ended;
     },
     updateRoute(route: Route) {
@@ -464,6 +520,8 @@ export function useGpsRun(onCheckpoint: (run: LiveRun) => void) {
     recover(r: LiveRun) {
       // Time while the app was closed is unrecorded, not claimed as running.
       skipNext.current = true;
+      watchSamples.current = [];
+      emit({ type: "recover", at: Date.now() });
       replace({
         ...r,
         phase: "paused",

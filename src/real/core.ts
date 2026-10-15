@@ -388,7 +388,8 @@ export function forecast(
     wait = 0,
     stops = 0,
     max = 0,
-    known = validPace(pace) && completeCoverage;
+    known = validPace(pace) && completeCoverage &&
+      Number.isFinite(routeM) && routeM >= 0 && Number.isFinite(departureMs) && Number.isFinite(nowMs);
   const rows: Forecast["crossings"] = [];
   for (const c of [...crossings].sort((a, b) => a.atM - b.atM)) {
     const hasExitAtM = Number.isFinite(c.exitAtM);
@@ -539,6 +540,60 @@ export function preferSignalRoute(
     )[0] ?? base
   );
 }
+
+/** Forecast from the runner's current position. Passed waits never repeat. */
+export function forecastRemaining(
+  routeM: number,
+  pace: number,
+  nowMs: number,
+  crossings: Crossing[],
+  completeCoverage: boolean,
+  traveledM = 0,
+  verifiedNowMs = nowMs,
+): Forecast {
+  if (!Number.isFinite(routeM) || routeM < 0 || !Number.isFinite(traveledM))
+    return forecast(routeM, pace, nowMs, [], false, nowMs);
+  const progressM = Math.max(0, Math.min(routeM, traveledM));
+  if (crossings.some((c) => !Number.isFinite(c.atM) || c.atM < 0 || c.atM > routeM ||
+    (c.exitAtM !== undefined && (!Number.isFinite(c.exitAtM) || c.exitAtM < c.atM || c.exitAtM > routeM))))
+    return forecast(routeM, pace, nowMs, crossings, false, verifiedNowMs);
+  // Already inside a surveyed crossing: walk to its exit without waiting for a
+  // second entry signal. The next crossing's ETA includes that walking time.
+  const inside = crossings.find(
+    (c) => c.atM < progressM && (c.exitAtM ?? c.atM) > progressM,
+  );
+  if (inside && (!Number.isFinite(inside.widthM) || inside.widthM <= 0))
+    return forecast(routeM, pace, nowMs, crossings, false, nowMs);
+  const startM = inside?.exitAtM ?? progressM;
+  const prefixSec = inside
+    ? ((startM - progressM) / (inside.exitAtM! - inside.atM)) *
+      (inside.widthM / CROSSING_WALK_M_PER_SEC)
+    : 0;
+  const remaining = crossings
+    .filter((c) => c !== inside && c.atM >= startM)
+    .map((c) => ({
+      ...c,
+      atM: c.atM - startM,
+      exitAtM: c.exitAtM === undefined ? undefined : c.exitAtM - startM,
+    }));
+  const result = forecast(
+    Math.max(0, routeM - startM),
+    pace,
+    nowMs + prefixSec * 1000,
+    remaining,
+    completeCoverage,
+    verifiedNowMs,
+  );
+  return {
+    ...result,
+    totalSec: result.totalSec === null ? null : result.totalSec + prefixSec,
+    crossings: result.crossings.map((c) => ({
+      ...c,
+      atM: c.atM === undefined ? undefined : c.atM + startM,
+      exitAtM: c.exitAtM === undefined ? undefined : c.exitAtM + startM,
+    })),
+  };
+}
 export function crossingCount(route: Route): number {
   return route.nearbyPois?.length ?? 0;
 }
@@ -660,25 +715,49 @@ export function rollingPace(
     return null;
   const startMs = nowMs - windowSec * 1000;
   let movingM = 0,
-    movingSec = 0;
+    movingSec = 0,
+    anchor: Fix | null = null;
   for (let i = 1; i < track.fixes.length; i++) {
     const a = track.fixes[i - 1],
       b = track.fixes[i];
-    if (a.at < startMs || b.at > nowMs) continue;
+    if (a.at < startMs || b.at > nowMs) {
+      anchor = null;
+      continue;
+    }
     const dt = (b.at - a.at) / 1000;
     if (
       dt <= 0 ||
       dt > 15 ||
       b.segmentStart ||
-      a.accuracy > 80 ||
-      b.accuracy > 80
-    )
+      a.accuracy > 30 ||
+      b.accuracy > 30
+    ) {
+      anchor = null;
       continue;
+    }
     const d = meters(a.coord, b.coord),
       speed = d / dt;
-    if (speed < 0.5 || speed > 7) continue;
-    movingM += d;
-    movingSec += dt;
+    if (speed < 0.5 || speed > 7) {
+      anchor = b;
+      continue;
+    }
+    anchor ??= a;
+    const elapsed = (b.at - anchor.at) / 1000;
+    const displacement = meters(anchor.coord, b.coord);
+    const uncertaintyM = Math.max(3, (anchor.accuracy + b.accuracy) / 2);
+    // Use displacement beyond GPS uncertainty, not every noisy raw pair.
+    // A long stationary interval cannot be charged to the next running step.
+    if (elapsed > 15) {
+      anchor = b;
+      continue;
+    }
+    if (displacement < uncertaintyM) continue;
+    const acceptedSpeed = displacement / elapsed;
+    if (acceptedSpeed >= 0.5 && acceptedSpeed <= 7) {
+      movingM += displacement;
+      movingSec += elapsed;
+    }
+    anchor = b;
   }
   if (movingM < 10 || movingSec <= 0) return null;
   return (movingSec / movingM) * 1000;
@@ -716,7 +795,9 @@ export function appendFix(track: Track, fix: Fix): Track {
     accumulated = meters(anchor.coord, fix.coord);
   const moved =
     accumulated >=
-    Math.max(3, Math.min(8, (anchor.accuracy + fix.accuracy) / 3));
+    // An 8m cap counted ordinary urban GPS drift as running distance.
+    // Keep the anchor until displacement exceeds the reported uncertainty.
+    Math.max(3, (anchor.accuracy + fix.accuracy) / 2);
   const stationary = d / dt < 0.5;
   return {
     ...track,

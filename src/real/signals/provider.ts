@@ -1,4 +1,4 @@
-import { progressOnRoute, samplePath, type Coord, type Crossing, type Route } from "../core.ts";
+import { pathLength, progressOnRoute, samplePath, type Coord, type Crossing, type Route } from "../core.ts";
 import type {
   CrossingRecord,
   OperatingPlanRecord,
@@ -23,6 +23,18 @@ export type VerifiedBundle = {
   crossings: CrossingRecord[];
   plans: OperatingPlanRecord[];
   surveys: CoverageSurvey[];
+  liveMappings?: TdataPedestrianMapping[];
+};
+
+/** Units and direction must be verified against the actual pedestrian head. */
+export type TdataPedestrianMapping = {
+  crossingInternalId: string;
+  direction: "nt" | "et" | "st" | "wt" | "ne" | "se" | "sw" | "nw";
+  remainingUnit: "deciseconds" | "centiseconds";
+  /** Only true after confirming that this red countdown ends at pedestrian green. */
+  redEndsAtEntryStart?: boolean;
+  verifiedAtMs: number;
+  evidence: string;
 };
 
 export const EMPTY_VERIFIED_BUNDLE: VerifiedBundle = {
@@ -55,15 +67,25 @@ export function parsePredictionScopes(raw: string | undefined): PredictionScope[
 
 export function parseVerifiedBundle(raw: unknown): VerifiedBundle {
   const rec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  if (rec.synthetic === true) return EMPTY_VERIFIED_BUNDLE;
   const crossings = Array.isArray(rec.crossings) ? (rec.crossings as CrossingRecord[]) : [];
   const plans = Array.isArray(rec.plans) ? (rec.plans as OperatingPlanRecord[]) : [];
   const surveys = Array.isArray(rec.surveys) ? (rec.surveys as CoverageSurvey[]) : [];
+  const liveMappings = Array.isArray(rec.liveMappings)
+    ? (rec.liveMappings as TdataPedestrianMapping[]).filter((m) =>
+      m && typeof m.crossingInternalId === "string" &&
+      /^(nt|et|st|wt|ne|se|sw|nw)$/.test(m.direction) &&
+      ["deciseconds", "centiseconds"].includes(m.remainingUnit) &&
+      Number.isFinite(m.verifiedAtMs) && m.verifiedAtMs > 0 &&
+      typeof m.evidence === "string" && m.evidence.trim().length > 0)
+    : [];
   return {
     version: 1,
     synthetic: false,
     crossings: crossings.filter((c) => c && c.synthetic !== true && c.stage === "verified"),
     plans: plans.filter((p) => p && p.synthetic !== true && p.stage === "verified"),
     surveys: surveys.filter((s) => s && Array.isArray(s.coordinates)),
+    liveMappings,
   };
 }
 
@@ -94,6 +116,8 @@ export function createVerifiedProvider(
       const exclusions: InspectExclusion[] = [];
       const located: Crossing[] = [];
       const freshnessNow = nowMs();
+      const geometryM = pathLength(route.coordinates);
+      const distanceScale = geometryM > 0 ? route.distanceM / geometryM : 1;
       for (const hit of hits) {
         const { crossing } = hit;
         const selected = selectOperatingPlan(
@@ -123,8 +147,8 @@ export function createVerifiedProvider(
           crossing,
           plan,
           freshnessNow,
-          hit.entryAtM,
-          hit.exitAtM,
+          hit.entryAtM * distanceScale,
+          hit.exitAtM * distanceScale,
         );
         if (runtime) located.push(runtime);
       }

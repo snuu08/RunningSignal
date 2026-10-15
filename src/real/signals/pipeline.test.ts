@@ -236,8 +236,8 @@ describe("tdata remaining unit", () => {
   });
   it("marks delayed current state without inventing a cycle", () => {
     const view = interpretCurrentState(
-      { itstId: "42", trsmUtcTime: 1, ntPdsgStatNm: "적색" },
-      120_000,
+      { itstId: "42", trsmUtcTime: 1_800_000_000_000, ntPdsgStatNm: "적색" },
+      1_800_000_120_000,
       "phase",
     );
     expect(view.stale).toBe(true);

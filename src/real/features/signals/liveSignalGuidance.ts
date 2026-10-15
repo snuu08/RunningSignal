@@ -1,4 +1,4 @@
-import { forecast, validPace, type Forecast } from "../../core.ts";
+import { forecast, paceLabel, validPace, type Forecast } from "../../core.ts";
 
 export type LiveSignalGuidance = {
   current: string;
@@ -7,6 +7,7 @@ export type LiveSignalGuidance = {
   waitSec: number | null;
   remainM: number | null;
   etaSec: number | null;
+  suggestedPace: number | null;
 };
 
 const UNKNOWN_LIVE_SIGNAL: LiveSignalGuidance = {
@@ -16,6 +17,7 @@ const UNKNOWN_LIVE_SIGNAL: LiveSignalGuidance = {
   waitSec: null,
   remainM: null,
   etaSec: null,
+  suggestedPace: null,
 };
 
 export function liveSignalGuidance({
@@ -32,7 +34,7 @@ export function liveSignalGuidance({
   if (!routeForecast || traveledM === null || !validPace(livePace) || nowMs === null)
     return null;
   const next = routeForecast.crossings.find(
-    (c) => typeof c.atM === "number" && c.atM > traveledM + 5,
+    (c) => typeof c.atM === "number" && c.atM >= traveledM,
   );
   if (!next || typeof next.atM !== "number") return UNKNOWN_LIVE_SIGNAL;
 
@@ -59,6 +61,17 @@ export function liveSignalGuidance({
   );
   const waitSec = projected.crossings[0]?.waitSec ?? null;
   const nearCrossing = remainM < 30;
+  let suggestedPace: number | null = null;
+  if (waitSec !== null && waitSec >= 1 && !nearCrossing) {
+    const slower = Math.ceil(((etaSec + waitSec + 1) / remainM) * 1000);
+    if (validPace(slower) && slower > livePace && slower <= livePace * 1.15) {
+      const slowerForecast = forecast(remainM, slower, nowMs, [{
+        id: next.id, name: next.id, atM: remainM,
+        widthM: next.widthM!, plan: next.plan,
+      }], true, nowMs);
+      if (slowerForecast.waitSec === 0) suggestedPace = slower;
+    }
+  }
   return {
     current: UNKNOWN_LIVE_SIGNAL.current,
     arrival:
@@ -70,11 +83,12 @@ export function liveSignalGuidance({
         ? UNKNOWN_LIVE_SIGNAL.guidance
         : nearCrossing
           ? "횡단보도 앞입니다. 속도보다 안전 확인이 먼저입니다."
-          : waitSec >= 5 && waitSec <= 45
-            ? "현재 속도보다 약간 천천히 가면 다음 녹색 구간에 도착할 가능성이 있습니다."
+          : suggestedPace !== null
+            ? `${paceLabel(suggestedPace)}/km로 조금 늦추면 다음 녹색 구간 도착을 예상해요. 실제 신호를 확인하세요.`
             : "현재 페이스를 유지해도 됩니다. 실제 신호를 직접 확인한 뒤 건너세요.",
     waitSec,
     remainM,
     etaSec,
+    suggestedPace,
   };
 }

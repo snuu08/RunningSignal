@@ -35,6 +35,19 @@ function baseForecast(overrides: Partial<Forecast["crossings"][number]> = {}): F
 }
 
 describe("liveSignalGuidance", () => {
+  it("calculates a specific slower pace only when it reaches the next green entry window", () => {
+    const source = baseForecast({ atM: 500 });
+    source.crossings[0].plan!.entryStartSec = 6;
+    const guidance = liveSignalGuidance({ routeForecast: source, traveledM: 0, livePace: 360, nowMs });
+    expect(guidance?.waitSec).toBe(7);
+    expect(guidance?.suggestedPace).toBe(376);
+    expect(guidance?.guidance).toMatch(/6:16/);
+  });
+  it("does not suggest a large slowdown or a sprint to beat a signal", () => {
+    const guidance = liveSignalGuidance({ routeForecast: baseForecast(), traveledM: 0, livePace: 360, nowMs });
+    expect(guidance?.waitSec).toBeGreaterThan(20);
+    expect(guidance?.suggestedPace).toBeNull();
+  });
   it("keeps current state separate from arrival prediction", () => {
     const guidance = liveSignalGuidance({
       routeForecast: baseForecast(),

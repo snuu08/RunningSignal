@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   realPage,
+  routingPace,
+  showSignalWait,
   suggestedUsualFromRecords,
   sustainedOffRoute,
   TRIAL_OFF_ROUTE,
@@ -36,6 +38,13 @@ function rec(partial: {
 }
 
 describe("running helpers", () => {
+  it("uses usable measured pace before the entered pace and refuses invalid GPS pace", () => {
+    expect(routingPace(300, 330, 360)).toEqual({ pace: 300, source: "GPS 30초" });
+    expect(routingPace(50, 330, 360)).toEqual({ pace: 330, source: "GPS 60초" });
+    expect(routingPace(null, null, 360)).toEqual({ pace: 360, source: "입력 페이스" });
+    expect(showSignalWait(true)).toBe(true);
+    expect(showSignalWait(false)).toBe(false);
+  });
   it("migrates a legacy single pace into the usual slot", () => {
     expect(normalizeProfile({ pace: 390 }).paces.usual).toBe(390);
     expect(normalizeProfile({ pace: 390 }).pace).toBe(390);

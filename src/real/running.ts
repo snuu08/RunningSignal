@@ -1,11 +1,19 @@
 import { validPace } from "./core.ts";
 import type { RunRecord } from "./storage.ts";
 
-/** Signal wait UI stays unpublished until mapping/plans are verified and LIVE_SIGNAL_UI is flipped. */
-export const LIVE_SIGNAL_UI = false;
-
+/** Enable evaluation for configured verified scopes; numeric waits still require a known forecast. */
 export function showSignalWait(predictionReady: boolean): boolean {
-  return LIVE_SIGNAL_UI && predictionReady;
+  return predictionReady;
+}
+
+export function routingPace(
+  pace30: number | null,
+  pace60: number | null,
+  entered: number,
+): { pace: number; source: "GPS 30초" | "GPS 60초" | "입력 페이스" } {
+  if (pace30 !== null && validPace(pace30)) return { pace: pace30, source: "GPS 30초" };
+  if (pace60 !== null && validPace(pace60)) return { pace: pace60, source: "GPS 60초" };
+  return { pace: entered, source: "입력 페이스" };
 }
 
 /** Trial off-route thresholds. Not a surveyed product value. */

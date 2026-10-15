@@ -1,5 +1,6 @@
 import {
   planReturnedRoutes,
+  evaluateSignalCandidates,
   unavailableSignals,
   type RouteSignalProvider,
 } from "./signal-service.ts";
@@ -8,6 +9,7 @@ import {
   parsePredictionScopes,
 } from "../src/real/signals/provider.ts";
 import { auditVerifiedBundle } from "../src/real/signals/audit.ts";
+import { createSeoulLiveProvider } from "./seoul-live-provider.ts";
 import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
 import {
   continuity,
@@ -38,8 +40,8 @@ import {
 import {
   TDATA_CALLABLE,
   TDATA_FILE_ONLY,
+  fetchTdataService,
   interpretCurrentState,
-  tdataUrl,
   type TdataCallId,
 } from "../src/real/signals/tdata.ts";
 import {
@@ -50,6 +52,7 @@ import {
   type UticOpId,
 } from "../src/real/signals/utic.ts";
 import { PROVIDER_CONTRACTS } from "../src/real/signals/contracts.ts";
+import { RELEASE_ID } from "./release.ts";
 type Env = Record<string, string | undefined>;
 type Fetch = typeof fetch;
 class ApiError extends Error {
@@ -77,11 +80,14 @@ export function resetApiRuntimeForTests() {
 
 export function signalProviderFromEnv(
   env: Env,
+  fetcher: Fetch = fetch,
 ): RouteSignalProvider {
   if (env.SIGNAL_PUBLIC_PREDICTION !== "true") return unavailableSignals;
   const bundle = loadVerifiedBundle(env);
   const scopes = parsePredictionScopes(env.SIGNAL_PREDICTION_SCOPES);
   if (!bundle.crossings.length) return unavailableSignals;
+  if (env.SEOUL_TDATA_API_KEY?.trim() && bundle.liveMappings?.length)
+    return createSeoulLiveProvider(bundle, scopes, env.SEOUL_TDATA_API_KEY.trim(), fetcher);
   return createVerifiedProvider(bundle, scopes);
 }
 
@@ -205,6 +211,28 @@ function place(p: any): p is Place {
     p.name.length > 0 &&
     p.name.length <= 200
   );
+}
+
+/** Only geometry is accepted. Client-supplied signal plans are never trusted. */
+function evaluationRoute(value: unknown): Route | null {
+  if (!value || typeof value !== "object") return null;
+  const r = value as Record<string, unknown>;
+  if (
+    typeof r.id !== "string" || !/^[\w:.-]{1,100}$/.test(r.id) ||
+    !Array.isArray(r.coordinates) || r.coordinates.length < 2 ||
+    r.coordinates.length > 2500 || !r.coordinates.every(validCoord) ||
+    typeof r.distanceM !== "number" || !Number.isFinite(r.distanceM) ||
+    r.distanceM <= 0 || r.distanceM > 100_000
+  ) return null;
+  return withGeometry({
+    id: r.id,
+    name: typeof r.name === "string" ? r.name.slice(0, 200) : r.id,
+    coordinates: r.coordinates as Coord[],
+    distanceM: r.distanceM,
+    option: typeof r.option === "string" ? r.option : "0",
+    instructions: [],
+    ...continuity(r.coordinates as Coord[]),
+  });
 }
 
 export function parseTmap(data: any, option: string): Route {
@@ -394,8 +422,8 @@ export async function handleApi(
       path = url.pathname.replace(/^\/\.netlify\/functions\/api/, "/api");
     const prediction = predictionFromEnv(env);
     const provider =
-      prediction.predictionReady
-        ? (signalProvider ?? signalProviderFromEnv(env))
+      prediction.publicOn
+        ? (signalProvider ?? signalProviderFromEnv(env, fetcher))
         : unavailableSignals;
     if (request.method === "GET" && path === "/api/status") {
       const seoulConfigured = !!env.SEOUL_TDATA_API_KEY;
@@ -413,6 +441,7 @@ export async function handleApi(
         activeDirection,
       } = prediction;
       return json({
+        release: { id: RELEASE_ID, seoulServices: Object.keys(TDATA_CALLABLE) },
         places: !!env.KAKAO_REST_API_KEY,
         routes: !!env.TMAP_APP_KEY,
         seoulSignals: seoulConfigured,
@@ -422,6 +451,8 @@ export async function handleApi(
           ? "검증된 횡단·계획 범위에서만 대기를 계산합니다. 그 외 구간은 미확인입니다."
           : "실제 횡단 방향 매핑·운영계획 검증 전입니다. 신호 대기는 예측하지 않습니다. 키 설정과 예측 가능은 다릅니다.",
         signal: {
+          liveFeedConfigured: prediction.publicOn && seoulConfigured && mappingReady && planReady &&
+            (loadVerifiedBundle(env).liveMappings?.length ?? 0) > 0,
           apiConfigured:
             seoulConfigured ||
             !!env.UTIC_SERVICE_KEY ||
@@ -617,6 +648,34 @@ export async function handleApi(
         throw new ApiError(502, "주소 응답을 확인할 수 없습니다.");
       return json({ place: found });
     }
+    if (request.method === "POST" && path === "/api/routes/evaluate") {
+      const raw = await request.text();
+      if (raw.length > 500_000) throw new ApiError(413, "요청이 너무 큽니다.");
+      let body: any;
+      try { body = JSON.parse(raw); }
+      catch { throw new ApiError(400, "JSON 요청이 필요합니다."); }
+      if (!validPace(body?.pace) || !Array.isArray(body?.candidates) ||
+        body.candidates.length < 1 || body.candidates.length > 5)
+        throw new ApiError(400, "페이스와 경로 후보 1~5개가 필요합니다.");
+      const routes: Route[] = [];
+      const progress: [string, number][] = [];
+      for (const candidate of body.candidates) {
+        const route = evaluationRoute(candidate?.route);
+        const traveledM = candidate?.traveledM ?? 0;
+        if (!route || typeof traveledM !== "number" || !Number.isFinite(traveledM) ||
+          traveledM < 0 || traveledM > route.distanceM ||
+          routes.some((r) => r.id === route.id))
+          throw new ApiError(400, "경로 좌표·거리·진행 위치를 확인하세요.");
+        routes.push(route);
+        progress.push([route.id, traveledM]);
+      }
+      const departureMs = Date.now();
+      const assessment = await evaluateSignalCandidates(
+        routes, body.pace, departureMs, provider,
+        parseRoutingPolicy(body.policy), Object.fromEntries(progress),
+      );
+      return json(assessment);
+    }
     if (request.method === "POST" && path === "/api/routes") {
       const raw = await request.text();
       if (raw.length > 12000) throw new ApiError(413, "요청이 너무 큽니다.");
@@ -713,7 +772,6 @@ export async function handleApi(
       return json({
         routes: planned.routes,
         partial: tmapOk < 3,
-        departureMs,
         policyApplied: policy,
         avoidanceCheck: planned.avoidance,
         ...planned.assessment,
@@ -729,32 +787,33 @@ export async function handleApi(
           503,
           `교차로 MAP은 Open API가 아니라 파일입니다. ${TDATA_FILE_ONLY.crossroad.catalogUrl}`,
         );
-      if (!(service in TDATA_CALLABLE))
+      if (!Object.hasOwn(TDATA_CALLABLE, service))
         throw new ApiError(400, "지원하지 않는 신호 서비스입니다.");
-      const spec = TDATA_CALLABLE[service as TdataCallId];
-      const query = new URLSearchParams({
-        apiKey: key(env, "SEOUL_TDATA_API_KEY"),
-        type: "json",
-        pageNo: "1",
-        numOfRows: "10",
-      });
-      if (spec.itstIdListed) query.set("itstId", itstId);
+      const apiKey = key(env, "SEOUL_TDATA_API_KEY");
       try {
-        const data = await upstream(
-          tdataUrl(service as TdataCallId, query),
-          {},
-          fetcher,
-        );
+        const result = await fetchTdataService(service as TdataCallId, apiKey, fetcher, {
+          itstId, numOfRows: "10",
+        });
+        if (result.class === "auth")
+          throw new ApiError(503, "서울 신호 인증에 실패했습니다. 서버 인증키와 해당 API 활용 승인을 확인하세요.");
+        if (result.httpStatus === 429)
+          throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.");
+        if (result.class === "connect")
+          throw new ApiError(502, "제공기관 연결에 실패했습니다. 잠시 뒤 다시 시도하세요.");
+        if (result.class !== "ok-data" && result.class !== "ok-empty")
+          throw new ApiError(502, "서울 신호 응답 형식을 확인하지 못했습니다. API 서비스 경로와 활용 승인을 확인하세요.");
+        const data = result.body;
         noteSeoulReachable(true);
         const fetchedAt = Date.now();
-        const kind = service === "timing" ? "timing" : "phase";
+        const kind = service === "current" ? "current" : service === "timing" ? "timing" : "phase";
         return json({
           source: "서울특별시 T-DATA",
           service,
+          resultClass: result.class,
           fetchedAt,
           capability: "current-state-only",
           predictionReady: false,
-          current: interpretCurrentState(data, fetchedAt, kind),
+          current: interpretCurrentState(data, fetchedAt, kind, itstId),
           data,
         });
       } catch (error) {

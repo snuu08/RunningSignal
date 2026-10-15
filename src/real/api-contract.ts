@@ -12,10 +12,17 @@ export type RoutesResponse = {
   recommendSentences?: string[];
   forecasts: Record<string, Forecast>;
   departureMs: number;
+  paceSecPerKm?: number;
   signalCoverage: SignalCoverage;
   policyApplied: RealRoutingPolicy;
   avoidanceCheck?: AvoidanceCheck;
 };
+
+export type RoutesEvaluationResponse = Pick<
+  RoutesResponse,
+  "recommendedId" | "recommendationReason" | "recommendSentences" |
+  "forecasts" | "departureMs" | "signalCoverage" | "paceSecPerKm"
+>;
 
 export type SignalReadiness = {
   apiConfigured?: boolean;
@@ -29,6 +36,8 @@ export type SignalReadiness = {
   fieldValidated?: boolean;
   predictionEligible?: number;
   predictionReady: boolean;
+  /** A verified live mapping can refresh applied-plan freshness on demand. */
+  liveFeedConfigured?: boolean;
   activePilot?: string;
   activeDirection?: string;
   excludedReasons?: Record<string, number>;
@@ -36,6 +45,7 @@ export type SignalReadiness = {
 };
 
 export type StatusResponse = {
+  release?: { id: string; seoulServices: string[] };
   places: boolean;
   routes: boolean;
   seoulSignals: boolean;

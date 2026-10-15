@@ -69,7 +69,8 @@ export default defineConfig(({ mode }) => ({
           let length = 0;
           for await (const chunk of req) {
             length += chunk.length;
-            if (length > 12000) {
+            const limit = req.url?.split("?")[0] === "/routes/evaluate" ? 500_000 : 12000;
+            if (length > limit) {
               res.statusCode = 413;
               res.end("Request too large");
               return;

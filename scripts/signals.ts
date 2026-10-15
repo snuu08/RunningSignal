@@ -61,7 +61,7 @@ Commands:
   npm run signals -- utic-url --op getPlanCROPInfo --srchCTId L01
   npm run signals -- parse-utic --kind crop --input data/signals/inbox/crop.json
   npm run signals -- collect --provider utic --op getPlanCROPInfo --srchCTId L02
-  npm run signals -- collect --provider tdata --service phase --itstId 1537
+  npm run signals -- collect --provider tdata --service current --itstId 1537
   npm run signals -- xlsx-csv --input data/signals/inbox/file.xlsx --sheet 횡단보도 --header-row 4
   npm run signals -- catalog-audit --centers centers.csv --lanes lanes.csv --nodes nodes.csv --connections connections.csv --itstId 2207,22207
   npm run signals -- mae --input data/signals/inbox/field-observation.csv
@@ -340,7 +340,9 @@ export async function main(argv = process.argv.slice(2)) {
       if (!key) throw new Error("SEOUL_TDATA_API_KEY 가 없습니다. 호출하지 않습니다.");
       if (!(service in TDATA_CALLABLE)) throw new Error("tdata Open API 서비스만 수집합니다.");
       secrets.push(key);
-      const query = new URLSearchParams({ apiKey: key, type: "json", pageNo: "1", numOfRows: "10" });
+      if (TDATA_CALLABLE[service].itstIdListed && !/^\d{1,10}$/.test(itstId))
+        throw new Error("유효한 교차로 --itstId 가 필요합니다.");
+      const query = new URLSearchParams({ [TDATA_CALLABLE[service].apiKeyParam ?? "apiKey"]: key, type: "json", pageNo: "1", numOfRows: "10" });
       if (TDATA_CALLABLE[service].itstIdListed) query.set("itstId", itstId);
       url = tdataUrl(service, query);
     } else {

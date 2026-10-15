@@ -25,6 +25,23 @@ export type ProviderContract = {
 
 export const PROVIDER_CONTRACTS: ProviderContract[] = [
   {
+    id: "tdata-current",
+    provider: "서울특별시 T-DATA",
+    title: "실시간 신호정보 및 잔여시간 현시 (data_id=10381)",
+    status: "documented-openapi",
+    catalogUrl: "https://t-data.seoul.go.kr/dataprovide/trafficdataviewopenapi.do?data_id=10381",
+    listedEndpoint: "https://t-data.seoul.go.kr/apig/apiman-gateway/tapi/v2xSignalPhaseTimingFusionCurrentInfo/1.0",
+    listedOperations: ["GET v2xSignalPhaseTimingFusionCurrentInfo/1.0"],
+    requestFields: ["apikey", "itstId", "sggCd", "type", "pageNo", "numOfRows"],
+    responseFieldsNoted: ["itstId", "trsmUtcTime", "regDt", "ntPdsgStatNm", "ntPdsgRmdrCs"],
+    unitsNoted: ["잔여값 필드명=센티초, 값 설명=1/10초. 실측 전 초 변환 보류."],
+    errorResponses: "공식 페이지에 HTTP 오류 표 없음.",
+    callLimit: "활용신청의 승인 범위·호출 한도 확인 필요.",
+    approvalScope: "T-DATA 활용신청 범위. 이 저장소에서 승인 여부를 확인하지 않음.",
+    notes: "2026-10-11 공식 카탈로그 확인. 2026-09-07 신규 공개. itstId와 소문자 apikey 필수. 현재 상태·잔여값이며 미래 운영 주기는 제공하지 않음.",
+    mayCall: true,
+  },
+  {
     id: "tdata-phase",
     provider: "서울특별시 T-DATA",
     title: "신호제어기 신호현시 (data_id=10119)",

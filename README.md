@@ -3,6 +3,7 @@
 실제 지도/보행 경로/계정 연결과 GPS 기록 모드를 추가했습니다. 기존 체험 모드는 그대로 유지됩니다.
 
 - **[버튼별 기능·계산식·API 준비 상태·출시 검증 안내](docs/IMPLEMENTATION_KO.md)**
+- **[서울 GPS 페이스·신호 도착 시각 기반 경로 추천](docs/SEOUL_PACE_SIGNAL_ROUTING_KO.md)**: 출발 시각 재비교, 러닝 중 20초마다 신호 갱신, 실측 페이스 재탐색, 서울 최신 실시간 통합 API 어댑터.
 - 환경변수: [.env.example](.env.example)
 - 계정 DB/RLS: [supabase/schema.sql](supabase/schema.sql)
 - `npm ci` → `.env.example`을 `.env.local`로 복사 → 키 설정 → `npm run dev`

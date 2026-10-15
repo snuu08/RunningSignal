@@ -706,10 +706,10 @@ describe("real-mode screen flow", () => {
       );
     }
     const reroute = await screen.findByRole("button", {
-      name: "현재 위치에서 경로 다시 찾기",
+      name: "현재 페이스로 경로 다시 찾기",
     });
     fireEvent.click(reroute);
-    await screen.findByText("목적지·경유·계단 제외를 유지한 새 보행 경로로 바꿨어요.");
+    await screen.findByText(/남은 경로를 다시 비교했어요/);
     expect(latestMapProps().coordinates).toEqual(rerouted.coordinates);
   });
 

@@ -1,9 +1,10 @@
 import { PROVIDER_CONTRACTS } from "./contracts.ts";
+import { redactText, redactValue } from "./redact.ts";
 
 export const TDATA_GATEWAY =
   "https://t-data.seoul.go.kr/apig/apiman-gateway/tapi";
 
-export type TdataCallId = "phase" | "timing" | "connection" | "lane";
+export type TdataCallId = "current" | "phase" | "timing" | "connection" | "lane";
 
 export const TDATA_CALLABLE: Record<
   TdataCallId,
@@ -11,8 +12,15 @@ export const TDATA_CALLABLE: Record<
     path: string;
     dataId: string;
     itstIdListed: boolean;
+    apiKeyParam?: "apikey";
   }
 > = {
+  current: {
+    path: "v2xSignalPhaseTimingFusionCurrentInfo",
+    dataId: "10381",
+    itstIdListed: true,
+    apiKeyParam: "apikey",
+  },
   phase: {
     path: "v2xSignalPhaseInformation",
     dataId: "10119",
@@ -191,7 +199,7 @@ function classifyHttp(
   const rec = asRecord(body);
   const msg = JSON.stringify(body ?? "").toLowerCase();
   if (
-    /invalid[_ ]?(api|service)?[_ ]?key|unauthorized|access.?denied|not registered/.test(
+    /invalid[_ ]?(api|service)?[_ ]?key|api[_ ]?key[_ ]?(invalid|expired|not.?found)|unauthorized|access.?denied|not registered/.test(
       msg,
     )
   )
@@ -215,7 +223,7 @@ export async function fetchTdataService(
 ): Promise<TdataFetchResult> {
   const spec = TDATA_CALLABLE[service];
   const query = new URLSearchParams({
-    apiKey,
+    [spec.apiKeyParam ?? "apiKey"]: apiKey,
     type: "json",
     pageNo: opts.pageNo ?? "1",
     numOfRows: opts.numOfRows ?? "20",
@@ -226,7 +234,7 @@ export async function fetchTdataService(
   const base = {
     service,
     itstId: opts.itstId ?? null,
-    requestUrlRedacted: url.replace(apiKey, "[redacted]"),
+    requestUrlRedacted: redactText(url, [apiKey, encodeURIComponent(apiKey)]),
     requestedAtMs,
   };
   try {
@@ -242,6 +250,7 @@ export async function fetchTdataService(
     } catch {
       body = { nonJson: true, preview: text.slice(0, 200) };
     }
+    body = redactValue(body, [apiKey, encodeURIComponent(apiKey)]);
     const rows = rowsOf(body);
     const itstIds = [
       ...new Set(
@@ -315,17 +324,16 @@ export async function fetchTdataService(
 export function interpretCurrentState(
   body: unknown,
   fetchedAtMs: number,
-  kind: "phase" | "timing",
+  kind: "phase" | "timing" | "current",
+  requestedItstId?: string,
 ): CurrentStateView {
-  const row = rowsOf(body)[0] ?? {};
+  // Legacy APIs include history. Never display the oldest row or another
+  // intersection as the requested crossing's current state.
+  const row = rowsOf(body)
+    .filter((r) => !requestedItstId || String(r.itstId) === requestedItstId)
+    .sort((a, b) => (sourceTimeOf(b) ?? -1) - (sourceTimeOf(a) ?? -1))[0] ?? {};
   const itstId = row.itstId != null ? String(row.itstId) : null;
-  const ts = row.trsmUtcTime ?? row.regDt;
-  const sourceTimestampMs =
-    typeof ts === "number" && Number.isFinite(ts)
-      ? ts
-      : Number.isFinite(Number(ts))
-        ? Number(ts)
-        : null;
+  const sourceTimestampMs = sourceTimeOf(row);
   const sourceAgeMs =
     sourceTimestampMs !== null ? fetchedAtMs - sourceTimestampMs : null;
   const pedestrian: PhaseField[] = [];
@@ -370,9 +378,9 @@ export function interpretCurrentState(
     }
   }
   const notes: string[] = [];
-  if (kind === "phase" && !pedestrian.length)
+  if (kind !== "timing" && !pedestrian.length)
     notes.push("보행신호 상태명이 비어 있거나 이 행에 없습니다.");
-  if (kind === "timing" && remainingPedestrian.every((r) => r.missing))
+  if (kind !== "phase" && remainingPedestrian.every((r) => r.missing))
     notes.push("보행 잔여 *PdsgRmdrCs 값이 없습니다. 0초로 보지 않습니다.");
   if (sourceTimestampMs === null) notes.push("원천 시각(trsmUtcTime)이 없습니다.");
   else if (sourceAgeMs !== null && sourceAgeMs > CURRENT_STATE_STALE_MS)
@@ -393,6 +401,23 @@ export function interpretCurrentState(
     remainingPresent: remainingPedestrian.some((r) => !r.missing),
     notes,
   };
+}
+
+function sourceTimeOf(row: Record<string, unknown>): number | null {
+  const utc = row.trsmUtcTime;
+  if (utc != null && utc !== "") {
+    const n = Number(utc);
+    const ms = n >= 1_000_000_000 && n < 10_000_000_000 ? n * 1000 : n;
+    if (Number.isFinite(ms) && ms >= Date.UTC(2000, 0, 1) && ms < Date.UTC(2100, 0, 1))
+      return ms;
+  }
+  // The new fusion API documents an ISO timestamp with an explicit UTC offset.
+  // An unlabelled register date is not an epoch timestamp or signal-clock origin.
+  const register = row.regDt;
+  if (typeof register !== "string" || !/(Z|[+-]\d\d:\d\d)$/.test(register))
+    return null;
+  const parsed = Date.parse(register);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function remainingRawCs(raw: unknown): {
@@ -486,10 +511,8 @@ function sourceMeta(body: unknown): {
 } {
   const rec = rowsOf(body)[0];
   if (!rec) return { sourceTimestampMs: null, responseVersion: null };
-  const ts = rec.trsmUtcTime ?? rec.regDt;
-  const n = typeof ts === "number" ? ts : Number(ts);
   return {
-    sourceTimestampMs: Number.isFinite(n) ? n : null,
+    sourceTimestampMs: sourceTimeOf(rec),
     responseVersion:
       rec.dataId != null
         ? String(rec.dataId)
@@ -512,7 +535,7 @@ export async function captureTdataIntersection(
   for (const service of services) {
     const spec = TDATA_CALLABLE[service];
     const query = new URLSearchParams({
-      apiKey,
+      [spec.apiKeyParam ?? "apiKey"]: apiKey,
       type: "json",
       pageNo: "1",
       numOfRows: "10",

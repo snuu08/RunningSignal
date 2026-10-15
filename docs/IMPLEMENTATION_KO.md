@@ -239,7 +239,7 @@ PHASE 4는 작은 field pilot corridor만 검증한다. 전국 또는 서울 전
 - 신호 없는 경로의 `0초`는 전체 보행 횡단 조사 범위가 완전하다고 입증된 경우만 가능하다.
 - `preferSignalRoute()`는 15초 이상일 때만 대안 비교한다. 신호가 없다는 이유로 지그재그나 무제한 우회를 선택하지 않는다.
 - 검증시각 60초, 불확실성 3초, 횡단 여유 3초는 시험용 보수적 기본값이다. 제공기관 계획 갱신 정책·현장 검증에 맞춰 재설정해야 한다.
-- `server/signal-service.ts`의 `RouteSignalProvider.inspect()`가 실제 신호 연결 지점이다. 검증 파일이 없으면 미확인이다. `data/signals/verified/bundle.json` + `SIGNAL_PREDICTION_SCOPES` + `SIGNAL_PUBLIC_PREDICTION=true` + `LIVE_SIGNAL_UI`가 모두 맞아야 공개 대기가 켜진다.
+- `server/signal-service.ts`의 `RouteSignalProvider.inspect()`가 실제 신호 연결 지점이다. 검증 파일이 없으면 미확인이다. verified bundle·공개 scope·`SIGNAL_PUBLIC_PREDICTION=true`가 맞고 현재 적용 계획이 확인된 경로에서 대기를 표시한다. 별도의 `LIVE_SIGNAL_UI=false` 차단은 제거했다. 서울 실시간 연결은 [서울 페이스·신호 경로 안내](SEOUL_PACE_SIGNAL_ROUTING_KO.md)를 따른다.
 - 횡단 시간은 러닝 페이스가 아니라 `CROSSING_WALK_M_PER_SEC`(1.2 m/s 시험값) + `CROSSING_BUFFER_SEC`를 쓴다.
 - T-DATA `*RmdrCs`는 카탈로그 필드명(센티초)과 값 설명(1/10초)이 불일치한다. 초로 변환하지 않는다.
 - UTIC 안내 페이지(2026-09-11) 온라인 제어기는 인천·대전·대구. L01만으로 서울 데이터를 단정하지 않는다.
@@ -248,6 +248,12 @@ PHASE 4는 작은 field pilot corridor만 검증한다. 전국 또는 서울 전
 예: 6:00/km로 100m 지점에 도착하면 36초가 걸린다. 거기서 24초 기다렸다면 다음 200m 지점 도착은 72초가 아닌 96초다. 테스트에서 이 누적 계산을 검증한다.
 
 ## 5. GPS와 기록 계산
+
+### 서울 좌표 모의 GPS 검증 (2026-10-11)
+
+- 서울 범위 좌표 `[127.03, 37.51]`로 GPS 좌표 순서·1km 직선 이동·정지 중 흔들림·급격한 위치 이동·수신 공백·일시정지·지도 표시 보정을 검사한다. 이는 실측 경로나 서울 야외 GPS 검증 결과가 아니다.
+- 기존 8m 상한은 보고 정확도 20m, 정지 중 ±6m 흔들림에서 2분간 288m를 거리로 누적했다. 이동 판정 기준을 최소 3m와 이전 기준점·현재 위치의 평균 정확도 중 큰 값으로 변경했다.
+- 오차 범위 안의 흔들림을 억제하는 보수적 기준이다. 낮은 정확도에서 작은 이동·짧은 코스를 덜 기록할 수 있으며, 실제 서울 도심에서 거리 오차·위치 오차·화면 잠금 후 복구 검증이 필요하다.
 
 | 값 | 계산/정의 |
 |---|---|
