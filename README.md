@@ -1,3 +1,19 @@
+## 실제 GPS·API 모드 베타
+
+실제 지도/보행 경로/계정 연결과 GPS 기록 모드를 추가했습니다. 기존 체험 모드는 그대로 유지됩니다.
+
+- **[버튼별 기능·계산식·API 준비 상태·출시 검증 안내](docs/IMPLEMENTATION_KO.md)**
+- **[서울 GPS 페이스·신호 도착 시각 기반 경로 추천](docs/SEOUL_PACE_SIGNAL_ROUTING_KO.md)**: 출발 시각 재비교, 러닝 중 20초마다 신호 갱신, 실측 페이스 재탐색, 서울 최신 실시간 통합 API 어댑터.
+- 환경변수: [.env.example](.env.example)
+- 계정 DB/RLS: [supabase/schema.sql](supabase/schema.sql)
+- `npm ci` → `.env.example`을 `.env.local`로 복사 → 키 설정 → `npm run dev`
+- `/real/home` 또는 `VITE_APP_MODE=real`로 실제 모드 진입. 키가 없어도 기기 GPS 자유 러닝/기기 저장은 가능합니다.
+- **실제 신호 예측은 꺼 둔 채** 러닝 경로·GPS 기록 앱으로 배포할 수 있게 맞춰 두었습니다. Netlify 빌드는 `VITE_APP_MODE=real`입니다.
+- 횡단 스키마·현장 CSV·T-DATA 캡처·ETL: [data/signals/README.md](data/signals/README.md)
+- 상업 배포·야외 검증·앱스토어 배포는 완료되지 않았습니다. 아래의 기존 설명은 **데모 모드** 설명입니다.
+
+---
+
 # FLOW RUN
 
 출발지·목적지·평균 페이스를 입력하면 연결된 보행길을 찾고, 그 페이스에서 보행신호 대기가 길어지는 구간만 우회하는 러닝 데모 앱입니다.

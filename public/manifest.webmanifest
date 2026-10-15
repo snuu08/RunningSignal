@@ -4,7 +4,9 @@
   "display": "standalone",
   "background_color": "#08090B",
   "theme_color": "#08090B",
-  "start_url": "/",
+  "start_url": "/real/home",
+  "scope": "/",
+  "description": "보행 경로와 GPS 기록. 신호 대기는 아직 제공하지 않습니다.",
   "icons": [
     {
       "src": "/favicon.svg",

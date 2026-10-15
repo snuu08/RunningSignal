@@ -1,0 +1,3 @@
+source,sourceCrossingId,sourceIntersectionId,entryLon,entryLat,exitLon,exitLat,bearingDeg,directionLabel,pedestrianSignalGroupId,crossingLengthM,paintedWidthM,geometryType,hasRefugeIsland,stageIndex,stageCount,planVerifiedAt,observedAt,fetchedAt,currentPlanConfirmedAt,synthetic,stage
+synthetic,SYN-N-1,SYN-ITST,126.9780,37.5665,126.9782,37.5667,45,NE,synthetic:group:ntPdsg,22,4,crossing-endpoints,false,1,1,,,,,true,raw
+synthetic,SYN-S-1,SYN-ITST,126.9782,37.5667,126.9780,37.5665,225,SW,synthetic:group:stPdsg,22,4,crossing-endpoints,false,1,1,,,,,true,raw

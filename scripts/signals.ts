@@ -1,0 +1,455 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { PROVIDER_CONTRACTS, unverifiedContracts } from "../src/real/signals/contracts.ts";
+import { etlCrossings, etlGeoJson, etlObservations, etlPlans, rejectSpreadsheetFilename } from "../src/real/signals/etl.ts";
+import { redactValue } from "../src/real/signals/redact.ts";
+import { captureTdataIntersection, contrastInCodeUrl, TDATA_CALLABLE, TDATA_FILE_ONLY, tdataUrl } from "../src/real/signals/tdata.ts";
+import { parseUticBody, UTIC_HUB_LISTED, UTIC_OPS, uticQuery, uticUrl, type UticOpId } from "../src/real/signals/utic.ts";
+import type { MappingFile } from "../src/real/signals/etl.ts";
+import { collectUrl } from "../src/real/signals/collect.ts";
+import { evaluateObservations } from "../src/real/signals/mae.ts";
+import { objectsToCsv, xlsxToObjects } from "../src/real/signals/xlsx.ts";
+import { parsePredictionScopes, parseVerifiedBundle } from "../src/real/signals/provider.ts";
+import { auditVerifiedBundle, type SignalAuditReport } from "../src/real/signals/audit.ts";
+import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
+import { validateObservation } from "../src/real/signals/validate.ts";
+import { parseCsv } from "../src/real/signals/csv.ts";
+import { runLiveProbe } from "./live-probe.ts";
+import { auditMapCatalog, MAP_CATALOG_COLUMNS, type MapCatalogKind } from "../src/real/signals/catalog-audit.ts";
+
+function loadEnvLocal() {
+  try {
+    const text = readFileSync(".env.local", "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq < 1) continue;
+      const k = line.slice(0, eq).trim();
+      if (!/^[A-Z][A-Z0-9_]*$/.test(k)) continue;
+      let v = line.slice(eq + 1).trim();
+      if (
+        (v.startsWith('"') && v.endsWith('"')) ||
+        (v.startsWith("'") && v.endsWith("'"))
+      )
+        v = v.slice(1, -1);
+      if (k && process.env[k] === undefined) process.env[k] = v;
+    }
+  } catch {
+    /* optional */
+  }
+}
+
+function writeJson(path: string, value: unknown) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(value, null, 2));
+}
+
+function help() {
+  return `FLOW RUN signal collection (prediction stays off)
+
+Place files:
+  data/signals/inbox/     원본 CSV·GeoJSON (직접 넣기)
+  data/signals/forms/     작성용 양식
+  data/signals/samples/   합성 예시 (synthetic=true)
+  data/signals/raw|normalized|verified/
+  data/signals/captures/  T-DATA 캡처 (gitignore, 키 제거됨)
+
+Commands:
+  npm run signals -- help
+  npm run signals -- contracts
+  npm run signals -- capture --itstId 1537
+  npm run signals -- utic-url --op getPlanCROPInfo --srchCTId L01
+  npm run signals -- parse-utic --kind crop --input data/signals/inbox/crop.json
+  npm run signals -- collect --provider utic --op getPlanCROPInfo --srchCTId L02
+  npm run signals -- collect --provider tdata --service current --itstId 1537
+  npm run signals -- xlsx-csv --input data/signals/inbox/file.xlsx --sheet 횡단보도 --header-row 4
+  npm run signals -- catalog-audit --centers centers.csv --lanes lanes.csv --nodes nodes.csv --connections connections.csv --itstId 2207,22207
+  npm run signals -- mae --input data/signals/inbox/field-observation.csv
+  npm run signals -- evaluate --pilot seongnam-namhansanseong-sujin-v1 --observations data/signals/inbox/field-observation.csv
+  npm run signals -- validate
+  npm run signals -- report
+  npm run signals -- pack-verified --crossings data/signals/verified/crossings.json --plans data/signals/verified/plans.json
+  npm run signals -- etl --kind crossings --input data/signals/inbox/crossings.csv --mapping data/signals/mappings/crossing-csv.json
+  npm run signals -- etl --kind plans --input data/signals/inbox/plans.csv --mapping data/signals/mappings/plan-csv.json
+  npm run signals -- etl --kind observations --input data/signals/inbox/field-observation.csv
+  npm run signals -- live-probe
+  npm run signals -- etl --kind geojson --input data/signals/inbox/crossings.geojson --mapping data/signals/mappings/seoul-spatial.json
+`;
+}
+
+function arg(argv: string[], name: string, fallback = "") {
+  const i = argv.indexOf(name);
+  return i >= 0 ? argv[i + 1] ?? fallback : fallback;
+}
+
+function readJsonList(path: string, key: string): unknown[] {
+  const value = JSON.parse(readFileSync(path, "utf8"));
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    if (Array.isArray(rec[key])) return rec[key] as unknown[];
+    if (Array.isArray(rec.records)) return rec.records as unknown[];
+  }
+  return [];
+}
+
+function auditFromEnv(): SignalAuditReport {
+  return auditVerifiedBundle(
+    loadVerifiedBundle(process.env),
+    parsePredictionScopes(process.env.SIGNAL_PREDICTION_SCOPES),
+  );
+}
+
+function printAudit(report: SignalAuditReport) {
+  const lines = [
+    ["crossings total", report.crossingsTotal],
+    ["crossings verified", report.crossingsVerified],
+    ["plans total", report.plansTotal],
+    ["plans verified", report.plansVerified],
+    ["direction mapped", report.directionMapped],
+    ["epoch known", report.epochKnown],
+    ["width known", report.widthKnown],
+    ["survey covered", report.surveyCovered],
+    ["prediction eligible", report.predictionEligible],
+    ["prediction excluded", report.predictionExcluded],
+  ];
+  for (const [label, value] of lines) console.log(`${label}: ${value}`);
+  console.log("excluded reasons:");
+  const reasons = Object.entries(report.excludedReasons).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  if (!reasons.length) console.log("  none: 0");
+  for (const [reason, count] of reasons) console.log(`  ${reason}: ${count}`);
+  console.log(`predictionReady: ${report.predictionReady}`);
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  loadEnvLocal();
+  const cmd = argv[0] ?? "help";
+  if (cmd === "help" || cmd === "-h") {
+    console.log(help());
+    return;
+  }
+  if (cmd === "contracts") {
+    const rows = PROVIDER_CONTRACTS.map((c) => ({
+      id: c.id,
+      status: c.status,
+      mayCall: c.mayCall,
+      catalogUrl: c.catalogUrl,
+      listedEndpoint: c.listedEndpoint,
+    }));
+    console.log(JSON.stringify({ unverified: unverifiedContracts().map((c) => c.id), all: rows }, null, 2));
+    return;
+  }
+  if (cmd === "validate") {
+    const report = auditFromEnv();
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          predictionReady: false,
+          relationship: report.relationship,
+          counts: {
+            crossingsTotal: report.crossingsTotal,
+            crossingsVerified: report.crossingsVerified,
+            plansTotal: report.plansTotal,
+            plansVerified: report.plansVerified,
+            predictionEligible: report.predictionEligible,
+            predictionExcluded: report.predictionExcluded,
+          },
+          excludedReasons: report.excludedReasons,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "report") {
+    printAudit(auditFromEnv());
+    return;
+  }
+  if (cmd === "capture") {
+    const itstId = arg(argv, "--itstId");
+    const key = process.env.SEOUL_TDATA_API_KEY?.trim();
+    if (!itstId) throw new Error("--itstId 가 필요합니다.");
+    if (!key) throw new Error("SEOUL_TDATA_API_KEY 가 없습니다. 호출하지 않습니다.");
+    const session = await captureTdataIntersection(itstId, key, fetch);
+    const redacted = redactValue(session, [key]);
+    const out = arg(
+      argv,
+      "--out",
+      join("data/signals/captures", `tdata-${itstId}-${session.capturedAtMs}.json`),
+    );
+    writeJson(out, redacted);
+    const contrast = Object.keys(TDATA_CALLABLE).map((s) =>
+      contrastInCodeUrl(
+        s,
+        tdataUrl(s as keyof typeof TDATA_CALLABLE, new URLSearchParams({ apiKey: "x" })),
+      ),
+    );
+    console.log(
+      JSON.stringify(
+        {
+          wrote: out,
+          itstId,
+          http: session.calls.map((c) => ({ service: c.service, status: c.httpStatus, lagMs: c.lagMs })),
+          contrast,
+          fileOnly: TDATA_FILE_ONLY,
+          predictionReady: false,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "utic-url") {
+    const op = arg(argv, "--op") as UticOpId;
+    const srchCTId = arg(argv, "--srchCTId");
+    if (!op || !(op in UTIC_OPS)) throw new Error("--op 는 문서된 UTIC 오퍼레이션이어야 합니다.");
+    const q = uticQuery(op, {
+      serviceKey: process.env.UTIC_SERVICE_KEY?.trim() || "KEY",
+      srchCTId,
+      srchCRNm: arg(argv, "--srchCRNm") || undefined,
+    });
+    const url = uticUrl(op, q);
+    const keys = [process.env.UTIC_SERVICE_KEY?.trim() ?? ""].filter(Boolean);
+    console.log(
+      JSON.stringify(
+        {
+          op,
+          kind: UTIC_OPS[op].kind,
+          listedHttp: redactValue(uticUrl(op, q, UTIC_HUB_LISTED), keys),
+          usedHttps: redactValue(url, keys),
+          predictionReady: false,
+          engineReady: false,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "parse-utic") {
+    const kind = arg(argv, "--kind") as "crop" | "weekday" | "holiday" | "reserve" | "sigmap";
+    const input = arg(argv, "--input");
+    if (!kind || !input) throw new Error("--kind 와 --input 이 필요합니다.");
+    const body = JSON.parse(readFileSync(input, "utf8"));
+    const parsed = parseUticBody(kind, body);
+    const out = arg(argv, "--out", join("data/signals/normalized", `utic-${kind}.json`));
+    writeJson(out, { predictionReady: false, engineReady: false, records: parsed });
+    console.log(JSON.stringify({ wrote: out, kept: parsed.length }, null, 2));
+    return;
+  }
+  if (cmd === "etl") {
+    const kind = arg(argv, "--kind");
+    const input = arg(argv, "--input");
+    const mappingPath = arg(argv, "--mapping");
+    if (!kind || !input) throw new Error("--kind 와 --input 이 필요합니다.");
+    const sheet = rejectSpreadsheetFilename(input);
+    if (sheet) throw new Error(`${sheet}: CSV 또는 GeoJSON으로 저장한 뒤 실행하세요.`);
+    const text = readFileSync(input, "utf8");
+    const mapping: MappingFile = mappingPath
+      ? JSON.parse(readFileSync(mappingPath, "utf8"))
+      : { source: "field", crs: "EPSG:4326", geometryType: "crossing-endpoints", columns: {} };
+    const report =
+      kind === "crossings"
+        ? etlCrossings(text, mapping)
+        : kind === "plans"
+          ? etlPlans(text, mapping)
+          : kind === "observations"
+            ? etlObservations(text)
+            : kind === "geojson"
+              ? etlGeoJson(JSON.parse(text), mapping)
+              : null;
+    if (!report) throw new Error("unknown --kind");
+    const outDir = arg(argv, "--out", "data/signals/normalized");
+    writeJson(join(outDir, `${kind}-records.json`), {
+      synthetic: mapping.synthetic === true,
+      stage: "normalized",
+      records: report.records,
+    });
+    writeJson(join(outDir, `${kind}-exclusions.json`), report.exclusions);
+    console.log(
+      JSON.stringify(
+        { kept: report.kept, excluded: report.exclusions.length, outDir },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "xlsx-csv") {
+    const input = arg(argv, "--input");
+    if (!input) throw new Error("--input xlsx 경로가 필요합니다.");
+    const buf = new Uint8Array(readFileSync(input));
+    if (buf[0] === 0xd0) throw new Error("xls_ole_export_csv");
+    const sheet = xlsxToObjects(buf, {
+      sheet: arg(argv, "--sheet") || undefined,
+      headerRow: Number(arg(argv, "--header-row", "1")),
+    });
+    const out = arg(argv, "--out", join("data/signals/normalized", "xlsx-converted.csv"));
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, objectsToCsv(sheet.headers, sheet.rows), "utf8");
+    writeJson(out.replace(/\.csv$/i, "-headers.json"), {
+      sheet: sheet.sheetName ?? sheet.sheet,
+      headerRow: sheet.headerRow,
+      headers: sheet.headers,
+      rows: sheet.rows.length,
+      encoding: "utf8",
+      leadingZerosPreserved: true,
+    });
+    console.log(JSON.stringify({ wrote: out, sheet: sheet.sheetName ?? sheet.sheet, headerRow: sheet.headerRow, headers: sheet.headers, rows: sheet.rows.length }, null, 2));
+    return;
+  }
+  if (cmd === "catalog-audit") {
+    const inputs: Partial<Record<MapCatalogKind, Uint8Array>> = {};
+    for (const kind of Object.keys(MAP_CATALOG_COLUMNS) as MapCatalogKind[]) {
+      const path = arg(argv, `--${kind}`);
+      if (path) inputs[kind] = new Uint8Array(readFileSync(path));
+    }
+    if (!Object.keys(inputs).length) throw new Error("--centers, --lanes, --nodes, --connections 중 받은 파일 경로가 필요합니다.");
+    const targets = arg(argv, "--itstId").split(",").map((id) => id.trim()).filter(Boolean);
+    const report = auditMapCatalog(inputs, targets);
+    const out = arg(argv, "--out");
+    if (out) writeJson(out, report);
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+  if (cmd === "collect") {
+    const provider = arg(argv, "--provider");
+    const secrets: string[] = [];
+    let url = "";
+    if (provider === "utic") {
+      const op = arg(argv, "--op") as UticOpId;
+      const srchCTId = arg(argv, "--srchCTId");
+      const key = process.env.UTIC_SERVICE_KEY?.trim();
+      if (!key) throw new Error("UTIC_SERVICE_KEY 가 없습니다. 호출하지 않습니다.");
+      secrets.push(key);
+      const q = uticQuery(op, {
+        serviceKey: key,
+        srchCTId,
+        srchCRNm: arg(argv, "--srchCRNm") || undefined,
+      });
+      url = uticUrl(op, q);
+    } else if (provider === "tdata") {
+      const service = arg(argv, "--service") as keyof typeof TDATA_CALLABLE;
+      const itstId = arg(argv, "--itstId");
+      const key = process.env.SEOUL_TDATA_API_KEY?.trim();
+      if (!key) throw new Error("SEOUL_TDATA_API_KEY 가 없습니다. 호출하지 않습니다.");
+      if (!(service in TDATA_CALLABLE)) throw new Error("tdata Open API 서비스만 수집합니다.");
+      secrets.push(key);
+      if (TDATA_CALLABLE[service].itstIdListed && !/^\d{1,10}$/.test(itstId))
+        throw new Error("유효한 교차로 --itstId 가 필요합니다.");
+      const query = new URLSearchParams({ [TDATA_CALLABLE[service].apiKeyParam ?? "apiKey"]: key, type: "json", pageNo: "1", numOfRows: "10" });
+      if (TDATA_CALLABLE[service].itstIdListed) query.set("itstId", itstId);
+      url = tdataUrl(service, query);
+    } else {
+      throw new Error("--provider 는 utic 또는 tdata 입니다.");
+    }
+    const result = await collectUrl(url, secrets, fetch);
+    const stamp = Date.now();
+    const out = arg(argv, "--out", join("data/signals/raw", `${provider}-${stamp}.json`));
+    writeJson(out, redactValue({ url, ...result, records: result.records }, secrets));
+    if (result.csv) {
+      const csvOut = out.replace(/\.json$/i, ".csv");
+      writeFileSync(csvOut, result.csv, "utf8");
+    }
+    console.log(
+      JSON.stringify(
+        redactValue(
+          {
+            wrote: out,
+            kind: result.kind,
+            httpStatus: result.httpStatus,
+            bytes: result.bytes,
+            error: result.error ?? null,
+            providerResultCode: result.providerResultCode ?? null,
+            requiredAction: result.requiredAction ?? null,
+            regionMissing: result.regionMissing,
+            predictionReady: false,
+          },
+          secrets,
+        ),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "mae" || cmd === "evaluate") {
+    const input =
+      cmd === "evaluate" ? arg(argv, "--observations") : arg(argv, "--input");
+    const pilot = arg(argv, "--pilot", "");
+    if (!input)
+      throw new Error(
+        cmd === "evaluate"
+          ? "--observations 관측 CSV가 필요합니다."
+          : "--input 관측 CSV가 필요합니다.",
+      );
+    const table = parseCsv(readFileSync(input, "utf8"));
+    const rows = table.rows
+      .map((r) => validateObservation(r).ok)
+      .filter((r): r is NonNullable<typeof r> => !!r);
+    const report = evaluateObservations(rows);
+    const out = arg(
+      argv,
+      "--out",
+      join(
+        "data/signals/normalized",
+        cmd === "evaluate" && pilot ? `${pilot}-evaluation.json` : "mae-report.json",
+      ),
+    );
+    writeJson(out, {
+      pilot: pilot || null,
+      ...report,
+      fieldRows: rows.filter((r) => !r.synthetic).length,
+      syntheticRows: rows.filter((r) => r.synthetic).length,
+      requiredMinimumSamples: 10,
+      accuracyVerified: report.wait.n >= 10 && report.accuracyClaim !== "unverified",
+    });
+    console.log(JSON.stringify({ wrote: out, pilot: pilot || null, waitN: report.wait.n, requiredMinimumSamples: 10, unpredictable: report.unpredictable, accuracyClaim: report.accuracyClaim }, null, 2));
+    return;
+  }
+  if (cmd === "pack-verified") {
+    const crossingsPath = arg(argv, "--crossings");
+    const plansPath = arg(argv, "--plans");
+    const surveysPath = arg(argv, "--surveys");
+    const raw = {
+      version: 1,
+      synthetic: false,
+      crossings: crossingsPath ? readJsonList(crossingsPath, "crossings") : [],
+      plans: plansPath ? readJsonList(plansPath, "plans") : [],
+      surveys: surveysPath ? readJsonList(surveysPath, "surveys") : [],
+    };
+    const bundle = parseVerifiedBundle(raw);
+    const out = arg(argv, "--out", join("data/signals/verified", "bundle.json"));
+    writeJson(out, bundle);
+    console.log(
+      JSON.stringify(
+        {
+          wrote: out,
+          crossings: bundle.crossings.length,
+          plans: bundle.plans.length,
+          surveys: bundle.surveys.length,
+          predictionReady: false,
+          note: "SIGNAL_PUBLIC_PREDICTION=true 와 SIGNAL_PREDICTION_SCOPES 가 있어야 예측이 켜집니다.",
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "live-probe") {
+    await runLiveProbe({ skipTdata: argv.includes("--skip-tdata") });
+    return;
+  }
+  throw new Error(`unknown command ${cmd}`);
+}
+
+await main().catch((err) => {
+  console.error(err instanceof Error ? err.message : "failed");
+  process.exitCode = 1;
+});

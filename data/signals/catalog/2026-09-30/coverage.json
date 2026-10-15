@@ -1,0 +1,117 @@
+{
+  "stage": "raw",
+  "predictionReady": false,
+  "coverageMeaning": "presence_in_downloaded_files_only",
+  "files": [
+    {
+      "kind": "centers",
+      "supplied": true,
+      "bytes": 94913,
+      "sha256": "c565cf00dbd1d97f0d86491811c987c3f72b54f706b4e1be123775731248a6d6",
+      "headers": [
+        "itstId",
+        "itstNm",
+        "mapCtptIntLat",
+        "mapCtptIntLot",
+        "laneWidth",
+        "limitSpedTypeNm",
+        "limitSped",
+        "itstEngNm",
+        "rgtrId",
+        "regDt"
+      ],
+      "rows": 1000,
+      "intersections": 1000
+    },
+    {
+      "kind": "lanes",
+      "supplied": true,
+      "bytes": 78048,
+      "sha256": "010e7b76405f0d0beb18cf7f2286c3bf685a1b90a31743b413c3682d7010148d",
+      "headers": [
+        "itstId",
+        "laneId",
+        "permDrcCd",
+        "laneTypeCd",
+        "lanePermMuvrCn",
+        "rgtrId",
+        "regDt"
+      ],
+      "rows": 1000,
+      "intersections": 50
+    },
+    {
+      "kind": "nodes",
+      "supplied": true,
+      "bytes": 60772,
+      "sha256": "a20f8db6eb91ae0e851dc17cd956500893e0fcf858fc47169956308b23f33f8d",
+      "headers": [
+        "itstId",
+        "laneId",
+        "nodeOrdr",
+        "ofstXaxsCrdnt",
+        "ofstYaxsCrdnt",
+        "rgtrId",
+        "regDt"
+      ],
+      "rows": 1000,
+      "intersections": 5
+    },
+    {
+      "kind": "connections",
+      "supplied": true,
+      "bytes": 74897,
+      "sha256": "7156b1837b966b57aa56dd1b5b6d9ee40b8e1e1eaa0e65a19ca925144c3fdbb2",
+      "headers": [
+        "itstId",
+        "laneId",
+        "laneCnncId",
+        "signlPermMuvrNm",
+        "signlgroupCd",
+        "rgtrId",
+        "regDt"
+      ],
+      "rows": 1000,
+      "intersections": 76
+    }
+  ],
+  "idsPresentInAllFourFiles": [
+    "10",
+    "1007",
+    "101",
+    "1014"
+  ],
+  "targets": [
+    {
+      "itstId": "2207",
+      "names": [
+        "국기원입구"
+      ],
+      "rows": {
+        "centers": 1,
+        "lanes": 0,
+        "nodes": 0,
+        "connections": 0
+      },
+      "presentInAllFourFiles": false
+    },
+    {
+      "itstId": "22207",
+      "names": [
+        "국기원입구(연등)"
+      ],
+      "rows": {
+        "centers": 1,
+        "lanes": 0,
+        "nodes": 0,
+        "connections": 0
+      },
+      "presentInAllFourFiles": false
+    }
+  ],
+  "limitations": [
+    "An absent ID is absent from this file; it does not prove absence from the provider's complete dataset.",
+    "Presence in all files does not establish complete lanes, crossing geometry, pedestrian group mapping or an operating plan.",
+    "No cross-provider ID, lane type, coordinate unit, CRS or API direction is inferred."
+  ]
+}

@@ -217,7 +217,7 @@ export function planStopsFromDraft(draft: PlanDraft): {
   return {
     origin: draft.origin,
     destination: draft.destination,
-    waypoints: [],
+    waypoints: [...draft.waypoints],
   };
 }
 

@@ -1,0 +1,2 @@
+# Preserve public source bytes so the recorded SHA-256 remains reproducible.
+data/signals/catalog/**/*.csv -text whitespace=cr-at-eol

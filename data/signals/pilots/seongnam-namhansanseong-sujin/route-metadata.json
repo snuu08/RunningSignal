@@ -1,0 +1,35 @@
+{
+  "pilotId": "seongnam-namhansanseong-sujin-v1",
+  "region": "경기도 성남시",
+  "origin": {
+    "name": "남한산성입구역 8호선",
+    "sourcePlaceId": "21160779",
+    "address": "경기 성남시 수정구 산성대로 지하 445",
+    "coord": [127.159882577768, 37.4516686968693]
+  },
+  "destination": {
+    "name": "수진역 8호선",
+    "sourcePlaceId": "21160483",
+    "address": "경기 성남시 수정구 산성대로 지하 200",
+    "coord": [127.140534508419, 37.4373779787206]
+  },
+  "direction": "남한산성입구역→수진역",
+  "reverseDirectionEnabled": false,
+  "routeSource": "TMAP pedestrian API through /api/routes",
+  "routeRetrievedAt": "2026-09-18T10:00:00+09:00",
+  "routeStatus": "unavailable",
+  "routeFailure": "TMAP upstream returned a non-JSON body through the production proxy for this pilot query. The body is not stored because provider error bodies may include implementation details. No synthetic route was created.",
+  "coordinateSystem": "WGS84",
+  "candidateCount": 0,
+  "containsStairs": null,
+  "containsOverpass": null,
+  "crossingCandidateCount": 0,
+  "completeCoverage": false,
+  "predictionEligible": 0,
+  "predictionReady": false,
+  "notes": [
+    "Do not draw a straight line between stations.",
+    "Do not promote these station points into route coverage.",
+    "Run the route query again after TMAP returns JSON, then store the real pedestrian LineString."
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "synthetic": false,
+  "source": "seoul-spatial",
+  "crs": "EPSG:5186",
+  "geometryType": "crossing-line",
+  "placeholder": true,
+  "notes": "Dataset id, CRS, and property names are unconfirmed. Replace REPLACE_AFTER_DICTIONARY_* headers after the spatial dictionary arrives. Do not treat this file as a real schema.",
+  "columns": {
+    "sourceCrossingId": "REPLACE_AFTER_DICTIONARY_sourceCrossingId",
+    "sourceIntersectionId": "REPLACE_AFTER_DICTIONARY_sourceIntersectionId",
+    "pedestrianSignalGroupId": "REPLACE_AFTER_DICTIONARY_pedestrianSignalGroupId",
+    "directionLabel": "REPLACE_AFTER_DICTIONARY_directionLabel",
+    "bearingDeg": "REPLACE_AFTER_DICTIONARY_bearingDeg",
+    "crossingLengthM": "REPLACE_AFTER_DICTIONARY_crossingLengthM"
+  }
+}

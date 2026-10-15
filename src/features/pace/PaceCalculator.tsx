@@ -91,7 +91,7 @@ export function PaceCalculator({
     else setDestination(place);
     if (!nextOrigin || !nextDest) return;
     const stops = loop ? [nextOrigin, nextDest, nextOrigin] : [nextOrigin, nextDest];
-    usePathDistance("map", stops, loop);
+    applyPathDistance("map", stops, loop);
   };
 
   const resolvePath = (
@@ -139,7 +139,7 @@ export function PaceCalculator({
     return built;
   };
 
-  const usePathDistance = (
+  const applyPathDistance = (
     nextSource: DistanceSource,
     stops = plannedStops,
     asLoop = loop,
@@ -195,7 +195,7 @@ export function PaceCalculator({
                       setDestination(currentRoute.destination);
                       setWaypoints(currentRoute.waypoints);
                       setLoop(false);
-                      usePathDistance(
+                      applyPathDistance(
                         "current",
                         [currentRoute.origin, ...currentRoute.waypoints, currentRoute.destination],
                         false,
@@ -235,7 +235,7 @@ export function PaceCalculator({
                   const next = !loop;
                   setLoop(next);
                   if (origin && destination) {
-                    usePathDistance(
+                    applyPathDistance(
                       "map",
                       next ? [origin, destination, origin] : [origin, destination],
                       next,

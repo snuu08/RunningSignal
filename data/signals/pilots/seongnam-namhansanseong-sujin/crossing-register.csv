@@ -1,0 +1,2 @@
+internalId,source,sourceCrossingId,sourceIntersectionId,pedestrianSignalGroupId,geometryType,entryLon,entryLat,exitLon,exitLat,crossingLengthM,paintedWidthM,travel.label,travel.bearingDeg,travel.evidence,stage,synthetic,verifiedAt,verifiedBy,evidence,notes
+,,,,,,,,,,,,unmapped,,,"raw",false,,,"","No crossing is verified yet. Fill only after real TMAP route and field/map evidence identify actual crossing endpoints."

@@ -1,0 +1,34 @@
+{
+  "type": "FeatureCollection",
+  "name": "seongnam-namhansanseong-sujin-v1",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "role": "origin",
+        "name": "남한산성입구역 8호선",
+        "source": "Kakao place search via server proxy",
+        "sourcePlaceId": "21160779",
+        "address": "경기 성남시 수정구 산성대로 지하 445"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [127.159882577768, 37.4516686968693]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "role": "destination",
+        "name": "수진역 8호선",
+        "source": "Kakao place search via server proxy",
+        "sourcePlaceId": "21160483",
+        "address": "경기 성남시 수정구 산성대로 지하 200"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [127.140534508419, 37.4373779787206]
+      }
+    }
+  ]
+}

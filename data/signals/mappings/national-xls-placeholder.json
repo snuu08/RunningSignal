@@ -1,0 +1,14 @@
+{
+  "synthetic": false,
+  "source": "national-xls",
+  "crs": "EPSG:5186",
+  "geometryType": "facility-point",
+  "placeholder": true,
+  "notes": "Header names below are guesses until the actual XLS column dictionary arrives. Export to CSV first. Facility points must not invent cycle or green.",
+  "columns": {
+    "sourceCrossingId": "REPLACE_AFTER_DICTIONARY_id",
+    "sourceIntersectionId": "REPLACE_AFTER_DICTIONARY_intersection",
+    "x": "REPLACE_AFTER_DICTIONARY_x",
+    "y": "REPLACE_AFTER_DICTIONARY_y"
+  }
+}

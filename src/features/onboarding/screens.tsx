@@ -44,9 +44,6 @@ export function RegionScreen() {
 export function ProfileSetupScreen() {
   const ctx = useApp();
   const navigate = useNavigate();
-  if (!ctx.account) return <Navigate to="/welcome" replace />;
-  if (ctx.profile?.profileSetupCompleted) return <Navigate to="/home" replace />;
-
   const usual = ctx.profile?.paces.usual;
   const parts = usual ? secondsToPaceParts(usual) : null;
   const [name, setName] = useState(ctx.profile?.nickname ?? "");
@@ -54,6 +51,9 @@ export function ProfileSetupScreen() {
   const [seconds, setSeconds] = useState(parts ? String(parts.seconds) : "");
   const [error, setError] = useState<string | null>(null);
   const [calcOpen, setCalcOpen] = useState(false);
+
+  if (!ctx.account) return <Navigate to="/welcome" replace />;
+  if (ctx.profile?.profileSetupCompleted) return <Navigate to="/home" replace />;
 
   const finish = (skipPace: boolean) => {
     const nickErr = validateNickname(name);

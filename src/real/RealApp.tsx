@@ -1,0 +1,3337 @@
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import type { User } from "@supabase/supabase-js";
+import { useLocation, useNavigate } from "react-router-dom";
+import {
+  api,
+  cloud,
+  oauthErrorFromLocation,
+  oauthRedirect,
+  recoveryRequested,
+  publicRoutes,
+  pushProfile,
+  syncRuns,
+  type PublicRoute,
+} from "./backend.ts";
+import {
+  cueEtaSec,
+  crossingCount,
+  meters,
+  movementHeadingFromFixes,
+  nextPoi,
+  paceLabel,
+  pathLength,
+  progressOnRoute,
+  rollingPace,
+  routeKey,
+  routeCompleted,
+  trackSegments,
+  timeLabel,
+  validPace,
+  withGeometry,
+  smoothHeading,
+  validCoord,
+  type AvoidanceCheck,
+  type Coord,
+  type Forecast,
+  type Place,
+  type Route,
+} from "./core.ts";
+import {
+  candidateIndex,
+  waitDisplay,
+  type RoutesResponse,
+  type RoutesEvaluationResponse,
+  type StatusResponse,
+  type SignalCoverage,
+} from "./api-contract.ts";
+import { avoidanceCopy, coverageCopy } from "./recommend-copy.ts";
+import { policyFromProfile } from "./routing-policy.ts";
+import {
+  nextInstruction,
+  persistLoginEnabled,
+  setPersistLogin,
+  speak,
+  staticMapUrl,
+  vibrate,
+} from "./guidance.ts";
+import {
+  clearState,
+  defaultProfile,
+  deleteRun,
+  downloadJson,
+  listRuns,
+  normalizeProfile,
+  readState,
+  saveRun,
+  saveState,
+  type Profile,
+  type RunRecord,
+} from "./storage.ts";
+import { RealMap } from "./RealMap.tsx";
+import type { MapPoint } from "./RealMap.helpers.ts";
+import {
+  SIGNAL_DEMO_ROUTE,
+  SIGNAL_DEMO_PACE_SEC_PER_KM,
+  demoRunnerState,
+  demoSignalDisplayState,
+  signalDemoEnabled,
+  demoSignalPoints,
+  demoSignalPredictions,
+} from "./signal-demo.ts";
+import { CurrentStatePanel } from "./features/signals/CurrentStatePanel.tsx";
+import { GpsFieldCheck } from "./GpsFieldCheck.tsx";
+import { liveSignalGuidance } from "./features/signals/liveSignalGuidance.ts";
+import { evaluationCandidate, useLiveRouteForecast } from "./useLiveRouteForecast.ts";
+import {
+  applyPaceSlot,
+  formatPaceSpoken,
+  PACE_SLOTS,
+  computeAveragePaceSeconds,
+  durationPartsToSeconds,
+} from "../domain/pace.ts";
+import type { PaceSlotId } from "../domain/models.ts";
+import { acquireLocation, useGpsRun, type LiveRun } from "./useGpsRun.ts";
+import {
+  classifyLocationAccuracy,
+  LocationAcquisitionError,
+  locationFailureUserMessage,
+  queryGeolocationPermission,
+  type LocationPermissionState,
+  type LocationQuality,
+} from "./location-quality.ts";
+import {
+  realPage,
+  routingPace,
+  showSignalWait,
+  suggestedUsualFromRecords,
+  sustainedOffRoute,
+  TRIAL_OFF_ROUTE,
+} from "./running.ts";
+import "./real.css";
+import { FlowIcon, type FlowIconName } from "./FlowIcon.tsx";
+import { RunnerLogo } from "../components/Logo.tsx";
+const regions = ["서울", "인천", "대구", "성남"];
+const emptyCoords: Coord[] = [];
+const GANGNAM_DEMO_ORIGIN: Place = {
+  id: "8144348",
+  name: "강남역 2호선 1번출구",
+  address: "서울 강남구 역삼동 804",
+  coord: [127.02875795264038, 37.498076243713754],
+};
+const GANGNAM_DEMO_DESTINATION: Place = {
+  id: "9248712",
+  name: "국기원",
+  address: "서울 강남구 테헤란로7길 32",
+  coord: [127.03028620611877, 37.50199523828162],
+};
+const SIGNAL_DEMO_SESSION_KEY = "flow-signal-demo";
+
+type PositionMeta = {
+  accuracyM: number;
+  at: number;
+  quality: LocationQuality;
+  permission: LocationPermissionState;
+  source: "browser-geolocation" | "browser-filtered";
+  requiresConfirmation: boolean;
+  address?: string;
+};
+
+type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
+  requestPermission?: () => Promise<"granted" | "denied">;
+};
+
+function deviceHeadingFromEvent(event: DeviceOrientationEvent): number | null {
+  const webkitCompassHeading =
+    "webkitCompassHeading" in event
+      ? Number((event as DeviceOrientationEvent & { webkitCompassHeading?: number }).webkitCompassHeading)
+      : NaN;
+  if (Number.isFinite(webkitCompassHeading)) return webkitCompassHeading;
+  return event.alpha != null && Number.isFinite(event.alpha)
+    ? 360 - event.alpha
+    : null;
+}
+
+function canRequestDeviceDirection() {
+  if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined")
+    return false;
+  return typeof (DeviceOrientationEvent as DeviceOrientationEventWithPermission).requestPermission === "function";
+}
+
+function gpsQualityLabel(quality: LocationQuality) {
+  return quality === "good"
+    ? "GPS 상태 좋음"
+    : quality === "usable"
+      ? "GPS 상태 보통"
+      : quality === "poor"
+        ? "GPS 상태 불안정"
+        : "GPS 상태 신뢰 어려움";
+}
+
+function permissionLabel(permission: LocationPermissionState) {
+  return permission === "granted"
+    ? "위치 권한 허용됨"
+    : permission === "prompt"
+      ? "위치 권한 확인 필요"
+      : permission === "denied"
+        ? "위치 권한 꺼짐"
+        : permission === "unsupported"
+          ? "위치 기능 미지원"
+          : "위치 권한 상태 확인 불가";
+}
+
+function relativeSecondsLabel(at: number, now = Date.now()) {
+  const sec = Math.max(0, Math.round((now - at) / 1000));
+  return sec < 2 ? "방금 갱신" : `${sec}초 전 갱신`;
+}
+
+function routeMapPoints(
+  route: Route | null,
+  origin: Place | null,
+  destination: Place | null,
+): MapPoint[] {
+  const start = origin?.coord ?? route?.coordinates[0];
+  const end = destination?.coord ?? route?.coordinates.at(-1);
+  return [
+    ...(start
+      ? [{ coord: start, name: origin?.name ?? "출발", kind: "origin" as const }]
+      : []),
+    ...(end
+      ? [
+          {
+            coord: end,
+            name: destination?.name ?? "도착",
+            kind: "destination" as const,
+          },
+        ]
+      : []),
+    ...((route?.nearbyPois ?? []).map((p) => ({
+      coord: p.coord,
+      name: p.name,
+    })) satisfies MapPoint[]),
+  ];
+}
+function Thumbnail({ route }: { route: Route | null }) {
+  const points = route?.coordinates;
+  const [fail, setFail] = useState(false);
+  const url =
+    points && points.length > 1 && !fail
+      ? staticMapUrl(
+          points,
+          import.meta.env.VITE_MAPTILER_KEY ?? "",
+          import.meta.env.VITE_MAPTILER_STYLE,
+        )
+      : null;
+  if (url)
+    return (
+      <img
+        className="real-thumb"
+        src={url}
+        alt="경로 미리보기"
+        onError={() => setFail(true)}
+      />
+    );
+  if (!points?.length) return <div className="real-thumb">↗</div>;
+  const xs = points.map((p) => p[0]),
+    ys = points.map((p) => p[1]),
+    minX = Math.min(...xs),
+    minY = Math.min(...ys),
+    dx = Math.max(...xs) - minX || 0.001,
+    dy = Math.max(...ys) - minY || 0.001;
+  return (
+    <svg
+      className="real-thumb"
+      viewBox="0 0 100 80"
+      aria-label="경로 모양 미리보기"
+    >
+      <polyline
+        points={points
+          .map(
+            (p) =>
+              `${8 + ((p[0] - minX) / dx) * 84},${72 - ((p[1] - minY) / dy) * 64}`,
+          )
+          .join(" ")}
+        fill="none"
+        stroke="#e5f45c"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+function PlaceInput({
+  label,
+  value,
+  onChange,
+  near,
+}: {
+  label: string;
+  value: Place | null;
+  onChange: (p: Place | null) => void;
+  near?: Coord | null;
+}) {
+  const listId = useId();
+  const [activeResult, setActiveResult] = useState(-1);
+  const [query, setQuery] = useState(value?.name ?? ""),
+    [items, setItems] = useState<Place[]>([]),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (value) {
+      setQuery(value.name);
+      setItems([]);
+    }
+  }, [value]);
+  useEffect(() => {
+    if (query.trim().length < 2 || query === value?.name) {
+      setItems([]);
+      setBusy(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => {
+      setBusy(true);
+      const bias = near && validCoord(near) ? `&x=${near[0]}&y=${near[1]}` : "";
+      api<{ places: Place[] }>(
+        `places?q=${encodeURIComponent(query.trim())}${bias}`,
+        undefined,
+        ctrl.signal,
+      )
+        .then((r) => {
+          if (ctrl.signal.aborted) return;
+          setItems(r.places);
+          setActiveResult(-1);
+          setError(
+            r.places.length
+              ? ""
+              : "검색 결과가 없어요. 지도에서 위치를 선택할 수도 있어요.",
+          );
+        })
+        .catch((e) => {
+          if (!ctrl.signal.aborted) setError(e.message);
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted) setBusy(false);
+        });
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [query, value?.name, near, retry]);
+  return (
+    <div className="real-field">
+      <label>
+        {label}
+        <input
+          value={query}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={items.length > 0}
+          aria-controls={items.length ? listId : undefined}
+          aria-activedescendant={activeResult >= 0 && items[activeResult] ? `${listId}-${activeResult}` : undefined}
+          placeholder="장소 이름을 검색하세요"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { setItems([]); setActiveResult(-1); }
+            if (items.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+              e.preventDefault();
+              setActiveResult((i) => e.key === "ArrowDown" ? (i + 1) % items.length : (i <= 0 ? items.length - 1 : i - 1));
+            }
+            if (e.key === "Enter" && items[activeResult]) {
+              e.preventDefault();
+              const selected = items[activeResult];
+              onChange(selected); setQuery(selected.name); setItems([]); setActiveResult(-1);
+            }
+          }}
+          onChange={(e) => {
+            const q = e.target.value;
+            if (value) onChange(null);
+            setQuery(q);
+            setError("");
+          }}
+          autoComplete="off"
+        />
+      </label>
+      {busy && <small role="status">검색 중…</small>}
+      {error && (
+        <small role="status">
+          {error}{" "}
+          <button
+            type="button"
+            className="text-btn"
+            onClick={() => {
+              setError("");
+              setRetry((n) => n + 1);
+            }}
+          >
+            다시 검색
+          </button>
+        </small>
+      )}
+      {items.length > 0 && (
+        <div className="place-results" id={listId} role="listbox" aria-label={`${label} 검색 결과`}>
+          {items.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              role="option"
+              id={`${listId}-${i}`}
+              aria-selected={activeResult === i}
+              onClick={() => {
+                onChange(p);
+                setQuery(p.name);
+                setItems([]);
+                setActiveResult(-1);
+              }}
+            >
+              <strong>{p.name}</strong>
+              <small>{p.address}</small>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+async function namedPlace(coord: Coord, fallback: string): Promise<Place> {
+  try {
+    const response = await api<{ place: Place }>(
+      `places/reverse?x=${coord[0]}&y=${coord[1]}`,
+    );
+    return response.place;
+  } catch {
+    return {
+      id: `map:${coord.join(",")}`,
+      name: fallback,
+      coord,
+    };
+  }
+}
+function Auth({
+  onGuest,
+  notice,
+  recovering,
+}: {
+  onGuest: () => void;
+  notice: (s: string) => void;
+  recovering: boolean;
+}) {
+  const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">(
+      recovering ? "reset" : "login",
+    ),
+    [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
+    [agree, setAgree] = useState(false),
+    [busy, setBusy] = useState(false),
+    [keepLogin, setKeepLogin] = useState(persistLoginEnabled());
+  useEffect(() => {
+    const sub = cloud?.auth.onAuthStateChange((e) => {
+      if (e === "PASSWORD_RECOVERY") setMode("reset");
+    });
+    return () => sub?.data.subscription.unsubscribe();
+  }, []);
+  useEffect(() => {
+    if (recovering) setMode("reset");
+  }, [recovering]);
+  useEffect(() => {
+    const err = oauthErrorFromLocation();
+    if (err) notice(err);
+  }, [notice]);
+  async function oauth(provider: "kakao" | "google") {
+    if (!cloud)
+      return notice(
+        "계정 서버 연결 전입니다. 기기에 기록하며 시작할 수 있어요.",
+      );
+    if (!agree)
+      return notice("소셜 로그인 전에 약관·개인정보처리방침에 동의해 주세요.");
+    setPersistLogin(keepLogin);
+    setBusy(true);
+    try {
+      const { error } = await cloud.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: oauthRedirect() },
+      });
+      if (error) throw error;
+    } catch (e) {
+      notice(e instanceof Error ? e.message : "소셜 로그인에 실패했습니다.");
+      setBusy(false);
+    }
+  }
+  async function submit() {
+    if (!cloud)
+      return notice(
+        "계정 서버 연결 전입니다. 기기에 기록하며 시작할 수 있어요.",
+      );
+    if (mode === "signup" && !agree)
+      return notice("약관·개인정보처리방침 동의가 필요합니다.");
+    setPersistLogin(keepLogin);
+    setBusy(true);
+    try {
+      const redirect = oauthRedirect();
+      const result =
+        mode === "login"
+          ? await cloud.auth.signInWithPassword({ email, password })
+          : mode === "signup"
+            ? await cloud.auth.signUp({
+                email,
+                password,
+                options: {
+                  emailRedirectTo: redirect,
+                  data: { consent_version: "2026-09-07" },
+                },
+              })
+            : mode === "forgot"
+              ? await cloud.auth.resetPasswordForEmail(email, {
+                  redirectTo: redirect,
+                })
+              : await cloud.auth.updateUser({ password });
+      if (result.error) throw result.error;
+      notice(
+        mode === "signup"
+          ? "이메일을 확인해 가입을 완료해 주세요."
+          : mode === "forgot"
+            ? "가입된 주소라면 비밀번호 재설정 메일이 전송됩니다."
+            : mode === "reset"
+              ? "비밀번호를 변경했습니다."
+              : "로그인했습니다.",
+      );
+      if (mode === "login" || mode === "reset") location.assign("/real/home");
+    } catch (e) {
+      notice(e instanceof Error ? e.message : "인증에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="real-auth">
+      <div className="runner-mark">
+        <RunnerLogo />
+      </div>
+      <p className="eyebrow">YOUR PACE. YOUR WAY.</p>
+      <h1>
+        내 속도로,
+        <br />
+        이어 달리다.
+      </h1>
+      <p className="muted">곧고 편안한 러닝 경로를 찾아보세요.</p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <h2>
+          {
+            {
+              login: "로그인",
+              signup: "회원가입",
+              forgot: "비밀번호 찾기",
+              reset: "새 비밀번호 설정",
+            }[mode]
+          }
+        </h2>
+        {mode !== "reset" && (
+          <label>
+            이메일
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+            />
+          </label>
+        )}
+        {mode !== "forgot" && (
+          <label>
+            비밀번호
+            <input
+              type="password"
+              required
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete={
+                mode === "login" ? "current-password" : "new-password"
+              }
+            />
+          </label>
+        )}
+        {(mode === "signup" || mode === "login") && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={keepLogin}
+              onChange={(e) => setKeepLogin(e.target.checked)}
+            />
+            <span>이 기기에서 로그인 유지</span>
+          </label>
+        )}
+        {(mode === "signup" || mode === "login") && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={agree}
+              onChange={(e) => setAgree(e.target.checked)}
+            />
+            <span>
+              <a href="/real/legal" target="_blank" rel="noreferrer">
+                이용약관·개인정보처리방침
+              </a>
+              에 동의합니다. 카카오·Google 로그인에도 필요합니다.
+            </span>
+          </label>
+        )}
+        <button className="primary" disabled={busy || !cloud}>
+          {busy
+            ? "처리 중…"
+            : mode === "login"
+              ? "로그인"
+              : mode === "signup"
+                ? "가입하기"
+                : mode === "forgot"
+                  ? "재설정 메일 보내기"
+                  : "비밀번호 변경"}
+        </button>
+      </form>
+      {mode !== "reset" && mode !== "forgot" && (
+        <div className="oauth-row">
+          <button
+            type="button"
+            className="oauth kakao"
+            disabled={busy || !cloud}
+            onClick={() => void oauth("kakao")}
+          >
+            카카오로 계속
+          </button>
+          <button
+            type="button"
+            className="oauth google"
+            disabled={busy || !cloud}
+            onClick={() => void oauth("google")}
+          >
+            Google로 계속
+          </button>
+        </div>
+      )}
+      <div className="button-row">
+        <button onClick={() => setMode(mode === "signup" ? "login" : "signup")}>
+          {mode === "signup" ? "로그인으로" : "회원가입"}
+        </button>
+        <button onClick={() => setMode(mode === "forgot" ? "login" : "forgot")}>
+          {mode === "forgot" ? "로그인으로" : "비밀번호 찾기"}
+        </button>
+      </div>
+      <button className="secondary" onClick={onGuest}>
+        계정 없이 기기에 기록하기
+      </button>
+      {!cloud && <small>계정 서버 연결 준비 중 · 기기 기록은 사용 가능</small>}
+    </section>
+  );
+}
+
+export function RealApp() {
+  const navigate = useNavigate(),
+    locationState = useLocation(),
+    page = realPage(locationState.pathname);
+  const [user, setUser] = useState<User | null>(null),
+    [authReady, setAuthReady] = useState(!cloud),
+    [recovering, setRecovering] = useState(recoveryRequested),
+    [guest, setGuest] = useState(
+      () => sessionStorage.getItem("flow-real-guest") === "yes",
+    ),
+    [follow, setFollow] = useState(true),
+    [mapBearingMode, setMapBearingMode] = useState<"north" | "course">("course"),
+    [deviceHeading, setDeviceHeading] = useState<number | null>(null),
+    [directionPermission, setDirectionPermission] = useState<
+      "idle" | "granted" | "denied" | "unsupported"
+    >("idle"),
+    [runHeading, setRunHeading] = useState<number | null>(null),
+    [signalDemoRunning, setSignalDemoRunning] = useState(false),
+    [signalDemoStartedAt, setSignalDemoStartedAt] = useState<number | null>(null),
+    [signalDemoElapsedSec, setSignalDemoElapsedSec] = useState(0),
+    [persistOn, setPersistOn] = useState(persistLoginEnabled());
+  const spoken = useRef("");
+  const lastTrustedHeading = useRef<number | null>(null);
+  useEffect(() => {
+    window.scrollTo?.({ top: 0, behavior: "instant" });
+  }, [page]);
+  const owner = user?.id ?? "guest",
+    ownerRef = useRef(owner);
+  ownerRef.current = owner;
+  const [profile, setProfile] = useState<Profile>(defaultProfile),
+    [loaded, setLoaded] = useState(false),
+    [status, setStatus] = useState<StatusResponse | null>(null),
+    [message, setMessage] = useState(""),
+    [busy, setBusy] = useState(false);
+  const [origin, setOrigin] = useState<Place | null>(null),
+    [destination, setDestination] = useState<Place | null>(null),
+    [via, setVia] = useState<Place | null>(null),
+    [showVia, setShowVia] = useState(false),
+    [pick, setPick] = useState<"origin" | "destination" | "via" | null>(null),
+    [loop, setLoop] = useState(false),
+    [tripIntent, setTripIntent] = useState<"destination" | "park" | "free">(
+      "destination",
+    );
+  useEffect(() => {
+    if (pick) document.querySelector(".planner-map")?.scrollIntoView?.({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "center" });
+  }, [pick]);
+  const [pace, setPace] = useState(360),
+    [routes, setRoutes] = useState<Route[]>([]),
+    [candidate, setCandidate] = useState(0),
+    [recommendedId, setRecommendedId] = useState<string | null>(null),
+    [forecasts, setForecasts] = useState<Record<string, Forecast>>({}),
+    [recommendReason, setRecommendReason] = useState<
+      "walking-baseline" | "signal-compare"
+    >("walking-baseline"),
+    [recommendNotes, setRecommendNotes] = useState<string[]>([]),
+    [signalCoverage, setSignalCoverage] = useState<SignalCoverage>("unknown"),
+    [avoidanceCheck, setAvoidanceCheck] = useState<AvoidanceCheck | null>(null),
+    [departureMs, setDepartureMs] = useState<number | null>(null),
+    [position, setPosition] = useState<Coord | null>(null),
+    [positionMeta, setPositionMeta] = useState<PositionMeta | null>(null),
+    [permissionStatus, setPermissionStatus] =
+      useState<LocationPermissionState>("unknown"),
+    [fit, setFit] = useState(0),
+    [positionFocus, setPositionFocus] = useState(0);
+  const [records, setRecords] = useState<RunRecord[]>([]),
+    [result, setResult] = useState<RunRecord | null>(null),
+    [selectedKey, setSelectedKey] = useState<string | null>(null),
+    [publicItems, setPublicItems] = useState<PublicRoute[]>([]),
+    [recovery, setRecovery] = useState<LiveRun | null>(null);
+  const     [calcKm, setCalcKm] = useState("5"),
+    [calcHour, setCalcHour] = useState("0"),
+    [calcMin, setCalcMin] = useState("30"),
+    [calcSec, setCalcSec] = useState("0"),
+    [paceSlot, setPaceSlot] = useState<PaceSlotId>("usual"),
+    [nickname, setNickname] = useState(""),
+    [signalId, setSignalId] = useState(""),
+    [signalResult, setSignalResult] = useState<unknown>(null);
+  const request = useRef<AbortController | null>(null),
+    saving = useRef(false),
+    lastCheckpoint = useRef(0),
+    runOwner = useRef(owner);
+  const notice = useCallback((s: string) => setMessage(s), []);
+  const run = useGpsRun((r) => {
+    if (Date.now() - lastCheckpoint.current > 5000) {
+      lastCheckpoint.current = Date.now();
+      void saveState(`active:${runOwner.current}`, r).catch(() =>
+        notice("기기 저장 공간에 기록을 백업하지 못했어요."),
+      );
+    }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined") {
+      setDirectionPermission("unsupported");
+      return;
+    }
+    const onOrientation = (event: DeviceOrientationEvent) => {
+      const next = deviceHeadingFromEvent(event);
+      if (next !== null) setDeviceHeading((prev) => smoothHeading(prev, next));
+    };
+    if (!canRequestDeviceDirection()) {
+      setDirectionPermission("granted");
+      window.addEventListener("deviceorientation", onOrientation, true);
+      return () => window.removeEventListener("deviceorientation", onOrientation, true);
+    }
+    if (directionPermission !== "granted") return;
+    window.addEventListener("deviceorientation", onOrientation, true);
+    return () => window.removeEventListener("deviceorientation", onOrientation, true);
+  }, [directionPermission]);
+  async function enableDeviceDirection() {
+    if (!canRequestDeviceDirection()) {
+      setDirectionPermission("unsupported");
+      notice("이 브라우저는 방향 센서 권한 요청을 지원하지 않아요.");
+      return;
+    }
+    try {
+      const result = await (
+        DeviceOrientationEvent as DeviceOrientationEventWithPermission
+      ).requestPermission?.();
+      setDirectionPermission(result === "granted" ? "granted" : "denied");
+      notice(result === "granted" ? "방향 센서를 켰어요." : "방향 센서 권한이 거부됐어요.");
+    } catch {
+      setDirectionPermission("denied");
+      notice("방향 센서 권한을 사용할 수 없어요.");
+    }
+  }
+  const route = routes[candidate] ?? null;
+  const signalDemo =
+    signalDemoEnabled(locationState.search) ||
+    (typeof sessionStorage !== "undefined" &&
+      sessionStorage.getItem(SIGNAL_DEMO_SESSION_KEY) === "yes");
+  const demoDurationSec = 38;
+  const demoDistanceM = pathLength(SIGNAL_DEMO_ROUTE.coordinates);
+  const demoProgressM = Math.min(
+    demoDistanceM,
+    (signalDemoElapsedSec / demoDurationSec) * demoDistanceM,
+  );
+  const demoRunner = demoRunnerState(SIGNAL_DEMO_ROUTE, demoProgressM);
+  const demoPredictions = demoSignalPredictions(demoProgressM, SIGNAL_DEMO_PACE_SEC_PER_KM);
+  const demoNextSignal =
+    demoPredictions.find((p) => p.atM > demoProgressM + 5) ?? null;
+  const demoAllPassed = signalDemoElapsedSec >= demoDurationSec;
+  useEffect(() => {
+    if (signalDemoEnabled(locationState.search))
+      sessionStorage.setItem(SIGNAL_DEMO_SESSION_KEY, "yes");
+  }, [locationState.search]);
+  const liveSignals = showSignalWait(status?.signal?.predictionReady === true ||
+    status?.signal?.liveFeedConfigured === true ||
+    Object.values(forecasts).some((f) => waitDisplay(f).known));
+  const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
+  const travelSec = route ? (route.distanceM / 1000) * pace : 0;
+  const currentRawFix = run.rawFix ?? run.live?.track.fixes.at(-1) ?? run.fix;
+  const along =
+    run.live?.route && currentRawFix
+      ? (run.routeProjection ??
+        progressOnRoute(run.live.route.coordinates, currentRawFix.coord))
+      : null;
+  const rawOffRouteM = run.routeProjection?.offRouteM ?? along?.offRouteM ?? null;
+  const plannerPosition = position;
+  const plannerAccuracyM = positionMeta && position ? positionMeta.accuracyM : null;
+  const upcoming = along
+    ? nextPoi(run.live?.route?.nearbyPois, along.traveledM)
+    : null;
+  const turn =
+    along && run.live?.route
+      ? nextInstruction(run.live.route, along.traveledM)
+      : null;
+  const headingQuality =
+    run.fix ? classifyLocationAccuracy(run.fix.accuracy) : null;
+  const gpsHeading =
+    run.fix?.heading != null && Number.isFinite(run.fix.heading)
+      ? run.fix.heading
+      : null;
+  const movementHeading = run.live
+    ? movementHeadingFromFixes(run.live.track.fixes)
+    : null;
+  const rawHeading =
+    headingQuality === "poor" || headingQuality === "unreliable"
+      ? lastTrustedHeading.current
+      : gpsHeading ?? movementHeading ?? deviceHeading ?? lastTrustedHeading.current;
+  useEffect(() => {
+    const next = smoothHeading(lastTrustedHeading.current, rawHeading);
+    if (next === null) return;
+    lastTrustedHeading.current = next;
+    setRunHeading(next);
+  }, [rawHeading]);
+  const heading = runHeading;
+  const liveNow = run.live?.lastTick ?? null;
+  const rollingPace30 =
+    run.live?.phase === "running" && liveNow !== null
+      ? rollingPace(run.live.track, liveNow, 30)
+      : null;
+  const rollingPace60 =
+    run.live?.phase === "running" && liveNow !== null
+      ? rollingPace(run.live.track, liveNow, 60)
+      : null;
+  const measuredPace = routingPace(rollingPace30, rollingPace60, pace);
+  const livePace = measuredPace.pace;
+  const forecastProgressM = along && run.live?.route && along.totalM > 0
+    ? (along.traveledM / along.totalM) * run.live.route.distanceM
+    : 0;
+  const liveAssessment = useLiveRouteForecast({
+    runId: run.live?.id ?? null,
+    route: run.live?.route ?? null,
+    running: run.live?.phase === "running",
+    enabled: liveSignals,
+    pace: livePace,
+    traveledM: forecastProgressM,
+  });
+  const routeForecast = liveSignals && run.live?.route
+    ? liveAssessment.assessment?.forecasts[run.live.route.id] ?? null
+    : null;
+  const liveSignal = liveSignalGuidance({
+    routeForecast,
+    traveledM: along ? forecastProgressM : null,
+    livePace,
+    nowMs: liveNow,
+  });
+  useEffect(() => {
+    if (!signalDemoRunning || signalDemoStartedAt === null) return;
+    const tick = () => {
+      const elapsed = (Date.now() - signalDemoStartedAt) / 1000;
+      setSignalDemoElapsedSec(Math.min(demoDurationSec, elapsed));
+      if (elapsed >= demoDurationSec) setSignalDemoRunning(false);
+    };
+    tick();
+    const timer = window.setInterval(tick, 100);
+    return () => window.clearInterval(timer);
+  }, [signalDemoRunning, signalDemoStartedAt, demoDurationSec]);
+  const [offSamples, setOffSamples] = useState<
+    { offRouteM: number; accuracy: number }[]
+  >([]);
+  useEffect(() => {
+    const fix = currentRawFix;
+    if (run.live?.phase !== "running" || rawOffRouteM === null || !fix) {
+      if (run.live?.phase !== "running") setOffSamples([]);
+      return;
+    }
+    setOffSamples((prev) =>
+      [...prev, { offRouteM: rawOffRouteM, accuracy: fix.accuracy }].slice(-8),
+    );
+  }, [rawOffRouteM, currentRawFix, run.live?.phase]);
+  const offRouteNow = sustainedOffRoute(offSamples, TRIAL_OFF_ROUTE);
+  const paceSuggest = suggestedUsualFromRecords(records);
+  const calcDuration = durationPartsToSeconds(
+    Number(calcHour) || 0,
+    Number(calcMin) || 0,
+    Number(calcSec) || 0,
+  );
+  const calcPace = computeAveragePaceSeconds(Number(calcKm), calcDuration ?? 0);
+  useEffect(() => {
+    if (run.live?.phase !== "running" || !along) return;
+    const cue = turn
+      ? { id: `${turn.text}:${Math.round(turn.atM)}`, text: turn.text, atM: turn.atM }
+      : upcoming
+        ? { id: upcoming.id, text: upcoming.name, atM: upcoming.atM }
+        : null;
+    if (!cue) return;
+    const remain = cue.atM - along.traveledM;
+    if (remain < 8 || remain > 55) return;
+    if (spoken.current === cue.id) return;
+    spoken.current = cue.id;
+    if (profile.voice) speak(cue.text);
+    if (profile.vibration) vibrate(180);
+  }, [
+    along,
+    turn,
+    upcoming,
+    run.live?.phase,
+    profile.voice,
+    profile.vibration,
+  ]);
+  const go = (next: string) => {
+    if (run.live && run.live.phase !== "ended" && next !== "run") {
+      notice("진행 중인 러닝을 종료한 뒤 이동해 주세요.");
+      return;
+    }
+    navigate(`/real/${next}${signalDemo ? "?demo=signal" : ""}`);
+    setMessage("");
+  };
+  useEffect(() => {
+    const path = locationState.pathname;
+    if (path === "/" || path === "/real" || path === "/real/")
+      navigate("/real/home", { replace: true });
+  }, [locationState.pathname, navigate]);
+  useEffect(() => {
+    if (user && !recovering && page === "auth")
+      navigate("/real/home", { replace: true });
+  }, [user, recovering, page, navigate]);
+  useEffect(() => {
+    if (!cloud) return;
+    const recoveryHash = recoveryRequested;
+    let cancelled = false;
+    const ready = (session: User | null | undefined) => {
+      if (cancelled) return;
+      if (!recoveryHash && session !== undefined) setUser(session);
+      setAuthReady(true);
+    };
+    const timer = window.setTimeout(() => ready(null), 4000);
+    void cloud.auth
+      .getSession()
+      .then(({ data }) => {
+        window.clearTimeout(timer);
+        if (!recoveryHash) ready(data.session?.user ?? null);
+        else ready(undefined);
+      })
+      .catch(() => {
+        window.clearTimeout(timer);
+        ready(null);
+      });
+    const sub = cloud.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") setRecovering(true);
+      if (event !== "PASSWORD_RECOVERY" && !recoveryHash)
+        setUser(session?.user ?? null);
+      setAuthReady(true);
+    });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      sub.data.subscription.unsubscribe();
+    };
+  }, []);
+  useEffect(() => {
+    void api<StatusResponse>("status")
+      .then(setStatus)
+      .catch(() =>
+        notice("API 서버 연결을 확인해 주세요. GPS 기록은 사용할 수 있어요."),
+      );
+  }, [notice]);
+  useEffect(() => {
+    let cancelled = false;
+    void queryGeolocationPermission().then(async (permission) => {
+      if (cancelled) return;
+      setPermissionStatus(permission);
+      if (permission !== "granted") return;
+      try {
+        const acquired = await acquireLocation({ purpose: "display" });
+        if (cancelled) return;
+        setPosition(acquired.fix.coord);
+        setPositionMeta({
+          accuracyM: acquired.fix.accuracy,
+          at: acquired.fix.at,
+          quality: acquired.quality,
+          permission: acquired.permission,
+          source: acquired.source,
+          requiresConfirmation: acquired.requiresConfirmation,
+        });
+      } catch {
+        if (!cancelled) setPositionMeta(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(false);
+    setRecords([]);
+    setRecovery(null);
+    setResult(null);
+    void Promise.all([
+      readState<Profile>(`profile:${owner}`),
+      listRuns(owner),
+      readState<LiveRun>(`active:${owner}`),
+      readState<RunRecord>(`result:${owner}`),
+    ])
+      .then(async ([p, rows, active, savedResult]) => {
+        if (cancelled) return;
+        setProfile(normalizeProfile(p));
+        setNickname(p?.nickname ?? "");
+        setPace(normalizeProfile(p).paces.usual ?? p?.pace ?? 360);
+        setRecords(rows);
+        if (savedResult) setResult(savedResult);
+        if (active) setRecovery(active);
+        setLoaded(true);
+        if (cloud && user) {
+          const response = await cloud
+            .from("profiles")
+            .select("data")
+            .eq("id", owner)
+            .maybeSingle();
+          const remote = response.data?.data as Profile | undefined;
+          const meta = user.user_metadata ?? {};
+          const fromOauth = [meta.full_name, meta.name, meta.nickname].find(
+            (v) => typeof v === "string" && v.trim().length >= 2,
+          );
+          const seeded = remote
+            ? normalizeProfile(remote)
+            : p
+              ? null
+              : typeof fromOauth === "string"
+                ? {
+                    ...defaultProfile,
+                    nickname: fromOauth.trim().slice(0, 20),
+                  }
+                : null;
+          if (!cancelled && seeded && !p) {
+            setProfile(seeded);
+            setNickname(seeded.nickname);
+            setPace(seeded.paces.usual ?? seeded.pace);
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoaded(true);
+          notice(
+            "기기 저장소를 열지 못했습니다. 저장 공간·브라우저 설정을 확인해 주세요.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [owner, notice, user]);
+  useEffect(() => {
+    if (!loaded || page !== "run" || run.live || !recovery) return;
+    runOwner.current = owner;
+    run.recover(recovery);
+    setRecovery(null);
+  }, [loaded, page, run.live, recovery, owner]);
+  useEffect(() => {
+    let canceled = false;
+    void publicRoutes(profile.region)
+      .then((r) => {
+        if (!canceled) setPublicItems(r);
+      })
+      .catch(() => {
+        if (!canceled) setPublicItems([]);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [profile.region]);
+  useEffect(() => () => request.current?.abort(), []);
+  useEffect(() => {
+    if (
+      !profile.wake ||
+      run.live?.phase !== "running" ||
+      !("wakeLock" in navigator)
+    )
+      return;
+    let lock: WakeLockSentinel | null = null,
+      disposed = false;
+    const acquire = () => {
+      if (document.visibilityState !== "visible") return;
+      void navigator.wakeLock
+        .request("screen")
+        .then((l) => {
+          if (disposed) void l.release();
+          else lock = l;
+        })
+        .catch(() => notice("화면 켜짐 유지를 사용할 수 없습니다."));
+    };
+    acquire();
+    document.addEventListener("visibilitychange", acquire);
+    return () => {
+      disposed = true;
+      void lock?.release();
+      document.removeEventListener("visibilitychange", acquire);
+    };
+  }, [profile.wake, run.live?.phase, notice]);
+  async function action(fn: () => Promise<void>) {
+    if (busy) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await fn();
+    } catch (e) {
+      notice(
+        e instanceof Error
+          ? e.message
+          : "처리하지 못했습니다. 다시 시도해 주세요.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function updateProfile(p: Profile) {
+    if (
+      p.nickname.trim().length < 2 ||
+      p.nickname.trim().length > 20 ||
+      !validPace(p.pace)
+    )
+      throw new Error("닉네임은 2~20자, 페이스는 2:00~30:00/km로 입력하세요.");
+    await saveState(`profile:${owner}`, p);
+    setProfile(p);
+    if (user) {
+      try {
+        await pushProfile(owner, p);
+      } catch {
+        notice("기기에 저장했어요. 계정 설정 동기화는 다시 시도해 주세요.");
+      }
+    }
+  }
+  async function usePosition() {
+    let acquired;
+    const applyDisplay = (result: Awaited<ReturnType<typeof acquireLocation>>) => {
+      const f = result.fix;
+      setPosition(f.coord);
+      setPermissionStatus(result.permission);
+      setPositionMeta({
+        accuracyM: f.accuracy,
+        at: f.at,
+        quality: result.quality,
+        permission: result.permission,
+        source: result.source,
+        requiresConfirmation: result.requiresConfirmation,
+      });
+      setOrigin({
+        id: `gps:${f.coord.join(",")}`,
+        name: "현재 위치",
+        coord: f.coord,
+      });
+      setPositionFocus((value) => value + 1);
+    };
+    try {
+      acquired = await acquireLocation({
+        purpose: "display",
+        onUpdate: applyDisplay,
+      });
+    } catch (error) {
+      if (
+        error instanceof LocationAcquisitionError &&
+        error.reason === "permission-denied"
+      )
+        setPermissionStatus("denied");
+      throw error;
+    }
+    const f = acquired.fix;
+    const place = await namedPlace(f.coord, "현재 위치");
+    setPosition(place.coord);
+    setPermissionStatus(acquired.permission);
+    setPositionMeta({
+      accuracyM: f.accuracy,
+      at: f.at,
+      quality: acquired.quality,
+      permission: acquired.permission,
+      source: acquired.source,
+      requiresConfirmation: acquired.requiresConfirmation,
+      address: place.address ?? (place.name === "현재 위치" ? "주소를 확인하지 못했습니다." : place.name),
+    });
+    setOrigin(place);
+    const quality = acquired.quality;
+    if (quality === "usable")
+      notice(
+        `현재 위치 오차 범위가 약 ${Math.round(f.accuracy)}m입니다. 가능한 출발지를 표시했습니다.`,
+      );
+    else if (quality === "poor")
+      notice(
+        "주변 환경으로 인해 위치가 불안정합니다. 지도에서 실제 출발지를 확인해 주세요.",
+      );
+  }
+  async function findRoutes() {
+    if (!origin || !destination || !validPace(pace))
+      throw new Error(
+        "검색 결과 또는 지도에서 출발지·목적지를 선택하고 페이스를 입력해 주세요.",
+      );
+    if (meters(origin.coord, destination.coord) < 20 && !via)
+      throw new Error(
+        "출발지와 목적지를 다르게 선택하거나 경유지를 추가해 주세요.",
+      );
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    setRoutes([]);
+    setCandidate(0);
+    setRecommendedId(null);
+    setForecasts({});
+    setRecommendReason("walking-baseline");
+    setRecommendNotes([]);
+    setSignalCoverage("unknown");
+    setAvoidanceCheck(null);
+    setDepartureMs(null);
+    navigate("/real/loading");
+    try {
+      const stops = loop
+        ? [destination, ...(via ? [via] : [])]
+        : via
+          ? [via]
+          : [];
+      const policy = policyFromProfile(profile);
+      const [response] = await Promise.all([
+        api<RoutesResponse>(
+          "routes",
+          {
+            origin,
+            destination: loop ? origin : destination,
+            waypoints: stops,
+            pace,
+            policy,
+          },
+          ctrl.signal,
+        ),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+      if (ctrl.signal.aborted) return;
+      if (
+        response.recommendedId &&
+        !response.routes.some((r) => r.id === response.recommendedId)
+      )
+        throw new Error("추천 경로가 반환 후보에 없습니다. 다시 검색해 주세요.");
+      const next = response.routes.map((r) =>
+        withGeometry({
+          ...r,
+          name: `${origin.name} → ${destination.name}${loop ? " → 출발지" : ""}`,
+        }),
+      );
+      if (!next.length)
+        throw new Error("조건에 맞는 보행 경로가 없어요.");
+      setRoutes(next);
+      setForecasts(response.forecasts ?? {});
+      setRecommendReason(response.recommendationReason ?? "walking-baseline");
+      setRecommendNotes(response.recommendSentences ?? []);
+      setSignalCoverage(response.signalCoverage ?? "unknown");
+      setAvoidanceCheck(response.avoidanceCheck ?? null);
+      setDepartureMs(response.departureMs ?? null);
+      setCandidate(candidateIndex(next, response.recommendedId));
+      setRecommendedId(response.recommendedId);
+      navigate("/real/recommend");
+      if (response.partial)
+        notice("일부 후보 요청이 실패해 확인된 경로만 보여드려요.");
+    } catch (e) {
+      if (!ctrl.signal.aborted) {
+        navigate("/real/home");
+        throw e;
+      }
+    }
+  }
+  async function refreshCandidateSignals(selectRecommended = false) {
+    if (!routes.length) return;
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    const response = await api<RoutesEvaluationResponse>("routes/evaluate", {
+      candidates: routes.map((r) => evaluationCandidate(r)),
+      pace,
+      policy: policyFromProfile(profile),
+    }, ctrl.signal);
+    if (ctrl.signal.aborted) return;
+    setForecasts(response.forecasts);
+    setRecommendReason(response.recommendationReason);
+    setRecommendNotes(response.recommendSentences ?? []);
+    setSignalCoverage(response.signalCoverage);
+    setDepartureMs(response.departureMs);
+    setRecommendedId(response.recommendedId);
+    if (selectRecommended) setCandidate(candidateIndex(routes, response.recommendedId));
+  }
+  async function loadGangnamDemoRoute() {
+    const demoPace = 360;
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    setTripIntent("destination");
+    setLoop(false);
+    setVia(null);
+    setOrigin(GANGNAM_DEMO_ORIGIN);
+    setDestination(GANGNAM_DEMO_DESTINATION);
+    setPace(demoPace);
+    setRoutes([]);
+    setCandidate(0);
+    setRecommendedId(null);
+    setForecasts({});
+    setRecommendReason("walking-baseline");
+    setRecommendNotes([]);
+    setSignalCoverage("unknown");
+    setAvoidanceCheck(null);
+    setDepartureMs(null);
+    navigate("/real/loading");
+    try {
+      const policy = policyFromProfile(profile);
+      const [response] = await Promise.all([
+        api<RoutesResponse>(
+          "routes",
+          {
+            origin: GANGNAM_DEMO_ORIGIN,
+            destination: GANGNAM_DEMO_DESTINATION,
+            waypoints: [],
+            pace: demoPace,
+            policy,
+          },
+          ctrl.signal,
+        ),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+      if (ctrl.signal.aborted) return;
+      const next = response.routes.map((r) =>
+        withGeometry({
+          ...r,
+          name: "강남역 1번출구 → 국기원",
+        }),
+      );
+      if (!next.length) throw new Error("강남 촬영 루트를 확인하지 못했어요.");
+      setRoutes(next);
+      setForecasts(response.forecasts ?? {});
+      setRecommendReason(response.recommendationReason ?? "walking-baseline");
+      setRecommendNotes(
+        response.recommendSentences?.length
+          ? response.recommendSentences
+          : [
+              "강남 촬영용 route입니다. 실제 신호 예측은 현장 검증 전까지 표시하지 않습니다.",
+            ],
+      );
+      setSignalCoverage(response.signalCoverage ?? "unknown");
+      setAvoidanceCheck(response.avoidanceCheck ?? null);
+      setDepartureMs(response.departureMs ?? null);
+      setCandidate(candidateIndex(next, response.recommendedId));
+      setRecommendedId(response.recommendedId);
+      navigate("/real/recommend");
+      notice("강남 촬영 루트를 불러왔어요. 실제 신호는 직접 확인해 주세요.");
+    } catch (e) {
+      if (!ctrl.signal.aborted) {
+        navigate("/real/home");
+        throw e;
+      }
+    }
+  }
+  async function rerouteFromHere() {
+    const here = run.rawFix?.coord ?? run.live?.track.fixes.at(-1)?.coord;
+    const active = run.live?.route;
+    if (!here || !active)
+      throw new Error("경로 러닝 중에만 현재 위치에서 다시 찾을 수 있어요.");
+    const end = active.coordinates.at(-1);
+    const dest = end
+      ? destination && meters(destination.coord, end) < 20
+        ? destination
+        : await namedPlace(end, "도착지")
+      : null;
+    if (!dest) throw new Error("목적지를 확인할 수 없어요.");
+    const orig = await namedPlace(here, "현재 위치");
+    request.current?.abort();
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    const traveledM = along?.traveledM ?? 0;
+    const stops = [...(loop && destination ? [destination] : []), ...(via ? [via] : [])]
+      .filter((p) => meters(p.coord, dest.coord) >= 20 &&
+        progressOnRoute(active.coordinates, p.coord).traveledM > traveledM + 20);
+    const response = await api<RoutesResponse>("routes", {
+      origin: orig,
+      destination: dest,
+      waypoints: stops,
+      pace: livePace,
+      policy: policyFromProfile(profile),
+    }, ctrl.signal);
+    if (ctrl.signal.aborted) return;
+    const next = response.routes.map((r) =>
+      withGeometry({
+        ...r,
+        name: `${orig.name} → ${dest.name}`,
+      }),
+    );
+    if (!next.length) throw new Error("조건에 맞는 보행 경로가 없어요.");
+    setOrigin(orig);
+    if (!loop) setDestination(dest);
+    setRoutes(next);
+    setForecasts(response.forecasts ?? {});
+    setRecommendReason(response.recommendationReason ?? "walking-baseline");
+    setRecommendNotes(response.recommendSentences ?? []);
+    setSignalCoverage(response.signalCoverage ?? "unknown");
+    setDepartureMs(response.departureMs);
+    setAvoidanceCheck(response.avoidanceCheck ?? null);
+    setRecommendedId(response.recommendedId);
+    setCandidate(candidateIndex(next, response.recommendedId));
+    run.updateRoute(next[candidateIndex(next, response.recommendedId)]);
+    setOffSamples([]);
+    notice(`${measuredPace.source} ${paceLabel(livePace)}/km로 남은 경로를 다시 비교했어요. ${response.signalCoverage === "unknown" ? "신호 대기는 미확인입니다." : "확인된 신호 대기를 반영했어요."}`);
+  }
+  async function startRun(selected: Route | null) {
+    runOwner.current = owner;
+    await run.start(selected, selected ? origin?.coord : null);
+    setFollow(profile.followCam);
+    setOffSamples([]);
+    spoken.current = "";
+    navigate("/real/run");
+    if (profile.voice) speak("러닝을 시작합니다.");
+    if (profile.vibration) vibrate(100);
+  }
+  async function finish() {
+    if (!confirm("러닝을 종료하고 기록을 확인할까요?")) return;
+    const live = run.end();
+    if (!live) return;
+    const r = live.route;
+    const complete =
+      !!r && routeCompleted(r, live.track, live.departure ?? undefined);
+    const record: RunRecord = {
+      id: live.id,
+      owner: runOwner.current,
+      title: r ? r.name : `${profile.region} 자유 러닝`,
+      route: r,
+      routeKey: r ? routeKey(r.coordinates) : `free:${live.id}`,
+      track: live.track,
+      activeSec: live.activeSec,
+      manualPauseSec: live.manualPauseSec,
+      elapsedSec: live.activeSec + live.manualPauseSec,
+      startedAt: live.startedAt,
+      finishedAt: Date.now(),
+      complete,
+      synced: false,
+    };
+    setResult(record);
+    try {
+      await saveState(`result:${record.owner}`, record);
+      await clearState(`active:${record.owner}`);
+    } catch {
+      notice(
+        "결과는 화면에 남아 있지만 자동 백업하지 못했어요. 저장 또는 내보내기를 해 주세요.",
+      );
+    }
+    setRecovery(null);
+    navigate("/real/result");
+  }
+  async function saveResult() {
+    if (!result || saving.current) return;
+    saving.current = true;
+    try {
+      if (result.track.distanceM < 10)
+        throw new Error("10m 이상 기록한 러닝부터 저장할 수 있어요.");
+      await saveRun(result);
+      setRecords(await listRuns(owner));
+      await clearState(`result:${owner}`);
+      run.clear();
+      navigate("/real/routes");
+      notice(
+        "기기에 저장했어요. 계정 동기화 버튼으로 다른 기기에도 보관할 수 있어요.",
+      );
+    } finally {
+      saving.current = false;
+    }
+  }
+  async function synchronize() {
+    if (!user || !cloud)
+      throw new Error("로그인 후 계정에 동기화할 수 있어요.");
+    const who = owner;
+    const remote = await syncRuns(who, await listRuns(who));
+    const remoteIds = new Set(remote.map((r) => r.id));
+    for (const r of await listRuns(who))
+      if (r.synced && !remoteIds.has(r.id)) await deleteRun(r.id);
+    for (const r of remote) await saveRun(r);
+    if (ownerRef.current === who) setRecords(await listRuns(who));
+    notice("기록을 계정에 동기화했어요.");
+  }
+  async function publish(record: RunRecord) {
+    if (!cloud || !user) throw new Error("로그인 후 코스를 공개할 수 있어요.");
+    if (!record.route || !record.complete)
+      throw new Error("경로를 완료한 기록만 코스로 공개할 수 있어요.");
+    if (
+      !confirm(
+        "출발지·목적지와 경로가 다른 사람에게 공개됩니다. 이 코스를 공개할까요?",
+      )
+    )
+      return;
+    const { error } = await cloud.from("public_routes").upsert({
+      id: record.id,
+      user_id: owner,
+      title: record.title,
+      region: profile.region,
+      route: record.route,
+    });
+    if (error) throw error;
+    setPublicItems(await publicRoutes(profile.region));
+    notice("코스를 공개했어요. 인기 코스에서 공개 취소할 수 있어요.");
+  }
+  const grouped = [...new Set(records.map((r) => r.routeKey))].map((key) => ({
+    key,
+    sessions: records.filter((r) => r.routeKey === key),
+  }));
+  const displayed = selectedKey
+    ? records.filter((r) => r.routeKey === selectedKey)
+    : records;
+  const previous = result
+    ? records.filter(
+        (r) =>
+          r.routeKey === result.routeKey && r.complete && r.id !== result.id,
+      )
+    : [];
+  const best = previous.length
+    ? Math.min(...previous.map((r) => r.elapsedSec))
+    : null;
+  const isBest =
+    !!result?.complete && best !== null && result.elapsedSec < best;
+  const nav = (
+    <nav className="real-nav" aria-label="주 메뉴">
+      {[
+        ["home", "home", "홈"],
+        ["routes", "route", "나의 기록"],
+        ["settings", "settings", "설정"],
+      ].map(([p, icon, label]) => (
+        <button
+          key={p}
+          aria-current={page === p || (p === "settings" && ["diagnostics", "pace"].includes(page)) || (p === "routes" && ["history", "popular"].includes(page)) ? "page" : undefined}
+          onClick={() => go(p)}
+        >
+          <FlowIcon name={icon as FlowIconName} />
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+  let content;
+  if (page === "legal")
+    content = (
+      <section>
+        <h1>이용약관·개인정보 안내</h1>
+        <p>
+          FLOW RUN 베타는 러닝 경로 찾기와 GPS 기록을 제공합니다. 보행 신호 대기
+          예측은 아직 제공하지 않습니다.
+        </p>
+        <p>
+          기기 기록은 이 브라우저에 저장됩니다. 계정 동기화를 누르면 위치 경로와
+          운동 기록이 계정 서버에 저장됩니다. 코스 공개는 별도 버튼으로 요청한
+          경로만 공개합니다.
+        </p>
+        <p>
+          정식 서비스 전에 운영자 정보, 보관·파기 기간, 처리위탁을 이 페이지에
+          맞게 고지해야 합니다. 위치 권한은 운동 기록에만 쓰입니다.
+        </p>
+        <button onClick={() => go("home")}>돌아가기</button>
+      </section>
+    );
+  else if (!authReady || !loaded)
+    content = (
+      <section className="real-loading">
+        <div className="runner-mark">
+          <RunnerLogo />
+        </div>
+        <p>FLOW RUN을 준비하고 있어요.</p>
+      </section>
+    );
+  else if (((!user && !guest) || page === "auth") && !signalDemo)
+    content = (
+      <Auth
+        recovering={recovering}
+        notice={notice}
+        onGuest={() => {
+          setGuest(true);
+          sessionStorage.setItem("flow-real-guest", "yes");
+          if (signalDemo) {
+            sessionStorage.setItem(SIGNAL_DEMO_SESSION_KEY, "yes");
+            navigate("/real/run?demo=signal");
+          } else go("home");
+        }}
+      />
+    );
+  else if (!profile.onboarded && !signalDemo)
+    content = (
+      <section>
+        <p className="eyebrow">WELCOME TO FLOW RUN</p>
+        <h1>
+          어디에서
+          <br />
+          달려볼까요?
+        </h1>
+        <label>
+          지역
+          <select
+            value={profile.region}
+            onChange={(e) => setProfile({ ...profile, region: e.target.value })}
+          >
+            {regions.map((r) => (
+              <option key={r}>{r}</option>
+            ))}
+          </select>
+        </label>
+        <p className="muted">
+          지역은 공개 코스 분류에 사용해요. 신호 데이터 지원 범위와는 다릅니다.
+          지금은 어느 지역도 대기 예측을 켜 두지 않았습니다.
+        </p>
+        <label>
+          닉네임
+          <input
+            maxLength={20}
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            placeholder="2~20자"
+          />
+        </label>
+        <label>
+          평균 페이스
+          <div className="pace-input">
+            <input
+              aria-label="온보딩 페이스 분"
+              type="number"
+              min={2}
+              max={30}
+              value={Math.floor(pace / 60)}
+              onChange={(e) =>
+                setPace(Number(e.target.value) * 60 + (pace % 60))
+              }
+            />
+            <span>분</span>
+            <input
+              aria-label="온보딩 페이스 초"
+              type="number"
+              min={0}
+              max={59}
+              value={pace % 60}
+              onChange={(e) =>
+                setPace(
+                  Math.floor(pace / 60) * 60 +
+                    Math.min(59, Math.max(0, Number(e.target.value))),
+                )
+              }
+            />
+            <span>초 /km</span>
+          </div>
+        </label>
+        <p>{paceLabel(pace)}/km · 평소 칸에 저장됩니다. 비워 두면 미등록이며 0페이스로 기록하지 않습니다.</p>
+        <p className="muted">페이스를 모르면 거리와 시간으로 계산할 수 있어요.</p>
+        <div className="pace-input">
+          <input
+            aria-label="온보딩 계산 거리 km"
+            type="number"
+            min={0.1}
+            step={0.1}
+            value={calcKm}
+            onChange={(e) => setCalcKm(e.target.value)}
+          />
+          <span>km</span>
+          <input
+            aria-label="온보딩 계산 분"
+            type="number"
+            min={0}
+            value={calcMin}
+            onChange={(e) => setCalcMin(e.target.value)}
+          />
+          <span>분</span>
+        </div>
+        <button
+          onClick={() => {
+            const next = calcPace;
+            if (!next) return notice("거리와 시간을 확인해 주세요. 0km는 계산하지 않아요.");
+            setPace(next);
+          }}
+        >
+          거리·시간으로 페이스 넣기
+        </button>
+        <button
+          className="primary"
+          disabled={busy}
+          onClick={() =>
+            void action(async () => {
+              const paces = applyPaceSlot(profile.paces, "usual", pace);
+              await updateProfile({
+                ...profile,
+                nickname: nickname.trim(),
+                pace,
+                paces,
+                onboarded: true,
+              });
+              go("home");
+            })
+          }
+        >
+          시작하기
+        </button>
+      </section>
+    );
+  else if (page === "loading")
+    content = (
+      <section className="real-loading">
+        <div className="runner-mark">
+          <RunnerLogo />
+        </div>
+        <h2>루트를 찾고 있어요.</h2>
+        <p>실제 보행 경로와 직선 거리, 방향 전환을 비교하고 있어요.</p>
+        <button
+          onClick={() => {
+            request.current?.abort();
+            go("home");
+          }}
+        >
+          취소
+        </button>
+      </section>
+    );
+  else if (page === "recommend")
+    content = route ? (
+      <section className="recommend-page">
+        <p className="eyebrow">YOUR ROUTE</p>
+        <h1>
+          오늘의 경로가 준비됐어요.
+        </h1>
+        <RealMap
+          coordinates={route.coordinates}
+          fitToken={fit}
+          straight={
+            route.coordinates.length > 1
+              ? [route.coordinates[0], route.coordinates.at(-1)!]
+              : null
+          }
+          pois={routeMapPoints(route, origin, destination)}
+        />
+        {routes.length > 1 && <div className="candidate-tabs" aria-label="경로 후보">{routes.map((r, i) => {
+          const estimate = waitDisplay(liveSignals ? forecasts[r.id] : null);
+          return <button key={r.id} aria-pressed={candidate === i} onClick={() => { setCandidate(i); setFit(n => n + 1); }}>
+            <span>{r.id === recommendedId ? "추천 경로" : `후보 ${i + 1}`}</span>
+            <strong>{(r.distanceM / 1000).toFixed(2)} <small>km</small></strong>
+            <small>{timeLabel(estimate.totalSec ?? (r.distanceM / 1000) * pace)}</small>
+            <small>{estimate.known ? `대기 ${Math.round(estimate.waitSec!)}초 · 정지 ${estimate.stops}회` : "신호 대기 미확인"}</small>
+          </button>;
+        })}</div>}
+        <div className="stats">
+          <div>
+            <strong>{(route.distanceM / 1000).toFixed(2)}</strong>
+            <small>보행 km</small>
+          </div>
+          <div>
+            <strong>
+              {((route.straightM ?? meters(route.coordinates[0], route.coordinates.at(-1)!)) / 1000).toFixed(2)}
+            </strong>
+            <small>직선 km</small>
+          </div>
+          <div>
+            <strong>
+              {timeLabel(
+                wait.known && wait.totalSec !== null ? wait.totalSec : travelSec,
+              )}
+            </strong>
+            <small>
+              {liveSignals && wait.known && wait.totalSec !== null
+                ? "대기 포함 예상"
+                : "페이스 기준 예상"}
+            </small>
+          </div>
+        </div>
+        <article>
+          <h2>{route.name}</h2>
+          <p>
+            우회 약 {Math.round(route.extraM ?? Math.max(0, route.distanceM - (route.straightM ?? 0)))}m · 직선에서 최대 {Math.round(route.maxOffLineM ?? 0)}m · 방향 전환 약 {route.sharpTurns}회
+          </p>
+          <p>
+            경로 안내상 횡단 {crossingCount(route)}곳
+          </p>
+          <p>비교 페이스 {paceLabel(pace)}/km · 서울 보행 경로 기준</p>
+          {(recommendNotes.length && route.id === recommendedId
+            ? recommendNotes
+            : [
+                recommendReason === "signal-compare"
+                  ? "확인된 대기 예측으로 보행 후보를 비교했어요."
+                  : "보행 조건과 우회 제한을 적용한 기본 추천입니다.",
+                coverageCopy(signalCoverage),
+              ]
+          ).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+          {liveSignals ? (
+            <>
+              <p>
+                {wait.known
+                  ? `확인된 대기 ${Math.round(wait.waitSec ?? 0)}초 · 정지 ${wait.stops ?? 0}회`
+                  : "대기 미확인 · 정보 없음을 0초로 보지 않습니다."}
+              </p>
+              <p>
+                대기 제외 이동 {timeLabel(travelSec)}
+                {wait.known && wait.totalSec !== null
+                  ? ` · 대기 포함 ${timeLabel(wait.totalSec)}`
+                  : ""}
+              </p>
+            </>
+          ) : (
+            <p>
+              예상 시간 {timeLabel(travelSec)} · 입력 페이스 × 거리 · 신호 대기는
+              포함하지 않습니다.
+            </p>
+          )}
+          {departureMs !== null && liveSignals && <p className="muted">
+            {new Date(departureMs).toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul", hour12: false })} 출발 기준 · 러닝 시작 후 현재 위치·실측 페이스로 갱신합니다.
+          </p>}
+          <p className="muted">
+            노란 점은 출발·도착, 파란 점은 지하철, 갈색 점은 카페예요.
+          </p>
+          {(avoidanceCheck ? avoidanceCopy(avoidanceCheck) : []).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </article>
+        {liveSignals && <button className="secondary" disabled={busy} onClick={() => void action(() => refreshCandidateSignals(true))}>
+          지금 출발하면 좋은 경로 다시 비교
+        </button>}
+        <button className="primary" disabled={busy} onClick={() => void action(async () => {
+          if (liveSignals) await refreshCandidateSignals();
+          go("ready");
+        })}>
+          이 경로로 준비하기
+        </button>
+        <button
+          className="secondary"
+          onClick={() => {
+            if (candidate + 1 < routes.length) setCandidate(candidate + 1);
+            else
+              notice(
+                "같은 조건을 만족하는 다른 후보가 없어요. 출발지·경유지 또는 우회 범위를 조정해 주세요.",
+              );
+          }}
+        >
+          다음 후보 보기
+        </button>
+        <button onClick={() => go("home")}>조건 수정</button>
+      </section>
+    ) : (
+      <section>
+        <p>경로를 먼저 찾아주세요.</p>
+        <button onClick={() => go("home")}>홈으로</button>
+      </section>
+    );
+  else if (page === "ready")
+    content = (
+      <section>
+        <h1>준비되셨나요?</h1>
+        <RealMap
+          coordinates={route?.coordinates ?? emptyCoords}
+          position={position}
+          positionAccuracyM={positionMeta?.accuracyM ?? null}
+          pois={routeMapPoints(route, origin, destination)}
+        />
+        <p>
+          출발지에 도착한 뒤 시작해 주세요. 버튼을 누른 시점부터 실제 위치와
+          시간을 기록해요.
+        </p>
+        <p className="muted">
+          횡단보도 앞에서는 실제 보행신호를 직접 확인하세요. 앱이 신호를 대신
+          보지 않습니다.
+        </p>
+        <button
+          className="primary"
+          disabled={busy || !route}
+          onClick={() => void action(() => startRun(route))}
+        >
+          러닝 시작
+        </button>
+        <button onClick={() => go("recommend")}>경로 다시 보기</button>
+      </section>
+    );
+  else if (page === "run")
+    content = signalDemo ? (
+      <section>
+        <div className="section-title">
+          <h1>신호 타이밍 시연</h1>
+          <span className="demo-badge">행사 시연 · 예측 시뮬레이션</span>
+        </div>
+        <RealMap
+          coordinates={SIGNAL_DEMO_ROUTE.coordinates}
+          position={demoRunner.coord}
+          positionAccuracyM={8}
+          fitToken="signal-demo"
+          follow={true}
+          heading={demoRunner.heading}
+          mapBearingMode="course"
+          pois={[
+            { coord: SIGNAL_DEMO_ROUTE.coordinates[0], name: "강남역 1번출구", kind: "origin" },
+            { coord: SIGNAL_DEMO_ROUTE.coordinates.at(-1)!, name: "국기원", kind: "destination" },
+            ...demoSignalPoints(demoProgressM, demoPredictions),
+          ]}
+        />
+        <div className="signal-demo-hero">
+          <span>현재 페이스</span>
+          <strong>6&apos;00&quot;/km</strong>
+          <span>
+            다음 신호까지{" "}
+            {demoNextSignal ? `${Math.max(0, Math.round(demoNextSignal.atM - demoProgressM))}m` : "완료"}
+          </span>
+          <b>
+            {demoNextSignal
+              ? `도착 예상 ${Math.round(demoNextSignal.etaSec)}초 후`
+              : "시연 완료"}
+          </b>
+          <em>
+            {demoNextSignal
+              ? `현재 페이스 유지 · 예상 대기 ${Math.round(demoNextSignal.waitSec)}초`
+              : "신호등을 피한 것이 아닙니다. 도착 시간을 예측해 대기가 적은 경로를 선택했습니다."}
+          </em>
+        </div>
+        <div className="signal-demo-row">
+          {demoPredictions.map((p) => {
+            const state = demoSignalDisplayState(
+              p,
+              demoProgressM,
+              demoNextSignal?.signalId ?? null,
+            );
+            const passed = state === "past";
+            const next = state === "next-green" || state === "next-red";
+            const green = state === "next-green";
+            return (
+              <div
+                key={p.signalId}
+                className={`signal-demo-card ${green ? "is-green" : "is-red"} ${next ? "is-next" : ""} ${passed ? "is-past" : ""}`}
+              >
+                <strong>{p.signalId}</strong>
+                <span>{green ? "초록 예측" : passed ? "통과" : "대기 예측"}</span>
+                <small>ETA {Math.round(p.etaSec)}초 · wait {Math.round(p.waitSec)}초</small>
+              </div>
+            );
+          })}
+        </div>
+        <p className="signal-demo-note">
+          {demoNextSignal?.waitSec === 0
+            ? "타이밍 일치 · 대기 없이 통과 예상"
+            : "도착 시간을 계산 중입니다."}
+        </p>
+        {demoAllPassed && (
+          <p className="signal-demo-final">
+            신호등을 피한 것이 아닙니다. 도착 시간을 예측해 대기가 적은 경로를 선택했습니다.
+          </p>
+        )}
+        <div className="button-row">
+          <button
+            className="primary"
+            onClick={() => {
+              setSignalDemoElapsedSec(0);
+              setSignalDemoStartedAt(Date.now());
+              setSignalDemoRunning(true);
+            }}
+          >
+            {signalDemoRunning ? "시연 중" : "시연 시작"}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => {
+              setSignalDemoElapsedSec(0);
+              setSignalDemoStartedAt(null);
+              setSignalDemoRunning(false);
+            }}
+          >
+            다시 보기
+          </button>
+          <button
+            onClick={() => {
+              sessionStorage.removeItem(SIGNAL_DEMO_SESSION_KEY);
+              setSignalDemoRunning(false);
+              setSignalDemoStartedAt(null);
+              setSignalDemoElapsedSec(0);
+              navigate("/real/home");
+            }}
+          >
+            일반 모드로 돌아가기
+          </button>
+        </div>
+        <small>데모 데이터입니다. 실제 서울 신호 데이터로 표시하지 않습니다.</small>
+      </section>
+    ) : run.live ? (
+      <section>
+        <div className="section-title">
+          <h1>
+            {run.live.phase === "paused"
+              ? "잠시 쉬는 중"
+              : "내 페이스로 달리는 중"}
+          </h1>
+          <span className="live-dot">{run.live.phase === "paused" ? "일시정지" : run.error ? "GPS 확인 필요" : run.fix ? "GPS 수신" : "GPS 대기"}</span>
+        </div>
+        <RealMap
+          coordinates={run.live.route?.coordinates ?? emptyCoords}
+          segments={
+            run.live.route ? undefined : trackSegments(run.live.track.fixes)
+          }
+          position={run.fix?.coord ?? run.live.track.fixes.at(-1)?.coord}
+          positionAccuracyM={run.fix?.accuracy}
+          fitToken={fit}
+          follow={follow}
+          heading={heading}
+          mapBearingMode={mapBearingMode}
+          onUserPan={() => setFollow(false)}
+          straight={
+            run.live.route && run.live.route.coordinates.length > 1
+              ? [
+                  run.live.route.coordinates[0],
+                  run.live.route.coordinates.at(-1)!,
+                ]
+              : null
+          }
+          pois={routeMapPoints(run.live.route, origin, destination)}
+        />
+        <div className="run-direction-panel">
+          <strong>
+            {headingQuality === "poor" || headingQuality === "unreliable"
+              ? "GPS 불안정 · 방향 확인 필요"
+              : turn && along
+                ? `약 ${Math.max(0, Math.round(turn.atM - along.traveledM))}m 앞 · ${turn.text}`
+                : upcoming && along
+                  ? `약 ${Math.max(0, Math.round(upcoming.atM - along.traveledM))}m 앞 · ${upcoming.name}`
+                  : "진행 방향 표시 중"}
+          </strong>
+          <span>
+            {heading !== null
+              ? `화살표 ${Math.round(((heading % 360) + 360) % 360)}°`
+              : "방향 신호 대기"}
+          </span>
+        </div>
+        <div className="map-mode-row" role="group" aria-label="지도 방향">
+          <button
+            aria-pressed={mapBearingMode === "north"}
+            onClick={() => setMapBearingMode("north")}
+          >
+            북쪽 고정
+          </button>
+          <button
+            aria-pressed={mapBearingMode === "course"}
+            onClick={() => setMapBearingMode("course")}
+          >
+            진행 방향이 위
+          </button>
+          {canRequestDeviceDirection() && directionPermission !== "granted" && (
+            <button onClick={() => void enableDeviceDirection()}>
+              방향 활성화
+            </button>
+          )}
+        </div>
+        <button
+          onClick={() => {
+            setFollow(false);
+            setFit((n) => n + 1);
+          }}
+        >
+          전체 경로 보기
+        </button>
+        <button onClick={() => setFollow(true)}>
+          내 위치 따라가기
+        </button>
+        {follow ? (
+          <small>지도를 움직이면 추적을 잠시 끕니다.</small>
+        ) : (
+          <small>전체 보기 · 따라가기로 내 위치를 다시 중심에 둘 수 있어요.</small>
+        )}
+        {run.error && <p role="status">{run.error}</p>}
+        {currentRawFix && (
+          <div className="gps-status-panel" role="status">
+            <div>
+              <strong>현재 위치</strong>
+              <span>
+                정확도 ±{Math.round(currentRawFix.accuracy)}m ·{" "}
+                {gpsQualityLabel(classifyLocationAccuracy(currentRawFix.accuracy))} ·{" "}
+                {relativeSecondsLabel(currentRawFix.at)}
+              </span>
+            </div>
+          </div>
+        )}
+        <div className="stats">
+          <div>
+            <strong>{(run.live.track.distanceM / 1000).toFixed(2)}</strong>
+            <small>기록 거리 km</small>
+          </div>
+          <div>
+            <strong>
+              {along ? (along.remainM / 1000).toFixed(2) : "—"}
+            </strong>
+            <small>남은 경로 km</small>
+          </div>
+          <div>
+            <strong>{timeLabel(run.live.activeSec)}</strong>
+            <small>운동 시간</small>
+          </div>
+        </div>
+        <article>
+          <p>수동 일시정지 {timeLabel(run.live.manualPauseSec)}</p>
+          <p>
+            GPS 정지 추정 {Math.round(run.live.track.stoppedSec)}초 · 수신 공백{" "}
+            {Math.round(run.live.track.gapSec)}초
+          </p>
+          {along && along.offRouteM > TRIAL_OFF_ROUTE.distanceM && (
+            <p>
+              경로에서 약 {Math.round(along.offRouteM)}m 벗어나 있어요. GPS를
+              경로에 붙이지 않습니다.
+            </p>
+          )}
+          {offRouteNow && <p>경로를 벗어났어요. 현재 위치에서 남은 경로를 다시 찾을 수 있어요.</p>}
+          {run.live.route && (
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => void action(rerouteFromHere)}
+            >
+              현재 페이스로 경로 다시 찾기
+            </button>
+          )}
+          {upcoming ? (
+            <p>
+              다음 안내까지 약 {Math.max(0, Math.round(upcoming.atM - (along?.traveledM ?? 0)))}m
+              {cueEtaSec(
+                upcoming.atM - (along?.traveledM ?? 0),
+                livePace,
+              ) !== null
+                ? ` · ${measuredPace.source} 기준 약 ${Math.round(cueEtaSec(upcoming.atM - (along?.traveledM ?? 0), livePace)!)}초`
+                : ""}
+              · {upcoming.name}
+            </p>
+          ) : (
+            <p>다음 턴·장소 안내가 없으면 입력 페이스를 유지하면 됩니다.</p>
+          )}
+          {turn && (
+            <p>
+              다음 안내: {turn.text}
+              {along
+                ? ` · ${Math.max(0, Math.round(turn.atM - along.traveledM))}m`
+                : ""}
+            </p>
+          )}
+          <p>경로 계산 페이스 {paceLabel(livePace)}/km · {measuredPace.source}</p>
+          <p>
+            최근 30초 페이스 {paceLabel(rollingPace30)}
+            {rollingPace30 === null
+              ? " · 최근 60초 " + paceLabel(rollingPace60)
+              : ""}
+          </p>
+          {liveSignals && liveSignal && (
+            <div>
+              <h2>다음 신호 ETA</h2>
+              <p>{liveSignal.current}</p>
+              <p>{liveSignal.arrival}</p>
+              {liveSignal.remainM !== null && liveSignal.etaSec !== null && (
+                <p>
+                  다음 확인된 횡단보도까지 약 {Math.round(liveSignal.remainM)}m ·
+                  현재 페이스 기준 약 {Math.round(liveSignal.etaSec)}초
+                </p>
+              )}
+              {liveSignal.waitSec !== null && (
+                <p>현재 페이스 유지: 예상 대기 약 {Math.round(liveSignal.waitSec)}초</p>
+              )}
+              <p>{liveSignal.guidance}</p>
+              <small>앱 예측은 신호 확인을 대체하지 않습니다.</small>
+            </div>
+          )}
+          {liveSignals && !liveSignal && run.live.phase === "running" && <p>현재 위치와 페이스로 신호를 다시 확인 중입니다.</p>}
+          {liveAssessment.error && <p role="status">{liveAssessment.error}</p>}
+          <small>
+            GPS 정지 추정은 신호 대기와 다른 값입니다. 화면을 끄면 웹은 연속
+            GPS를 보장하지 않습니다.
+          </small>
+        </article>
+        <div className="button-row">
+          <button
+            className="secondary"
+            disabled={run.live.phase === "ended"}
+            onClick={() =>
+              run.live?.phase === "paused" ? run.resume() : run.pause()
+            }
+          >
+            {run.live.phase === "paused" ? "계속하기" : "일시정지"}
+          </button>
+          <button
+            className="primary"
+            disabled={busy || run.live.phase === "ended"}
+            onClick={() => void action(finish)}
+          >
+            러닝 종료
+          </button>
+        </div>
+      </section>
+    ) : (
+      <section>
+        <p>진행 중인 러닝이 없어요.</p>
+        <button onClick={() => go("home")}>홈으로</button>
+      </section>
+    );
+  else if (page === "result")
+    content = result ? (
+      <section>
+        <p className="eyebrow">RUN COMPLETE</p>
+        <h1>{isBest ? "새로운 최고 기록이에요!" : "오늘도 수고하셨어요."}</h1>
+        <RealMap
+          coordinates={emptyCoords}
+          segments={trackSegments(result.track.fixes)}
+        />
+        <div className="stats">
+          <div>
+            <strong>{(result.track.distanceM / 1000).toFixed(2)}</strong>
+            <small>기록 거리 km</small>
+          </div>
+          <div>
+            <strong>{timeLabel(result.elapsedSec)}</strong>
+            <small>전체 경과시간</small>
+          </div>
+          <div>
+            <strong>
+              {paceLabel(
+                result.track.distanceM >= 10
+                  ? result.activeSec / (result.track.distanceM / 1000)
+                  : null,
+              )}
+            </strong>
+            <small>운동 평균 페이스 /km</small>
+          </div>
+        </div>
+        <article>
+          <p>
+            {result.complete ? "완주 추정" : "부분 기록 · 최고 기록 비교 제외"}
+          </p>
+          <p>
+            운동 {timeLabel(result.activeSec)} · 수동 일시정지{" "}
+            {timeLabel(result.manualPauseSec)}
+          </p>
+          <p>
+            GPS 정지 추정 {Math.round(result.track.stoppedSec)}초
+            {liveSignals ? " · 신호 대기 확인 불가" : ""}
+          </p>
+          {best !== null && result.complete && (
+            <p>
+              이전 최고보다 {Math.round(Math.abs(result.elapsedSec - best))}초{" "}
+              {result.elapsedSec < best ? "빨라졌어요." : "더 걸렸어요."}
+            </p>
+          )}
+        </article>
+        <label>
+          루트 제목
+          <input
+            maxLength={80}
+            value={result.title}
+            onChange={(e) => setResult({ ...result, title: e.target.value })}
+          />
+        </label>
+        <button onClick={() => downloadJson("flow-run-result.json", result)}>
+          결과 JSON 내보내기
+        </button>
+        <button
+          className="primary"
+          disabled={busy || !result.title.trim()}
+          onClick={() => void action(saveResult)}
+        >
+          나의 루트에 저장
+        </button>
+        <button
+          onClick={() =>
+            void action(async () => {
+              if (!confirm("저장하지 않고 나갈까요?")) return;
+              await clearState(`result:${owner}`);
+              run.clear();
+              setResult(null);
+              go("home");
+            })
+          }
+        >
+          저장하지 않기
+        </button>
+      </section>
+    ) : (
+      <section>
+        <p>저장 전 결과가 있으면 복구할 수 있어요.</p>
+        <button
+          onClick={() =>
+            void action(async () => {
+              const r = await readState<RunRecord>(`result:${owner}`);
+              if (r) setResult(r);
+              else notice("복구할 결과가 없어요.");
+            })
+          }
+        >
+          결과 복구
+        </button>
+      </section>
+    );
+  else if (page === "routes")
+    content = (
+      <section>
+        <div className="section-title">
+          <div><p className="eyebrow">MY RUNNING LOG</p><h1>나의 러닝 기록</h1></div>
+          <button
+            disabled={busy || !user}
+            onClick={() => void action(synchronize)}
+          >
+            계정 동기화
+          </button>
+        </div>
+        <p className="muted">
+          {user
+            ? "기기 저장 후 동기화 · 과거 기록은 날짜별로 보관해요."
+            : "이 기기에 저장된 기록 · 브라우저 데이터 삭제 시 사라질 수 있어요."}
+        </p>
+        {grouped.length === 0 && (
+          <article>
+            <h2>첫 번째 러닝을 기다려요.</h2>
+            <button onClick={() => go("home")}>달리러 가기</button>
+          </article>
+        )}
+        {grouped.map((g) => {
+          const r = g.sessions[0];
+          const completed = g.sessions.filter((s) => s.complete);
+          return (
+            <button
+              className="route-row"
+              key={g.key}
+              onClick={() => {
+                setSelectedKey(g.key);
+                go("history");
+              }}
+            >
+              <Thumbnail route={r.route} />
+              <span>
+                <strong>{r.title}</strong>
+                <small>
+                  {(r.track.distanceM / 1000).toFixed(2)}km ·{" "}
+                  {g.sessions.length}회
+                </small>
+                <small>
+                  최근 {timeLabel(r.elapsedSec)}
+                  {completed.length
+                    ? ` · 최고 ${timeLabel(Math.min(...completed.map((s) => s.elapsedSec)))}`
+                    : ""}
+                </small>
+              </span>
+            </button>
+          );
+        })}
+      </section>
+    );
+  else if (page === "history")
+    content = (
+      <section>
+        <h1>러닝 기록</h1>
+        {displayed.map((r) => (
+          <article key={r.id}>
+            <div className="route-row">
+              <Thumbnail route={r.route} />
+              <div>
+                <h2>{r.title}</h2>
+                <small>{new Date(r.startedAt).toLocaleString("ko-KR")}</small>
+                <p>
+                  {(r.track.distanceM / 1000).toFixed(2)}km ·{" "}
+                  {timeLabel(r.elapsedSec)} ·{" "}
+                  {r.complete ? "완주 추정" : "부분 기록"}
+                </p>
+                <small>{r.synced ? "계정 동기화됨" : "기기에 저장됨"}</small>
+              </div>
+            </div>
+            <div className="button-row">
+              <button
+                onClick={() => {
+                  if (!r.route)
+                    return notice("자유 러닝은 고정 경로가 없어요.");
+                  setRoutes([r.route]);
+                  setForecasts({});
+                  setRecommendReason("walking-baseline");
+                  setRecommendNotes([]);
+                  setSignalCoverage("unknown");
+                  setDepartureMs(null);
+                  setCandidate(0);
+                  go("recommend");
+                }}
+              >
+                다시 달리기
+              </button>
+              <button
+                onClick={() =>
+                  void action(async () => {
+                    const title = prompt("새 루트 제목", r.title)?.trim();
+                    if (!title) return;
+                    for (const s of records.filter(
+                      (s) => s.routeKey === r.routeKey,
+                    ))
+                      await saveRun({
+                        ...s,
+                        title: title.slice(0, 80),
+                        synced: false,
+                      });
+                    setRecords(await listRuns(owner));
+                  })
+                }
+              >
+                제목 수정
+              </button>
+              <button
+                disabled={busy}
+                onClick={() => void action(() => publish(r))}
+              >
+                코스 공개
+              </button>
+            </div>
+            <button
+              className="danger"
+              onClick={() =>
+                void action(async () => {
+                  if (
+                    !confirm(
+                      "이 날짜의 기록을 삭제할까요? 공개한 코스는 인기 코스에서 별도로 취소할 수 있어요.",
+                    )
+                  )
+                    return;
+                  if (user && cloud) {
+                    const { error } = await cloud
+                      .from("runs")
+                      .delete()
+                      .eq("id", r.id)
+                      .eq("user_id", owner);
+                    if (error) throw error;
+                  }
+                  await deleteRun(r.id);
+                  setRecords(await listRuns(owner));
+                })
+              }
+            >
+              이 기록 삭제
+            </button>
+          </article>
+        ))}
+        <button onClick={() => go("routes")}>나의 루트로</button>
+      </section>
+    );
+  else if (page === "popular")
+    content = (
+      <section>
+        <h1>{profile.region}의 인기 루트</h1>
+        {!publicItems.length && (
+          <article>
+            아직 공개된 코스가 없어요. 가상의 인기 수를 표시하지 않습니다.
+          </article>
+        )}
+        {publicItems.map((p) => (
+          <article key={p.id}>
+            <div className="route-row">
+              <Thumbnail route={p.route} />
+              <div>
+                <h2>{p.title}</h2>
+                <p>
+                  {(p.route.distanceM / 1000).toFixed(2)}km · 공감 {p.likes}
+                </p>
+              </div>
+            </div>
+            <div className="button-row">
+              <button
+                onClick={() => {
+                  setRoutes([withGeometry(p.route)]);
+                  setForecasts({});
+                  setRecommendReason("walking-baseline");
+                  setRecommendNotes([]);
+                  setSignalCoverage("unknown");
+                  setDepartureMs(null);
+                  setCandidate(0);
+                  go("recommend");
+                }}
+              >
+                경로 보기
+              </button>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void action(async () => {
+                    if (!cloud || !user)
+                      throw new Error("로그인 후 공감할 수 있어요.");
+                    const existing = await cloud
+                      .from("route_likes")
+                      .select("route_id")
+                      .eq("route_id", p.id)
+                      .eq("user_id", owner)
+                      .maybeSingle();
+                    if (existing.error) throw existing.error;
+                    const response = existing.data
+                      ? await cloud
+                          .from("route_likes")
+                          .delete()
+                          .eq("route_id", p.id)
+                          .eq("user_id", owner)
+                      : await cloud
+                          .from("route_likes")
+                          .insert({ route_id: p.id, user_id: owner });
+                    if (response.error) throw response.error;
+                    setPublicItems(await publicRoutes(profile.region));
+                  })
+                }
+              >
+                공감 / 취소
+              </button>
+              {p.user_id === owner && (
+                <button
+                  onClick={() =>
+                    void action(async () => {
+                      if (!cloud || !confirm("코스 공개를 취소할까요?")) return;
+                      const { error } = await cloud
+                        .from("public_routes")
+                        .delete()
+                        .eq("id", p.id)
+                        .eq("user_id", owner);
+                      if (error) throw error;
+                      setPublicItems(await publicRoutes(profile.region));
+                    })
+                  }
+                >
+                  공개 취소
+                </button>
+              )}
+            </div>
+          </article>
+        ))}
+      </section>
+    );
+  else if (page === "pace")
+    content = (
+      <section>
+        <h1>내 페이스 계산</h1>
+        <label>
+          거리 (km)
+          <input
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={calcKm}
+            onChange={(e) => setCalcKm(e.target.value)}
+          />
+        </label>
+        <label>
+          걸린 시간
+          <div className="pace-input">
+            <input
+              aria-label="걸린 시간 (시)"
+              type="number"
+              min="0"
+              value={calcHour}
+              onChange={(e) => setCalcHour(e.target.value)}
+            />
+            <span>시</span>
+            <input
+              aria-label="걸린 시간 (분)"
+              type="number"
+              min="0"
+              max="59"
+              value={calcMin}
+              onChange={(e) => setCalcMin(e.target.value)}
+            />
+            <span>분</span>
+            <input
+              aria-label="걸린 시간 (초)"
+              type="number"
+              min="0"
+              max="59"
+              value={calcSec}
+              onChange={(e) => setCalcSec(e.target.value)}
+            />
+            <span>초</span>
+          </div>
+        </label>
+        <div className="hero-number">
+          {paceLabel(calcPace)}
+          <small>/km</small>
+        </div>
+        <p className="muted">
+          페이스 = 시간(초) ÷ 거리(km). 여러 기록을 합칠 때는 총시간 ÷ 총거리입니다.
+        </p>
+        {paceSuggest.paceSec !== null && (
+          <article>
+            <p>내 기록 평균 {paceLabel(paceSuggest.paceSec)}/km</p>
+            <small>{paceSuggest.reason}</small>
+            <button
+              onClick={() =>
+                void action(async () => {
+                  const p = paceSuggest.paceSec!;
+                  const paces = applyPaceSlot(profile.paces, "usual", p);
+                  setPace(p);
+                  setPaceSlot("usual");
+                  await updateProfile({ ...profile, paces, pace: p });
+                  notice("평소 페이스에 기록 평균을 넣었어요.");
+                })
+              }
+            >
+              평소 페이스로 쓰기
+            </button>
+          </article>
+        )}
+        {paceSuggest.paceSec === null && (
+          <p className="muted">{paceSuggest.reason}</p>
+        )}
+        <div className="button-row">
+          {PACE_SLOTS.filter((s) => s.distanceKm).map((s) => (
+            <button
+              key={s.id}
+              onClick={() => {
+                setCalcKm(String(s.distanceKm));
+                setPaceSlot(s.id);
+              }}
+            >
+              {s.shortLabel}
+            </button>
+          ))}
+        </div>
+        <p className="muted">
+          칸마다 따로 저장됩니다. 비어 있으면 미등록이며, 평소 페이스로 채우지
+          않습니다.
+        </p>
+        {PACE_SLOTS.map((s) => (
+          <label className="check" key={s.id}>
+            <input
+              type="radio"
+              name="pace-slot"
+              checked={paceSlot === s.id}
+              onChange={() => setPaceSlot(s.id)}
+            />
+            <span>
+              {s.label} ·{" "}
+              {profile.paces[s.id] === null
+                ? "미등록"
+                : formatPaceSpoken(profile.paces[s.id]!)}
+            </span>
+          </label>
+        ))}
+        <button
+          className="primary"
+          onClick={() =>
+            void action(async () => {
+              const p = calcPace;
+              if (p === null || !validPace(p))
+                throw new Error("거리와 시간을 확인해 주세요.");
+              const paces = applyPaceSlot(profile.paces, paceSlot, p);
+              if (paceSlot === "usual") setPace(p);
+              await updateProfile({
+                ...profile,
+                paces,
+                pace: paces.usual ?? profile.pace,
+              });
+              go("home");
+            })
+          }
+        >
+          선택한 칸에 저장
+        </button>
+        <button
+          onClick={() =>
+            void action(async () => {
+              const paces = applyPaceSlot(profile.paces, paceSlot, null);
+              await updateProfile({
+                ...profile,
+                paces,
+                pace: paces.usual ?? profile.pace,
+              });
+              notice("해당 칸을 미등록으로 바꿨어요.");
+            })
+          }
+        >
+          이 칸 미등록으로
+        </button>
+        {route && (
+          <button onClick={() => setCalcKm(String(route.distanceM / 1000))}>
+            선택한 경로 거리 사용
+          </button>
+        )}
+      </section>
+    );
+  else if (page === "gps-check")
+    content = run.live && run.live.phase !== "ended"
+      ? <section><h1>야외 GPS 검사</h1><p>진행 중인 러닝을 먼저 종료해 주세요.</p><button onClick={() => go("run")}>러닝으로</button></section>
+      : <GpsFieldCheck key={owner} owner={owner} onBack={() => go("diagnostics")} />;
+  else if (page === "diagnostics")
+    content = (
+      <section>
+        <h1>개발 연결 확인</h1>
+        <p className="muted">
+          일반 설정과 분리된 화면입니다. 키 문자열은 보여주지 않으며, 신호 응답은
+          통행 안내가 아닙니다. 실시간 대기 예측은 꺼져 있습니다.
+        </p>
+        <article>
+          <p>서버 버전: {status?.release?.id ?? "이전 배포 · 버전 정보 없음"}</p>
+          <button onClick={() => go("gps-check")}>야외 GPS 검사 열기</button>
+          <p>
+            지도 키: {import.meta.env.VITE_MAPTILER_KEY ? "설정됨" : "미설정"}
+          </p>
+          <p>장소 검색: {status?.places ? "설정됨" : "미설정"}</p>
+          <p>주소·역지오코딩: {status?.reverseGeocode ? "설정됨" : "미설정"}</p>
+          <p>보행 경로: {status?.routes ? "설정됨" : "미설정"}</p>
+          <p>
+            서울 신호 키:{" "}
+            {status?.signal?.configured.seoul || status?.seoulSignals
+              ? "설정됨"
+              : "미설정"}
+          </p>
+          <p>
+            서울 최근 호출:{" "}
+            {status?.signal?.reachable.seoul === true
+              ? "성공"
+              : status?.signal?.reachable.seoul === false
+                ? "실패"
+                : "아직 호출하지 않음"}
+          </p>
+          <p>
+            횡단 매핑: {status?.signal?.mappingReady ? "준비됨" : "미완료"}
+          </p>
+          <p>
+            경로 예측:{" "}
+            {status?.signal?.predictionReady || status?.signalPrediction
+              ? "가능"
+              : "비활성"}
+          </p>
+          <p className="muted">{status?.signalDetail}</p>
+          <label>
+            연결 확인할 서울 교차로 ID
+            <input
+              inputMode="numeric"
+              value={signalId}
+              onChange={(e) => setSignalId(e.target.value)}
+            />
+          </label>
+          <div className="button-row">
+            <button
+              disabled={
+                busy ||
+                !(status?.signal?.configured.seoul || status?.seoulSignals)
+              }
+              onClick={() =>
+                void action(async () => {
+                  try {
+                    setSignalResult(
+                      await api(
+                        `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=current`,
+                      ),
+                    );
+                  } finally {
+                    try {
+                      setStatus(await api<StatusResponse>("status"));
+                    } catch {
+                      /* status refresh is best-effort */
+                    }
+                  }
+                })
+              }
+            >
+              최신 신호·잔여값 확인
+            </button>
+            <button
+              disabled={
+                busy ||
+                !(status?.signal?.configured.seoul || status?.seoulSignals)
+              }
+              onClick={() =>
+                void action(async () => {
+                  try {
+                    setSignalResult(
+                      await api(
+                        `signals/seoul?itstId=${encodeURIComponent(signalId)}&service=timing`,
+                      ),
+                    );
+                  } finally {
+                    try {
+                      setStatus(await api<StatusResponse>("status"));
+                    } catch {
+                      /* status refresh is best-effort */
+                    }
+                  }
+                })
+              }
+            >
+              잔여 원본 확인
+            </button>
+          </div>
+          {signalResult !== null && <CurrentStatePanel payload={signalResult} />}
+          {signalResult !== null && (
+            <details>
+              <summary>현재 상태 원문 · 통행 안내 아님</summary>
+              <pre>{JSON.stringify(signalResult, null, 2)}</pre>
+            </details>
+          )}
+        </article>
+        <button onClick={() => go("settings")}>설정으로</button>
+      </section>
+    );
+  else if (page === "settings")
+    content = (
+      <section>
+        <p className="eyebrow">YOUR PREFERENCES</p><h1>내 러닝에 맞게</h1>
+        <article>
+          <h2>내 프로필</h2>
+          <label>
+            닉네임
+            <input
+              value={nickname}
+              maxLength={20}
+              onChange={(e) => setNickname(e.target.value)}
+            />
+          </label>
+          <label>
+            지역
+            <select
+              value={profile.region}
+              onChange={(e) =>
+                setProfile({ ...profile, region: e.target.value })
+              }
+            >
+              {regions.map((r) => (
+                <option key={r}>{r}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            조금 돌아가도 괜찮은 거리
+            <select
+              value={profile.detour}
+              onChange={(e) =>
+                setProfile({ ...profile, detour: Number(e.target.value) })
+              }
+            >
+              <option value={0.05}>5% · 최대 150m</option>
+              <option value={0.1}>10% · 최대 300m</option>
+              <option value={0.15}>15% · 최대 500m</option>
+            </select>
+          </label>
+          <p className="muted">
+            선택한 범위 안에서 경로를 비교해요. 실제 길에 따라 조건에 맞는 경로가 없을 수도 있어요.
+          </p>
+          {(["avoidStairs", "avoidOverpass", "avoidAlley", "voice", "vibration", "wake", "followCam"] as const).map(
+            (k, i) => (
+              <label className="check" key={k}>
+                <input
+                  type="checkbox"
+                  checked={profile[k]}
+                  onChange={(e) =>
+                    setProfile({ ...profile, [k]: e.target.checked })
+                  }
+                />
+                {
+                  [
+                    "계단 제외 경로만 요청",
+                    "육교·고가 안내 후보 제외",
+                    "큰길 우선(골목 안내 회피)",
+                    "턴·횡단 음성 안내",
+                    "턴·횡단 진동",
+                    "러닝 중 화면 켜짐 유지",
+                    "러닝 중 내 위치 따라가기 기본값",
+                  ][i]
+                }
+              </label>
+            ),
+          )}
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={persistOn}
+              onChange={(e) => {
+                setPersistOn(e.target.checked);
+                setPersistLogin(e.target.checked);
+                notice(
+                  e.target.checked
+                    ? "다음 로그인부터 이 기기에 세션을 유지합니다."
+                    : "다음 로그인부터 브라우저 탭이 닫히면 로그아웃됩니다.",
+                );
+              }}
+            />
+            이 기기에서 로그인 유지
+          </label>
+          <small>
+            육교·골목은 TMAP 안내 문구·시설 코드가 있을 때만 걸러요. 없으면 회피
+            확인 불가입니다. 웹에서는 화면 유지·백그라운드 GPS·알림이 보장되지
+            않습니다.
+          </small>
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={() =>
+              void action(async () => {
+                await updateProfile({ ...profile, nickname: nickname.trim() });
+                notice("설정을 저장했어요.");
+              })
+            }
+          >
+            설정 저장
+          </button>
+          <button onClick={() => go("pace")}>페이스 수정</button>
+        </article>
+        <article>
+          <h2>연결 상태</h2>
+          <p>
+            지도:{" "}
+            {import.meta.env.VITE_MAPTILER_KEY
+              ? "사용 가능"
+              : "연결 필요 · GPS 기록은 가능"}
+          </p>
+          <p>
+            장소 검색:{" "}
+            {status?.places ? "사용 가능" : "미연결 · 지도에서 위치를 고를 수 있어요"}
+          </p>
+          <p>
+            보행 경로:{" "}
+            {status?.routes
+              ? "사용 가능"
+              : "미연결 · 자유 러닝은 가능"}
+          </p>
+          <p>
+            신호 대기 예측:{" "}
+            {status?.signal?.predictionReady
+              ? "검증된 횡단 범위에서만"
+              : "제공하지 않음"}
+          </p>
+          <button onClick={() => go("diagnostics")}>개발 연결 확인</button>
+        </article>
+        <article>
+          <h2>기록·위치</h2>
+          <button
+            onClick={() =>
+              void action(async () => {
+                const acquired = await acquireLocation();
+                setPermissionStatus(acquired.permission);
+                setPosition(acquired.fix.coord);
+                setPositionMeta({
+                  accuracyM: acquired.fix.accuracy,
+                  at: acquired.fix.at,
+                  quality: acquired.quality,
+                  permission: acquired.permission,
+                  source: acquired.source,
+                  requiresConfirmation: acquired.requiresConfirmation,
+                });
+                notice(
+                  `현재 위치 확인 · 오차 약 ${Math.round(acquired.fix.accuracy)}m`,
+                );
+              })
+            }
+          >
+            위치 권한 확인
+          </button>
+          <button
+            onClick={() => downloadJson("flow-run-records.json", records)}
+          >
+            내 기록 JSON 내보내기
+          </button>
+          <button
+            disabled={!user || busy}
+            onClick={() => void action(synchronize)}
+          >
+            계정 기록 동기화
+          </button>
+          <button
+            className="danger"
+            onClick={() =>
+              void action(async () => {
+                if (
+                  !confirm(
+                    "내 운동 기록 전체를 삭제할까요? 공개 코스는 별도로 공개 취소해 주세요.",
+                  )
+                )
+                  return;
+                if (cloud && user) {
+                  const { error } = await cloud
+                    .from("runs")
+                    .delete()
+                    .eq("user_id", owner);
+                  if (error) throw error;
+                }
+                for (const r of records) await deleteRun(r.id);
+                setRecords([]);
+                notice("운동 기록을 삭제했어요.");
+              })
+            }
+          >
+            운동 기록 전체 삭제
+          </button>
+        </article>
+        <article>
+          <button onClick={() => go("legal")}>이용약관·개인정보 안내</button>
+          {user ? (
+            <button
+              onClick={() =>
+                void action(async () => {
+                  if (cloud) {
+                    const { error } = await cloud.auth.signOut();
+                    if (error) throw error;
+                  }
+                  setGuest(false);
+                  sessionStorage.removeItem("flow-real-guest");
+                  go("auth");
+                })
+              }
+            >
+              로그아웃
+            </button>
+          ) : (
+            <button onClick={() => go("auth")}>로그인 / 회원가입</button>
+          )}
+          {user && (
+            <button
+              className="danger"
+              disabled={busy}
+              onClick={() =>
+                void action(async () => {
+                  if (
+                    !cloud ||
+                    prompt(
+                      "계정과 모든 계정 기록·공개 코스를 영구 삭제하려면 탈퇴를 입력하세요.",
+                    ) !== "탈퇴"
+                  )
+                    return;
+                  const { error } = await cloud.rpc("delete_my_account");
+                  if (error) throw error;
+                  for (const r of await listRuns(owner)) await deleteRun(r.id);
+                  await clearState(`profile:${owner}`);
+                  await clearState(`active:${owner}`);
+                  await clearState(`result:${owner}`);
+                  await cloud.auth.signOut({ scope: "local" });
+                  setUser(null);
+                  setGuest(false);
+                  sessionStorage.removeItem("flow-real-guest");
+                  navigate("/real/auth");
+                  notice("계정을 삭제했습니다.");
+                })
+              }
+            >
+              계정 탈퇴
+            </button>
+          )}
+        </article>
+      </section>
+    );
+  else
+    content = (
+      <section className="flow-home">
+        <div className="home-heading">
+          <div><p className="greeting">{profile.nickname || "러너"}님, 반가워요.</p>
+          <h1>오늘의 러닝을<br className="mobile-break" /> <em>시작해 볼까요?</em></h1></div>
+          <button className="profile-pace" onClick={() => go("pace")}><FlowIcon name="activity" /><span><small>나의 페이스</small><strong>{paceLabel(pace)} <small>/km</small></strong></span><FlowIcon name="chevron" size={16} /></button>
+        </div>
+        {result && (
+          <article>
+            <h2>저장하지 않은 러닝 결과가 있어요.</h2>
+            <button onClick={() => go("result")}>결과 확인·저장</button>
+          </article>
+        )}
+        {recovery && (
+          <article>
+            <h2>이전 러닝 기록이 남아 있어요.</h2>
+            <p>
+              앱을 닫은 동안의 거리는 더하지 않아요. 일시정지 상태로 복구합니다.
+            </p>
+            <button
+              onClick={() => {
+                runOwner.current = owner;
+                run.recover(recovery);
+                setRecovery(null);
+                navigate("/real/run");
+              }}
+            >
+              진행 기록 복구
+            </button>
+            <button
+              onClick={() =>
+                void action(async () => {
+                  if (!confirm("미완료 기록을 버릴까요?")) return;
+                  await clearState(`active:${owner}`);
+                  setRecovery(null);
+                })
+              }
+            >
+              버리기
+            </button>
+          </article>
+        )}
+
+        <div className="planner-layout">
+          <div className="planner-panel">
+            <div className="panel-heading"><span className="eyebrow">PLAN YOUR RUN</span><span className="region-tag"><FlowIcon name="pin" size={14} />{profile.region}</span></div>
+            <div className="purpose-row" aria-label="러닝 방식">
+              {([ ["destination", "pin", "목적지까지"], ["park", "leaf", "공원·하천"], ["free", "activity", "자유 러닝"] ] as const).map(([id, icon, label]) => (
+                <button key={id} type="button" aria-pressed={tripIntent === id} className={tripIntent === id ? "slot-on" : undefined} onClick={() => { setTripIntent(id); setPick(null); }}><FlowIcon name={icon} /><span>{label}</span></button>
+              ))}
+            </div>
+            {tripIntent !== "free" ? <>
+              <div className="journey-fields">
+                <div className="journey-point origin-point"><PlaceInput label="출발지" value={origin} onChange={setOrigin} near={position} /></div>
+                <div className="journey-point destination-point"><PlaceInput label={tripIntent === "park" ? "공원·하천" : loop ? "반환점" : "목적지"} value={destination} onChange={setDestination} near={origin?.coord ?? position} /></div>
+                <button className="swap-places" aria-label="출발지와 목적지 바꾸기" disabled={busy || !origin || !destination} onClick={() => { setOrigin(destination); setDestination(origin); }}><FlowIcon name="swap" size={17} /></button>
+              </div>
+              <div className="location-tools">
+                <button disabled={busy} onClick={() => void action(usePosition)}><FlowIcon name="target" size={16} />현재 위치</button>
+                <button aria-pressed={pick === "origin"} onClick={() => setPick(pick === "origin" ? null : "origin")}>출발점 선택</button>
+                <button aria-pressed={pick === "destination"} onClick={() => setPick(pick === "destination" ? null : "destination")}>도착점 선택</button>
+              </div>
+              <button
+                className="demo-route-button"
+                disabled={busy}
+                onClick={() => void action(loadGangnamDemoRoute)}
+              >
+                <FlowIcon name="route" size={16} />
+                강남 촬영 루트 불러오기
+              </button>
+              {guest && (
+                <button
+                  className="signal-demo-button"
+                  onClick={() => {
+                    sessionStorage.setItem(SIGNAL_DEMO_SESSION_KEY, "yes");
+                    navigate("/real/run?demo=signal");
+                  }}
+                >
+                  <FlowIcon name="activity" size={16} />
+                  행사 신호 시연
+                </button>
+              )}
+              <div className="gps-status-panel" role="status">
+                <div>
+                  <strong>
+                    {positionMeta ? "현재 위치" : permissionLabel(permissionStatus)}
+                  </strong>
+                  <span>
+                    {positionMeta
+                      ? `${positionMeta.address ? positionMeta.address + " · " : ""}정확도 ±${Math.round(positionMeta.accuracyM)}m · ${gpsQualityLabel(positionMeta.quality)} · ${relativeSecondsLabel(positionMeta.at)}`
+                      : permissionStatus === "denied"
+                        ? locationFailureUserMessage("permission-denied")
+                        : permissionStatus === "prompt"
+                          ? "현재 위치 버튼을 누르면 브라우저 권한 요청이 열립니다."
+                          : "지도에서 출발지를 직접 선택할 수 있습니다."}
+                  </span>
+                </div>
+                {(permissionStatus === "denied" ||
+                  positionMeta?.quality === "poor" ||
+                  positionMeta?.quality === "unreliable") && (
+                  <div className="gps-status-actions">
+                    {permissionStatus !== "denied" && (
+                      <button disabled={busy} onClick={() => void action(usePosition)}>
+                        위치 다시 측정
+                      </button>
+                    )}
+                    <button onClick={() => setPick("origin")}>
+                      지도에서 출발지 선택
+                    </button>
+                  </div>
+                )}
+              </div>
+              <label className="check loop-check"><input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />출발지로 돌아오기<span>왕복</span></label>
+          {tripIntent === "park" && (
+            <button
+              disabled={busy || !origin}
+              onClick={() =>
+                void action(async () => {
+                  if (!origin) throw new Error("먼저 출발지를 정해 주세요.");
+                  const bias = `&x=${origin.coord[0]}&y=${origin.coord[1]}`;
+                  const [parks, rivers] = await Promise.all([
+                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("공원")}${bias}`),
+                    api<{ places: Place[] }>(`places?q=${encodeURIComponent("하천")}${bias}`),
+                  ]);
+                  const seen = new Set<string>();
+                  const found = [...parks.places, ...rivers.places].filter((p) => {
+                    if (seen.has(p.id)) return false;
+                    seen.add(p.id);
+                    return true;
+                  });
+                  if (!found.length)
+                    throw new Error(
+                      "근처 공원·하천을 찾지 못했어요. 이름을 검색하거나 지도에서 고르세요.",
+                    );
+                  setDestination(found[0]);
+                  notice(
+                    `${found[0].name}을 목적지로 넣었어요. 다른 곳이면 검색에서 고르세요.`,
+                  );
+                })
+              }
+            >
+              근처 공원·하천 검색
+            </button>
+          )}
+
+              <details className="run-options">
+                <summary><span><FlowIcon name="settings" size={18} />페이스·경유지 설정</span><span>{paceLabel(pace)}/km <FlowIcon name="chevron" size={14} /></span></summary>
+          <label>
+            페이스
+            <div className="pace-slots">
+              {PACE_SLOTS.map((s) => {
+                const registered = profile.paces[s.id] !== null;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={paceSlot === s.id ? "slot-on" : undefined}
+                    onClick={() => {
+                      setPaceSlot(s.id);
+                      if (registered) setPace(profile.paces[s.id]!);
+                      else
+                        notice(
+                          `${s.shortLabel}은 미등록이에요. 평소를 쓰거나 계산에서 저장하세요.`,
+                        );
+                    }}
+                  >
+                    {s.shortLabel}
+                    <small>
+                      {registered
+                        ? paceLabel(profile.paces[s.id])
+                        : "미등록"}
+                    </small>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="pace-input">
+              <input
+                aria-label="페이스 분"
+                type="number"
+                min={2}
+                max={30}
+                value={Math.floor(pace / 60)}
+                onChange={(e) =>
+                  setPace(Number(e.target.value) * 60 + (pace % 60))
+                }
+              />
+              <span>분</span>
+              <input
+                aria-label="페이스 초"
+                type="number"
+                min={0}
+                max={59}
+                value={pace % 60}
+                onChange={(e) =>
+                  setPace(
+                    Math.floor(pace / 60) * 60 +
+                      Math.min(59, Math.max(0, Number(e.target.value))),
+                  )
+                }
+              />
+              <span>초 /km</span>
+            </div>
+          </label>
+
+                <button className="text-btn" onClick={() => go("pace")}>페이스를 모르겠어요</button>
+                <button className="secondary" onClick={() => { setShowVia(!showVia); if (showVia) setVia(null); }}>{showVia ? "경유지 제거" : "+ 꼭 지나고 싶은 장소"}</button>
+                {showVia && <PlaceInput label="경유지" value={via} onChange={setVia} near={origin?.coord ?? position} />}
+              </details>
+              <div className="planner-action"><button className="primary" disabled={busy || !origin || !destination} onClick={() => void action(findRoutes)}><span>{busy ? "경로를 확인하고 있어요" : "러닝 경로 찾기"}</span><FlowIcon name="arrow" /></button><small>{!origin ? "출발지를 검색하거나 현재 위치를 선택하세요." : !destination ? "달려갈 목적지를 선택하세요." : "설정한 페이스 기준 · 신호 대기시간 제외"}</small></div>
+            </> : <div className="free-run-panel">
+              <div className="free-run-symbol"><FlowIcon name="activity" size={42} /></div>
+              <h2>목적지 없이,<br />내 발길이 닿는 대로.</h2><p className="muted">시작을 누르면 GPS로 이동 거리와<br />시간, 페이스를 기록해요.</p>
+              <div className="free-run-info"><FlowIcon name="target" size={18} /><span>{permissionLabel(permissionStatus)}</span></div>
+              {positionMeta && (
+                <small>
+                  정확도 ±{Math.round(positionMeta.accuracyM)}m · {gpsQualityLabel(positionMeta.quality)}
+                </small>
+              )}
+              <button className="primary" disabled={busy} onClick={() => void action(() => startRun(null))}><span>{busy ? "위치를 확인하고 있어요" : "자유 러닝 시작"}</span><FlowIcon name="arrow" /></button>
+              <small>기록은 이 기기에 저장됩니다.</small>
+            </div>}
+          </div>
+          <div className={`planner-map${pick ? " is-picking" : ""}`}>
+            <div className="map-topline"><span><FlowIcon name="route" size={16} />{pick ? `${pick === "origin" ? "출발지" : "목적지"}를 지도에서 눌러주세요` : "오늘 달릴 곳"}</span>{pick && <button onClick={() => setPick(null)}>선택 취소</button>}</div>
+            <RealMap coordinates={emptyCoords} position={plannerPosition} positionAccuracyM={plannerAccuracyM} positionFocusToken={positionFocus} fitToken={`${origin?.id ?? ""}:${destination?.id ?? ""}`} pois={[...(origin ? [{ coord: origin.coord, name: "출발 · " + origin.name, kind: "origin" as const }] : []), ...(destination ? [{ coord: destination.coord, name: "도착 · " + destination.name, kind: "destination" as const }] : [])]} onPick={pick ? (coord) => {
+              const target = pick;
+              void action(async () => { const selected = await namedPlace(coord, "지도에서 선택한 위치"); if (target === "origin") setOrigin(selected); else setDestination(selected); setPick(null); });
+            } : undefined} />
+            <div className="map-bottomline"><span>{origin ? origin.name : "출발지를 정하고 나만의 경로를 찾아보세요"}</span>{origin && <FlowIcon name="arrow" size={15} />}{destination && <span>{destination.name}</span>}</div>
+          </div>
+        </div>
+        <div className="home-bottom-grid">
+          <div className="recent-panel"><div className="section-title"><div><p className="eyebrow">MY ACTIVITY</p><h2>차곡차곡, 나의 러닝</h2></div><button onClick={() => go("routes")}>전체 보기 <FlowIcon name="arrow" size={16} /></button></div>
+        {grouped.slice(0, 2).map((g) => (
+          <button
+            className="route-row"
+            key={g.key}
+            onClick={() => {
+              setSelectedKey(g.key);
+              go("history");
+            }}
+          >
+            <Thumbnail route={g.sessions[0].route} />
+            <span>
+              <strong>{g.sessions[0].title}</strong>
+              <small>{g.sessions.length}회 달렸어요.</small>
+            </span>
+          </button>
+        ))}
+
+            {!grouped.length && <div className="flow-empty"><FlowIcon name="route" size={28} /><div><strong>첫 번째 러닝을 기다리고 있어요</strong><p>달리고 나면 나만의 코스가 이곳에 남아요.</p></div></div>}
+          </div>
+          <div className="community-panel"><div className="section-title"><div><p className="eyebrow">EXPLORE</p><h2>함께 달리는 코스</h2></div><button onClick={() => go("popular")}>둘러보기 <FlowIcon name="arrow" size={16} /></button></div>
+        {publicItems.length ? (
+          <div className="public-strip">
+            {publicItems.slice(0, 3).map((p) => (
+              <button
+                key={p.id}
+                onClick={() => {
+                  setRoutes([withGeometry(p.route)]);
+                  setForecasts({});
+                  setRecommendReason("walking-baseline");
+                  setRecommendNotes([]);
+                  setSignalCoverage("unknown");
+                  setDepartureMs(null);
+                  setCandidate(0);
+                  go("recommend");
+                }}
+              >
+                <Thumbnail route={p.route} />
+                <strong>{p.title}</strong>
+                <small>
+                  {(p.route.distanceM / 1000).toFixed(2)}km · 공감 {p.likes}
+                </small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <article className="muted">
+            아직 공개된 코스가 없어요. 첫 코스를 기록해 보세요.
+          </article>
+        )}
+
+          </div>
+        </div>
+      </section>
+    );
+  return (
+    <div className={`real-shell page-${page}`}>
+      <a className="skip-link" href="#run-main">본문으로 이동</a>
+      <header className="real-header">
+        <button onClick={() => go("home")} className="brand">
+          <RunnerLogo /><span>FLOW<span className="brand-light">RUN</span></span>
+        </button>
+        <div className="header-meta"><span className="beta-label">RUNNING COMPANION</span><button className="region-button" onClick={() => go("settings")}><FlowIcon name="pin" size={16} />{profile.region}<FlowIcon name="chevron" size={14} /></button></div>
+      </header>
+      <main id="run-main">
+        {message && (
+          <div className="real-notice" role="status">
+            {message}
+            <button aria-label="알림 닫기" onClick={() => setMessage("")}>
+              ×
+            </button>
+          </div>
+        )}
+        {content}
+      </main>
+      {profile.onboarded &&
+        (guest || user) &&
+        !["run", "loading", "auth"].includes(page) &&
+        nav}
+    </div>
+  );
+}

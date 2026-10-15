@@ -1,0 +1,2 @@
+source,sourcePlanId,version,sourceIntersectionId,pedestrianSignalGroupId,cycleSec,epochMs,entryStartSec,entryEndSec,flashStartSec,clearEndSec,validFromMs,validToMs,uncertaintySec,operationMode,startHm,endHm,weekdays,specialDayIds,planVerifiedAt,observedAt,fetchedAt,currentPlanConfirmedAt,synthetic,stage
+synthetic,SYN-TOD,sample,SYN-ITST,synthetic:group:ntPdsg,60,1800000000000,0,20,16,30,1799999990000,1800003600000,3,unknown,00:00,24:00,1|2|3|4|5|6|7,,,,,true,raw

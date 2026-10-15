@@ -1,0 +1,1 @@
+source,sourcePlanId,version,sourceIntersectionId,pedestrianSignalGroupId,cycleSec,epochMs,entryStartSec,entryEndSec,flashStartSec,clearEndSec,validFromMs,validToMs,uncertaintySec,operationMode,startHm,endHm,weekdays,specialDayIds,planVerifiedAt,observedAt,fetchedAt,currentPlanConfirmedAt,synthetic,stage

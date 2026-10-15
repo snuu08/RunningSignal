@@ -1,0 +1,2 @@
+source,sourcePlanId,version,sourceIntersectionId,pedestrianSignalGroupId,cycleSec,epochMs,entryStartSec,entryEndSec,flashStartSec,clearEndSec,validFromMs,validToMs,startHm,endHm,weekdays,specialDayIds,uncertaintySec,operationMode,planVerifiedAt,currentPlanConfirmedAt,stage,synthetic,evidence,notes
+field,,,,,,,,,,,,,,,,,,unknown,,,raw,false,,"No operating plan is verified. Current T-DATA state is not a future plan."
