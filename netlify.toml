@@ -1,3 +1,5 @@
+# Production server keys are managed in Netlify's Functions scope.
+# VITE_* values are public build configuration. Redeploy after changing either.
 [build]
 command = "npm run build"
 publish = "dist"
