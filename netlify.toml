@@ -1,4 +1,4 @@
-# Production server keys are managed in Netlify's Functions scope.
+# Server keys stay unprefixed in Netlify environment variables. Free uses default scopes.
 # VITE_* values are public build configuration. Redeploy after changing either.
 [build]
 command = "npm run build"

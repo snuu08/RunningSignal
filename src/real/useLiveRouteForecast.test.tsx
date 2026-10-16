@@ -8,7 +8,7 @@ const input = { route, runId: "run1", running: true, enabled: true, pace: 360, t
 const response = { recommendedId: route.id, forecasts: {}, departureMs: 1, signalCoverage: "unknown", recommendationReason: "walking-baseline" };
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe("live route signal refresh", () => {
-  it("refreshes at departure and uses the latest GPS pace and progress after 20 seconds", async () => {
+  it("refreshes at departure and uses the latest GPS pace and progress after 5 seconds", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn(async (_url: string, _init: RequestInit) => Response.json(response));
     vi.stubGlobal("fetch", fetcher);
@@ -17,7 +17,7 @@ describe("live route signal refresh", () => {
     expect(result.current.assessment).not.toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1);
     rerender({ ...input, pace: 300, traveledM: 200 });
-    await act(async () => vi.advanceTimersByTime(20_000));
+    await act(async () => vi.advanceTimersByTime(5000));
     const payload = JSON.parse(String(fetcher.mock.calls[1][1].body));
     expect(fetcher.mock.calls[1][0]).toBe("/api/routes/evaluate");
     expect(payload.pace).toBe(300);
@@ -44,8 +44,63 @@ describe("live route signal refresh", () => {
     const { result } = renderHook(() => useLiveRouteForecast(input));
     await act(async () => {});
     expect(result.current.assessment).not.toBeNull();
-    await act(async () => vi.advanceTimersByTime(20_000));
+    await act(async () => vi.advanceTimersByTime(5000));
     expect(result.current.assessment).toBeNull();
     expect(result.current.error).toMatch(/확인하지 못/);
+  });
+  it("respects the evaluation API's provider backoff", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => Response.json({ ...response, refreshAfterMs: 120_000 }));
+    vi.stubGlobal("fetch", fetcher);
+    renderHook(() => useLiveRouteForecast(input));
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTime(119_999));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it("honors an HTTP 429 Retry-After instead of polling every 5 seconds", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => Response.json({ error: "quota" }, { status: 429, headers: { "Retry-After": "60" } }));
+    vi.stubGlobal("fetch", fetcher);
+    const { result } = renderHook(() => useLiveRouteForecast(input));
+    await act(async () => {});
+    expect(result.current.assessment).toBeNull();
+    await act(async () => vi.advanceTimersByTime(59_999));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it("pauses hidden-tab polling and refreshes on return", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => Response.json(response));
+    vi.stubGlobal("fetch", fetcher);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    try {
+      const { result } = renderHook(() => useLiveRouteForecast(input));
+      await act(async () => {});
+      visibility.mockReturnValue("hidden");
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await act(async () => vi.advanceTimersByTime(60_000));
+      expect(result.current.assessment).toBeNull();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      visibility.mockReturnValue("visible");
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally { visibility.mockRestore(); }
+  });
+  it("retains a server backoff after pause/resume", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => Response.json({ ...response, refreshAfterMs: 60_000 }));
+    vi.stubGlobal("fetch", fetcher);
+    const { rerender } = renderHook((props) => useLiveRouteForecast(props), { initialProps: input });
+    await act(async () => {});
+    rerender({ ...input, running: false });
+    await act(async () => vi.advanceTimersByTime(10_000));
+    rerender(input);
+    await act(async () => {});
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTime(50_000));
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

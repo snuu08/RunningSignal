@@ -9,7 +9,8 @@ import {
   parsePredictionScopes,
 } from "../src/real/signals/provider.ts";
 import { auditVerifiedBundle } from "../src/real/signals/audit.ts";
-import { createSeoulLiveProvider } from "./seoul-live-provider.ts";
+import { createSeoulLiveProvider, hasSeoulLiveMappings } from "./seoul-live-provider.ts";
+import { resetSeoulFeedClientsForTests, seoulFeedClient } from "./seoul-feed.ts";
 import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
 import {
   continuity,
@@ -40,7 +41,6 @@ import {
 import {
   TDATA_CALLABLE,
   TDATA_FILE_ONLY,
-  fetchTdataService,
   interpretCurrentState,
   type TdataCallId,
 } from "../src/real/signals/tdata.ts";
@@ -57,9 +57,11 @@ type Env = Record<string, string | undefined>;
 type Fetch = typeof fetch;
 class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  retryAfterMs: number | null;
+  constructor(status: number, message: string, retryAfterMs: number | null = null) {
     super(message);
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 /** Instance-local only. Status GET does not probe providers. */
@@ -76,6 +78,7 @@ function seoulReachable(): boolean | null {
 export function resetApiRuntimeForTests() {
   seoulReach.okAt = 0;
   seoulReach.failAt = 0;
+  resetSeoulFeedClientsForTests();
 }
 
 export function signalProviderFromEnv(
@@ -87,7 +90,8 @@ export function signalProviderFromEnv(
   const scopes = parsePredictionScopes(env.SIGNAL_PREDICTION_SCOPES);
   if (!bundle.crossings.length) return unavailableSignals;
   if (env.SEOUL_TDATA_API_KEY?.trim() && bundle.liveMappings?.length)
-    return createSeoulLiveProvider(bundle, scopes, env.SEOUL_TDATA_API_KEY.trim(), fetcher);
+    return createSeoulLiveProvider(bundle, scopes, env.SEOUL_TDATA_API_KEY.trim(), fetcher,
+      undefined, seoulFeedClient(env.SEOUL_TDATA_API_KEY.trim(), fetcher));
   return createVerifiedProvider(bundle, scopes);
 }
 
@@ -122,6 +126,7 @@ function predictionFromEnv(env: Env) {
   };
   return {
     publicOn,
+    liveMappingReady: hasSeoulLiveMappings(bundle, scopes, Date.now()),
     mappingReady,
     planReady,
     freshnessReady,
@@ -143,13 +148,14 @@ const WALKING_EMPTY: Record<string, string> = {
   overpass: "육교·고가 구간이 없는 보행 후보를 확인하지 못했어요.",
   detour: "허용 우회 범위 안의 보행 후보가 없어요.",
 };
-const json = (value: unknown, status = 200) =>
+const json = (value: unknown, status = 200, extraHeaders: Record<string, string> = {}) =>
   new Response(JSON.stringify(value), {
     status,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
+      ...extraHeaders,
     },
   });
 
@@ -449,10 +455,11 @@ export async function handleApi(
         signalPrediction: predictionReady,
         signalDetail: predictionReady
           ? "검증된 횡단·계획 범위에서만 대기를 계산합니다. 그 외 구간은 미확인입니다."
-          : "실제 횡단 방향 매핑·운영계획 검증 전입니다. 신호 대기는 예측하지 않습니다. 키 설정과 예측 가능은 다릅니다.",
+          : prediction.publicOn && seoulConfigured && prediction.liveMappingReady
+            ? "검증된 횡단에서 최신 관측을 수신한 뒤 해당 녹색 구간의 대기만 계산합니다. 범위를 벗어나면 미확인입니다."
+            : "서울 횡단 방향·잔여값 단위 검증 전입니다. 실시간 대기는 미확인입니다. 키 설정과 예측 가능은 다릅니다.",
         signal: {
-          liveFeedConfigured: prediction.publicOn && seoulConfigured && mappingReady && planReady &&
-            (loadVerifiedBundle(env).liveMappings?.length ?? 0) > 0,
+          liveFeedConfigured: prediction.publicOn && seoulConfigured && prediction.liveMappingReady,
           apiConfigured:
             seoulConfigured ||
             !!env.UTIC_SERVICE_KEY ||
@@ -791,21 +798,25 @@ export async function handleApi(
         throw new ApiError(400, "지원하지 않는 신호 서비스입니다.");
       const apiKey = key(env, "SEOUL_TDATA_API_KEY");
       try {
-        const result = await fetchTdataService(service as TdataCallId, apiKey, fetcher, {
-          itstId, numOfRows: "10",
-        });
+        const feed = seoulFeedClient(apiKey, fetcher);
+        const observation = service === "current" ? await feed.snapshot(itstId) : null;
+        const result = observation?.result ?? await feed.read(service as TdataCallId, itstId);
         if (result.class === "auth")
           throw new ApiError(503, "서울 신호 인증에 실패했습니다. 서버 인증키와 해당 API 활용 승인을 확인하세요.");
-        if (result.httpStatus === 429)
-          throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.");
+        if (result.class === "rate-limited")
+          throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.", feed.retryAfterMs());
         if (result.class === "connect")
           throw new ApiError(502, "제공기관 연결에 실패했습니다. 잠시 뒤 다시 시도하세요.");
+        if (result.httpStatus === 404)
+          throw new ApiError(503, "서울 실시간 API가 제공기관에서 404를 반환했습니다. T-DATA 실시간 서비스의 활용 승인·서비스 상태를 확인하세요.",
+            observation?.retryAfterMs ?? null);
         if (result.class !== "ok-data" && result.class !== "ok-empty")
           throw new ApiError(502, "서울 신호 응답 형식을 확인하지 못했습니다. API 서비스 경로와 활용 승인을 확인하세요.");
-        const data = result.body;
+        const data = observation?.data ?? result.body;
         noteSeoulReachable(true);
         const fetchedAt = Date.now();
-        const kind = service === "current" ? "current" : service === "timing" ? "timing" : "phase";
+        const kind = service === "current" ? "current" :
+          service === "timing" || service === "timing-current" ? "timing" : "phase";
         return json({
           source: "서울특별시 T-DATA",
           service,
@@ -813,6 +824,11 @@ export async function handleApi(
           fetchedAt,
           capability: "current-state-only",
           predictionReady: false,
+          ...(observation ? { observation: {
+            source: observation.source, synchronized: observation.synchronized,
+            fresh: observation.fresh, issues: observation.issues,
+            sourceAgeMs: observation.sourceAgeMs,
+          } } : {}),
           current: interpretCurrentState(data, fetchedAt, kind, itstId),
           data,
         });
@@ -888,8 +904,11 @@ export async function handleApi(
           error instanceof ApiError
             ? error.message
             : "요청 처리에 실패했습니다.",
+        ...(error instanceof ApiError && error.retryAfterMs !== null ? { retryAfterMs: error.retryAfterMs } : {}),
       },
       error instanceof ApiError ? error.status : 500,
+      error instanceof ApiError && error.retryAfterMs !== null
+        ? { "Retry-After": String(Math.ceil(error.retryAfterMs / 1000)) } : {},
     );
   }
 }

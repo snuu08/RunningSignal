@@ -24,6 +24,26 @@ export type ProviderContract = {
 };
 
 export const PROVIDER_CONTRACTS: ProviderContract[] = [
+  ...[
+    { id: "tdata-phase-current", dataId: "10380", title: "실시간 신호정보 현시",
+      path: "v2xSignalPhaseCurrentInfo", fields: ["ntPdsgStatNm"] },
+    { id: "tdata-timing-current", dataId: "10379", title: "실시간 잔여시간 현시",
+      path: "v2xSignalPhaseTimingCurrentInfo", fields: ["ntPdsgRmdrCs"] },
+  ].map((service): ProviderContract => ({
+    id: service.id, provider: "서울특별시 T-DATA", title: `${service.title} (data_id=${service.dataId})`,
+    status: "documented-openapi",
+    catalogUrl: `https://t-data.seoul.go.kr/dataprovide/trafficdataviewopenapi.do?data_id=${service.dataId}`,
+    listedEndpoint: `https://t-data.seoul.go.kr/apig/apiman-gateway/tapi/${service.path}/1.0`,
+    listedOperations: [`GET ${service.path}/1.0`],
+    requestFields: ["apikey", "itstId", "type", "pageNo", "numOfRows"],
+    responseFieldsNoted: ["itstId", "trsmUtcTime", "dataId", "eqmnId", ...service.fields],
+    unitsNoted: ["잔여 필드명=센티초, 값 설명=1/10초. 검증된 방향·단위만 초로 변환한다."],
+    errorResponses: "공식 페이지에 HTTP 오류 표 없음.",
+    callLimit: "활용신청의 승인 범위·호출 한도 확인 필요.",
+    approvalScope: "T-DATA 활용신청 범위. 인증 오류나 호출 제한을 우회하지 않는다.",
+    notes: "2026-10-17 공식 카탈로그와 2026-09-17 신규 서비스 공지 확인. itstId와 소문자 apikey 필수. 분리 응답은 최신 패킷의 시각·교차로·장비·dataId가 일치할 때만 결합한다.",
+    mayCall: true,
+  })),
   {
     id: "tdata-current",
     provider: "서울특별시 T-DATA",

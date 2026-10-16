@@ -13,6 +13,8 @@ export type RoutesResponse = {
   forecasts: Record<string, Forecast>;
   departureMs: number;
   paceSecPerKm?: number;
+  /** Server quota backoff. Clients must not poll before this delay. */
+  refreshAfterMs?: number;
   signalCoverage: SignalCoverage;
   policyApplied: RealRoutingPolicy;
   avoidanceCheck?: AvoidanceCheck;
@@ -21,7 +23,7 @@ export type RoutesResponse = {
 export type RoutesEvaluationResponse = Pick<
   RoutesResponse,
   "recommendedId" | "recommendationReason" | "recommendSentences" |
-  "forecasts" | "departureMs" | "signalCoverage" | "paceSecPerKm"
+  "forecasts" | "departureMs" | "signalCoverage" | "paceSecPerKm" | "refreshAfterMs"
 >;
 
 export type SignalReadiness = {
@@ -114,7 +116,7 @@ export function isCurrentSignalView(value: unknown): value is CurrentSignalView 
 }
 
 /** Unknown wait is not 0. Only an explicit known waitSec is shown as seconds. */
-export function waitDisplay(forecast?: Forecast | null): {
+export function waitDisplay(forecast?: Forecast | null, nowMs = Date.now()): {
   known: boolean;
   waitSec: number | null;
   stops: number | null;
@@ -122,6 +124,7 @@ export function waitDisplay(forecast?: Forecast | null): {
 } {
   if (
     !forecast ||
+    (forecast.validUntilMs !== undefined && (!Number.isFinite(forecast.validUntilMs) || nowMs >= forecast.validUntilMs)) ||
     forecast.waitSec === null ||
     forecast.stops === null ||
     forecast.maxWaitSec === null

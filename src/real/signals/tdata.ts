@@ -4,7 +4,7 @@ import { redactText, redactValue } from "./redact.ts";
 export const TDATA_GATEWAY =
   "https://t-data.seoul.go.kr/apig/apiman-gateway/tapi";
 
-export type TdataCallId = "current" | "phase" | "timing" | "connection" | "lane";
+export type TdataCallId = "current" | "phase-current" | "timing-current" | "phase" | "timing" | "connection" | "lane";
 
 export const TDATA_CALLABLE: Record<
   TdataCallId,
@@ -18,6 +18,18 @@ export const TDATA_CALLABLE: Record<
   current: {
     path: "v2xSignalPhaseTimingFusionCurrentInfo",
     dataId: "10381",
+    itstIdListed: true,
+    apiKeyParam: "apikey",
+  },
+  "phase-current": {
+    path: "v2xSignalPhaseCurrentInfo",
+    dataId: "10380",
+    itstIdListed: true,
+    apiKeyParam: "apikey",
+  },
+  "timing-current": {
+    path: "v2xSignalPhaseTimingCurrentInfo",
+    dataId: "10379",
     itstIdListed: true,
     apiKeyParam: "apikey",
   },
@@ -160,6 +172,7 @@ export type LiveCallClass =
   | "ok-data"
   | "ok-empty"
   | "auth"
+  | "rate-limited"
   | "connect"
   | "spec-unknown"
   | "region-unavailable";
@@ -173,6 +186,7 @@ export type TdataFetchResult = {
   respondedAtMs: number | null;
   lagMs: number | null;
   error: string | null;
+  retryAfterMs: number | null;
   rowCount: number;
   itstIds: string[];
   pedestrianKeys: string[];
@@ -197,6 +211,8 @@ function classifyHttp(
     return "connect";
   if (httpStatus === 401 || httpStatus === 403) return "auth";
   const rec = asRecord(body);
+  if (httpStatus === 429 || Number(rec?.responseCode ?? rec?.statusCode) === 429)
+    return "rate-limited";
   const msg = JSON.stringify(body ?? "").toLowerCase();
   if (
     /invalid[_ ]?(api|service)?[_ ]?key|api[_ ]?key[_ ]?(invalid|expired|not.?found)|unauthorized|access.?denied|not registered/.test(
@@ -219,7 +235,7 @@ export async function fetchTdataService(
   service: TdataCallId,
   apiKey: string,
   fetcher: typeof fetch,
-  opts: { itstId?: string; pageNo?: string; numOfRows?: string } = {},
+  opts: { itstId?: string; pageNo?: string; numOfRows?: string; timeoutMs?: number } = {},
 ): Promise<TdataFetchResult> {
   const spec = TDATA_CALLABLE[service];
   const query = new URLSearchParams({
@@ -240,7 +256,7 @@ export async function fetchTdataService(
   try {
     const response = await fetcher(url, {
       redirect: "error",
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 15000),
     });
     const respondedAtMs = Date.now();
     const text = await response.text();
@@ -297,6 +313,7 @@ export async function fetchTdataService(
       respondedAtMs,
       lagMs: respondedAtMs - requestedAtMs,
       error: htmlAuth ? "non_json_body" : null,
+      retryAfterMs: parseRetryAfter(response.headers.get("retry-after"), respondedAtMs),
       rowCount: rows.length,
       itstIds,
       pedestrianKeys,
@@ -312,6 +329,7 @@ export async function fetchTdataService(
       respondedAtMs: null,
       lagMs: null,
       error: name,
+      retryAfterMs: null,
       rowCount: 0,
       itstIds: [],
       pedestrianKeys: [],
@@ -329,9 +347,7 @@ export function interpretCurrentState(
 ): CurrentStateView {
   // Legacy APIs include history. Never display the oldest row or another
   // intersection as the requested crossing's current state.
-  const row = rowsOf(body)
-    .filter((r) => !requestedItstId || String(r.itstId) === requestedItstId)
-    .sort((a, b) => (sourceTimeOf(b) ?? -1) - (sourceTimeOf(a) ?? -1))[0] ?? {};
+  const row = latestTdataRow(body, requestedItstId) ?? {};
   const itstId = row.itstId != null ? String(row.itstId) : null;
   const sourceTimestampMs = sourceTimeOf(row);
   const sourceAgeMs =
@@ -403,7 +419,21 @@ export function interpretCurrentState(
   };
 }
 
-function sourceTimeOf(row: Record<string, unknown>): number | null {
+export function latestTdataRow(body: unknown, requestedItstId?: string): Record<string, unknown> | null {
+  return rowsOf(body)
+    .filter((r) => !requestedItstId || String(r.itstId) === requestedItstId)
+    .sort((a, b) => (sourceTimeOf(b) ?? -1) - (sourceTimeOf(a) ?? -1))[0] ?? null;
+}
+
+/** Retry-After is a delay in seconds or an HTTP date. Never retry before it. */
+export function parseRetryAfter(value: string | null, nowMs: number): number | null {
+  if (!value?.trim()) return null;
+  const delay = /^\d+(\.\d+)?$/.test(value.trim())
+    ? Number(value) * 1000 : Date.parse(value) - nowMs;
+  return Number.isFinite(delay) && delay >= 0 ? Math.ceil(delay) : null;
+}
+
+export function sourceTimeOf(row: Record<string, unknown>): number | null {
   const utc = row.trsmUtcTime;
   if (utc != null && utc !== "") {
     const n = Number(utc);

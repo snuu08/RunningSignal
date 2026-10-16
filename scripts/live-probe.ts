@@ -14,6 +14,7 @@ import { parseTmap } from "../server/api.ts";
 import { UTIC_HUB_LISTED, uticQuery, uticUrl } from "../src/real/signals/utic.ts";
 
 const CLASS_KO: Record<LiveCallClass, string> = {
+  "rate-limited": "호출 한도 초과",
   "ok-data": "정상 응답과 유효 데이터",
   "ok-empty": "정상 응답이지만 빈 데이터",
   auth: "인증·권한 오류",

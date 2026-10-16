@@ -778,6 +778,17 @@ export function RealApp() {
     status?.signal?.liveFeedConfigured === true ||
     Object.values(forecasts).some((f) => waitDisplay(f).known));
   const wait = waitDisplay(liveSignals ? (route ? forecasts[route.id] : null) : null);
+  useEffect(() => {
+    const expires = Object.values(forecasts).filter((f) => f.waitSec !== null &&
+      Number.isFinite(f.validUntilMs)).map((f) => f.validUntilMs!);
+    if (!expires.length) return;
+    const timer = window.setTimeout(() => setForecasts((current) => Object.fromEntries(
+      Object.entries(current).map(([id, f]) => [id,
+        f.validUntilMs !== undefined && f.validUntilMs <= Date.now()
+          ? { ...f, waitSec: null, stops: null, maxWaitSec: null, totalSec: null } : f]),
+    )), Math.max(0, Math.min(...expires) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [forecasts]);
   const travelSec = route ? (route.distanceM / 1000) * pace : 0;
   const currentRawFix = run.rawFix ?? run.live?.track.fixes.at(-1) ?? run.fix;
   const along =

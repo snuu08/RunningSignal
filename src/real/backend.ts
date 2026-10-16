@@ -2,6 +2,7 @@ import { persistLoginEnabled } from "./guidance.ts";
 import { createClient } from "@supabase/supabase-js";
 import type { Profile, RunRecord } from "./storage.ts";
 import { validCoord, type Route } from "./core.ts";
+import { parseRetryAfter } from "./signals/tdata.ts";
 const url = import.meta.env.VITE_SUPABASE_URL,
   anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const recoveryRequested =
@@ -43,6 +44,16 @@ export function oauthErrorFromLocation() {
     ""
   );
 }
+export class ApiRequestError extends Error {
+  status: number;
+  retryAfterMs: number | null;
+  constructor(message: string, status: number, retryAfterMs: number | null) {
+    super(message);
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 export async function api<T>(
   path: string,
   body?: unknown,
@@ -61,7 +72,9 @@ export async function api<T>(
   const data = await response
     .json()
     .catch(() => ({ error: "API 서버에 연결할 수 없습니다." }));
-  if (!response.ok) throw new Error(data.error || "요청에 실패했습니다.");
+  if (!response.ok) throw new ApiRequestError(data.error || "요청에 실패했습니다.", response.status,
+    Math.max(0, Number.isFinite(data.retryAfterMs) ? data.retryAfterMs : 0,
+      parseRetryAfter(response.headers.get("retry-after"), Date.now()) ?? 0) || null);
   return data;
 }
 export async function pushProfile(id: string, data: Profile) {

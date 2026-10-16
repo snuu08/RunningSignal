@@ -6,6 +6,8 @@ import {
 export function CurrentStatePanel({ payload }: { payload: unknown }) {
   const rec = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
   const current = isCurrentSignalView(rec?.current) ? rec.current : null;
+  const observation = rec?.observation && typeof rec.observation === "object"
+    ? rec.observation as { source?: string; fresh?: boolean; synchronized?: boolean } : null;
   if (!current)
     return (
       <p className="muted">현재 상태 해석 결과가 없습니다. 원문을 확인하세요.</p>
@@ -18,6 +20,8 @@ export function CurrentStatePanel({ payload }: { payload: unknown }) {
     <article>
       <h2>현재 보행신호 (예측 아님)</h2>
       <p>교차로 ID: {current.itstId ?? "없음"}</p>
+      {observation && <p>{observation.source === "current-phase+timing" ? "실시간 신호·잔여시간 결합" : "통합 실시간 응답"} ·
+        {observation.fresh && observation.synchronized ? " 동시각 관측 수신" : " 실시간 예측용 관측 미확인"}</p>}
       <p>
         {current.stale ? "지연된 응답 · " : ""}
         {current.missingSourceTime ? "원천 시각 없음 · " : ""}
