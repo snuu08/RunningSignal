@@ -11,6 +11,7 @@ import {
   ENGINE_PLAN_APPLIED_MAX_AGE_MS,
   ENGINE_PLAN_CLOCK_SKEW_MS,
 } from "./signals/freshness.ts";
+import { LIVE_SIGNAL_MAX_AGE_MS, waitInLiveWindow, type LiveSignalWindow } from "./signals/live-window.ts";
 
 /** Real-world coordinates are always [longitude, latitude], WGS84. */
 export type Coord = [number, number];
@@ -67,8 +68,11 @@ export type Crossing = {
   exitAtM?: number;
   widthM: number;
   plan: FixedPlan | null;
+  liveWindow?: LiveSignalWindow | null;
 };
 export type Forecast = {
+  /** Live observations expire even while the planner screen is idle. */
+  validUntilMs?: number;
   waitSec: number | null;
   stops: number | null;
   maxWaitSec: number | null;
@@ -82,6 +86,7 @@ export type Forecast = {
     widthM?: number;
     crossingSec?: number;
     plan?: FixedPlan | null;
+    liveWindow?: LiveSignalWindow | null;
   }[];
 };
 export type WalkingEmptyReason =
@@ -392,6 +397,7 @@ export function forecast(
       Number.isFinite(routeM) && routeM >= 0 && Number.isFinite(departureMs) && Number.isFinite(nowMs);
   const rows: Forecast["crossings"] = [];
   for (const c of [...crossings].sort((a, b) => a.atM - b.atM)) {
+    const evidence = { plan: c.plan, ...(c.liveWindow ? { liveWindow: c.liveWindow } : {}) };
     const hasExitAtM = Number.isFinite(c.exitAtM);
     const exitAtM = hasExitAtM ? c.exitAtM! : c.atM;
     if (
@@ -411,13 +417,26 @@ export function forecast(
         atM: c.atM,
         exitAtM: c.exitAtM,
         widthM: c.widthM,
-        plan: c.plan,
+        ...evidence,
       });
       continue;
     }
     arrival += ((c.atM - previousM) / 1000) * pace * 1000;
     previousM = c.atM;
     const p = c.plan;
+    const crossSec = c.widthM / CROSSING_WALK_M_PER_SEC + CROSSING_BUFFER_SEC;
+    if (c.liveWindow && !p) {
+      const w = waitInLiveWindow(c.liveWindow, arrival, crossSec, nowMs);
+      rows.push({ id: c.id, arrivalMs: arrival, waitSec: w, atM: c.atM,
+        exitAtM: c.exitAtM, widthM: c.widthM, crossingSec: crossSec, ...evidence });
+      if (w === null) { known = false; continue; }
+      arrival += (w + (hasExitAtM ? crossSec : 0)) * 1000;
+      wait += w;
+      if (w > 0) stops++;
+      max = Math.max(max, w);
+      previousM = exitAtM;
+      continue;
+    }
     if (
       !p ||
       !Object.values(p).every(Number.isFinite) ||
@@ -441,13 +460,12 @@ export function forecast(
         atM: c.atM,
         exitAtM: c.exitAtM,
         widthM: c.widthM,
-        plan: c.plan,
+        ...evidence,
       });
       continue;
     }
     const phase =
       ((((arrival - p.epochMs) / 1000) % p.cycleSec) + p.cycleSec) % p.cycleSec;
-    const crossSec = c.widthM / CROSSING_WALK_M_PER_SEC + CROSSING_BUFFER_SEC;
     const entryStart = p.entryStartSec + p.uncertaintySec;
     const latestEntry =
       Math.min(p.entryEndSec, p.clearEndSec - crossSec) - p.uncertaintySec;
@@ -461,7 +479,7 @@ export function forecast(
         exitAtM: c.exitAtM,
         widthM: c.widthM,
         crossingSec: crossSec,
-        plan: c.plan,
+        ...evidence,
       });
       continue;
     }
@@ -481,7 +499,7 @@ export function forecast(
         exitAtM: c.exitAtM,
         widthM: c.widthM,
         crossingSec: crossSec,
-        plan: c.plan,
+        ...evidence,
       });
       continue;
     }
@@ -493,7 +511,7 @@ export function forecast(
       exitAtM: c.exitAtM,
       widthM: c.widthM,
       crossingSec: crossSec,
-      plan: c.plan,
+      ...evidence,
     });
     arrival += (w + (hasExitAtM ? crossSec : 0)) * 1000;
     wait += w;
@@ -504,7 +522,14 @@ export function forecast(
   const totalSec = known
     ? (arrival + ((routeM - previousM) / 1000) * pace * 1000 - departureMs) / 1000
     : null;
+  const liveDeadlines = rows.filter((c) => !c.plan && c.liveWindow).flatMap((c) => [
+    c.liveWindow!.observedAtMs + LIVE_SIGNAL_MAX_AGE_MS,
+    ...(c.waitSec !== null && c.arrivalMs !== null && c.crossingSec !== undefined
+      ? [departureMs + c.liveWindow!.greenEndsAtMs -
+        (c.crossingSec + c.liveWindow!.uncertaintySec) * 1000 - c.arrivalMs] : []),
+  ]);
   return {
+    ...(liveDeadlines.length ? { validUntilMs: Math.min(...liveDeadlines) } : {}),
     waitSec: known ? wait : null,
     stops: known ? stops : null,
     maxWaitSec: known ? max : null,

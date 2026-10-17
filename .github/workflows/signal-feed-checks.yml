@@ -1,0 +1,21 @@
+name: Signal feed checks
+on:
+  push:
+    branches: [fix/signal-feed-diagnostics-20261017]
+  pull_request:
+    branches: [fix/seoul-live-gps-release-20261015]
+permissions:
+  contents: read
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --reporter=dot
+      - run: npm run build

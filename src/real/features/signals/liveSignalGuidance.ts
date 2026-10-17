@@ -1,4 +1,5 @@
 import { forecast, paceLabel, validPace, type Forecast } from "../../core.ts";
+import { LIVE_SIGNAL_MAX_AGE_MS } from "../../signals/live-window.ts";
 
 export type LiveSignalGuidance = {
   current: string;
@@ -40,7 +41,7 @@ export function liveSignalGuidance({
 
   const remainM = Math.max(0, next.atM - traveledM);
   const etaSec = (remainM / 1000) * livePace;
-  if (!next.plan || !(next.widthM && next.widthM > 0))
+  if ((!next.plan && !next.liveWindow) || !(next.widthM && next.widthM > 0))
     return { ...UNKNOWN_LIVE_SIGNAL, remainM, etaSec };
 
   const projected = forecast(
@@ -53,7 +54,8 @@ export function liveSignalGuidance({
         name: next.id,
         atM: remainM,
         widthM: next.widthM,
-        plan: next.plan,
+        plan: next.plan ?? null,
+        liveWindow: next.liveWindow,
       },
     ],
     true,
@@ -67,13 +69,17 @@ export function liveSignalGuidance({
     if (validPace(slower) && slower > livePace && slower <= livePace * 1.15) {
       const slowerForecast = forecast(remainM, slower, nowMs, [{
         id: next.id, name: next.id, atM: remainM,
-        widthM: next.widthM!, plan: next.plan,
+        widthM: next.widthM!, plan: next.plan ?? null,
+        liveWindow: next.liveWindow,
       }], true, nowMs);
       if (slowerForecast.waitSec === 0) suggestedPace = slower;
     }
   }
   return {
-    current: UNKNOWN_LIVE_SIGNAL.current,
+    current: next.liveWindow && nowMs >= next.liveWindow.observedAtMs - 1000 &&
+      nowMs - next.liveWindow.observedAtMs <= LIVE_SIGNAL_MAX_AGE_MS && nowMs < next.liveWindow.stateEndsAtMs
+      ? `최근 수신 보행신호: ${next.liveWindow.state === "red" ? "적색" : "녹색"} · ${Math.max(0, Math.round((nowMs - next.liveWindow.observedAtMs) / 1000))}초 전`
+      : UNKNOWN_LIVE_SIGNAL.current,
     arrival:
       waitSec === null
         ? UNKNOWN_LIVE_SIGNAL.arrival

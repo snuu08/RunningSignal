@@ -17,17 +17,19 @@ import {
   type RealRoutingPolicy,
 } from "../src/real/routing-policy.ts";
 
-/** Implement this boundary only after pedestrian direction, plan epoch and coverage are verified. */
+/** Only verified pedestrian geometry, timing semantics and surveyed coverage enter forecasts. */
 /** Verified records live under data/signals/verified. Do not auto-load samples. */
 export interface RouteSignalProvider {
   inspect(
     route: Route,
     departureMs: number,
+    context?: { paceSecPerKm: number; traveledM: number },
   ): Promise<{
     completeCoverage: boolean;
     crossings: Crossing[];
     source: string;
     exclusions?: { id: string; reason: string }[];
+    retryAfterMs?: number | null;
   }>;
 }
 export const unavailableSignals: RouteSignalProvider = {
@@ -55,8 +57,10 @@ export async function evaluateSignalCandidates(
   const inspected = await Promise.all(
     routes.map(async (route) => {
       try {
-        const result = await provider.inspect(route, departureMs);
-        return { route, crossings: result.crossings, completeCoverage: result.completeCoverage };
+        const result = await provider.inspect(route, departureMs,
+          { paceSecPerKm: pace, traveledM: progressByRoute[route.id] ?? 0 });
+        return { route, crossings: result.crossings, completeCoverage: result.completeCoverage,
+          retryAfterMs: result.retryAfterMs ?? null };
       } catch {
         return { route, crossings: [] as Crossing[], completeCoverage: false };
       }
@@ -67,6 +71,7 @@ export async function evaluateSignalCandidates(
   // request start, and network time must not be charged as running time.
   const evaluatedAtMs = Date.now();
   const actualDepartureMs = Math.max(departureMs, evaluatedAtMs);
+  const retryAfterMs = Math.max(0, ...inspected.map((r) => "retryAfterMs" in r ? r.retryAfterMs ?? 0 : 0));
   const entries = inspected.map(({ route, crossings, completeCoverage }) => ({
     route,
     forecast: forecastRemaining(
@@ -103,6 +108,7 @@ export async function evaluateSignalCandidates(
     signalCoverage,
     paceSecPerKm: pace,
     departureMs: actualDepartureMs,
+    refreshAfterMs: Math.max(5000, retryAfterMs),
     recommendSentences: recommendSentences({
       reason,
       coverage: signalCoverage,

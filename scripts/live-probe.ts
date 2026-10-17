@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { classifyCollected } from "../src/real/signals/collect.ts";
 import { redactValue } from "../src/real/signals/redact.ts";
 import {
-  captureTdataIntersection,
   fetchTdataService,
   interpretCurrentState,
   rowsOf,
@@ -12,8 +11,10 @@ import {
 } from "../src/real/signals/tdata.ts";
 import { parseTmap } from "../server/api.ts";
 import { UTIC_HUB_LISTED, uticQuery, uticUrl } from "../src/real/signals/utic.ts";
+import { createDataGoFeedClient } from "../server/data-go-feed.ts";
 
 const CLASS_KO: Record<LiveCallClass, string> = {
+  "rate-limited": "호출 한도 초과",
   "ok-data": "정상 응답과 유효 데이터",
   "ok-empty": "정상 응답이지만 빈 데이터",
   auth: "인증·권한 오류",
@@ -261,40 +262,19 @@ async function probeKakao() {
   }
 }
 
-async function probeMoiListedBase() {
+async function probeMoiRealtime() {
   const key = process.env.DATA_GO_KR_SERVICE_KEY?.trim();
   if (!key)
     return {
-      name: "mois-rti-listed-base",
+      name: "mois-rti-current",
       class: "spec-unknown" as LiveCallClass,
       skipped: true,
-      reason: "DATA_GO_KR_SERVICE_KEY 미설정. 오퍼레이션 경로를 추측하지 않음.",
+      reason: "DATA_GO_KR_SERVICE_KEY 미설정.",
     };
-  const requestedAtMs = Date.now();
-  const listed = "https://apis.data.go.kr/B551982/rti";
-  try {
-    const url = `${listed}?${new URLSearchParams({ serviceKey: key })}`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    const text = await response.text();
-    return {
-      name: "mois-rti-listed-base",
-      class: "spec-unknown" as LiveCallClass,
-      skipped: false,
-      httpStatus: response.status,
-      lagMs: Date.now() - requestedAtMs,
-      note: "목록에 베이스 URL만 있고 오퍼레이션 경로가 없습니다. 이 호출은 베이스 존재 확인이며 제품 경로가 아닙니다.",
-      preview: redactValue(text.slice(0, 180), secrets()),
-    };
-  } catch (e) {
-    return {
-      name: "mois-rti-listed-base",
-      class: "connect" as LiveCallClass,
-      skipped: false,
-      httpStatus: null,
-      lagMs: Date.now() - requestedAtMs,
-      note: e instanceof Error ? e.name : "fetch_failed",
-    };
-  }
+  const result = await createDataGoFeedClient(key, fetch).read("current", "1100000000", "1");
+  return { name: "mois-rti-current", skipped: false, class: result.class,
+    httpStatus: result.httpStatus, resultCode: result.resultCode, rowCount: result.rows.length,
+    retryAfterMs: result.retryAfterMs, note: "공식 tl_drct_info 조회. 원천 시각·단위·보행 방향은 미검증이며 예측에 쓰지 않음." };
 }
 
 async function probeUticSeoul() {
@@ -437,6 +417,7 @@ export async function runLiveProbe(opts: { skipTdata?: boolean } = {}) {
       itstIds: listed.itstIds,
       pedestrianKeys: listed.pedestrianKeys,
       error: listed.error,
+      retryAfterMs: listed.retryAfterMs,
     });
     const rows = rowsOf(listed.body);
     const withPed = rows.find((row) =>
@@ -448,11 +429,10 @@ export async function runLiveProbe(opts: { skipTdata?: boolean } = {}) {
       withPed?.itstId != null
         ? String(withPed.itstId)
         : listed.itstIds[0] ?? "";
-    if (itstId && /^\d{1,10}$/.test(itstId)) {
-      const phase = await fetchTdataService("phase", tdataKey, fetch, {
-        itstId,
-        numOfRows: "5",
-      });
+    if (listed.class === "ok-data" && itstId && /^\d{1,10}$/.test(itstId)) {
+      // Legacy APIs reject repeated calls within five minutes. Reuse the phase
+      // list and read timing once; do not fetch both again just to capture them.
+      const phase = listed;
       const timing = await fetchTdataService("timing", tdataKey, fetch, {
         itstId,
         numOfRows: "5",
@@ -464,6 +444,7 @@ export async function runLiveProbe(opts: { skipTdata?: boolean } = {}) {
         httpStatus: phase.httpStatus,
         pedestrianKeys: phase.pedestrianKeys,
         rowCount: phase.rowCount,
+        reusedListResponse: true,
       });
       calls.push({
         name: "tdata-timing-one",
@@ -472,27 +453,21 @@ export async function runLiveProbe(opts: { skipTdata?: boolean } = {}) {
         httpStatus: timing.httpStatus,
         remainingKeys: timing.remainingKeys,
         rowCount: timing.rowCount,
+        retryAfterMs: timing.retryAfterMs,
       });
-      const captured = await captureTdataIntersection(
-        itstId,
-        tdataKey,
-        fetch,
-        ["phase", "timing"],
-      );
-      const phaseBody = captured.calls.find((c) => c.service === "phase")?.body;
-      const timingBody = captured.calls.find((c) => c.service === "timing")?.body;
+      const capturedAtMs = Date.now();
       chosen = {
         itstId,
         pedestrianKeys: phase.pedestrianKeys,
-        currentPhase: phaseBody
-          ? interpretCurrentState(phaseBody, captured.capturedAtMs, "phase")
+        currentPhase: phase.body
+          ? interpretCurrentState(phase.body, capturedAtMs, "phase", itstId)
           : null,
-        currentTiming: timingBody
-          ? interpretCurrentState(timingBody, captured.capturedAtMs, "timing")
+        currentTiming: timing.body
+          ? interpretCurrentState(timing.body, capturedAtMs, "timing", itstId)
           : null,
-        captureHttp: captured.calls.map((c) => ({
+        captureHttp: [phase, timing].filter((c) => c.httpStatus !== null).map((c) => ({
           service: c.service,
-          status: c.httpStatus,
+          status: c.httpStatus!,
         })),
       };
     } else {
@@ -510,7 +485,7 @@ export async function runLiveProbe(opts: { skipTdata?: boolean } = {}) {
       probeTmap(),
       probeKakao(),
       probeUticSeoul(),
-      probeMoiListedBase(),
+      probeMoiRealtime(),
       probePublicPage("tdata-10144-catalog", TDATA_FILE_ONLY.crossroad.catalogUrl),
       probePublicPage(
         "national-signal-xls-catalog",

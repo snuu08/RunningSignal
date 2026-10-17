@@ -33,6 +33,10 @@ export type TdataPedestrianMapping = {
   remainingUnit: "deciseconds" | "centiseconds";
   /** Only true after confirming that this red countdown ends at pedestrian green. */
   redEndsAtEntryStart?: boolean;
+  /** Field/provider-verified lower bound for the next green; not a guessed cycle. */
+  minimumGreenSec?: number;
+  /** Trial uncertainty margin defaults to 1 second; supported range 1–3. */
+  countdownUncertaintySec?: number;
   verifiedAtMs: number;
   evidence: string;
 };

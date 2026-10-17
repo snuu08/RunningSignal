@@ -80,4 +80,16 @@ describe("liveSignalGuidance", () => {
     expect(guidance?.remainM).toBe(20);
     expect(guidance?.guidance).toMatch(/안전/);
   });
+  it("uses a live window with no fixed plan and refuses its stale continuation", () => {
+    const source = baseForecast({ plan: null, atM: 100, liveWindow: {
+      observedAtMs: nowMs, state: "red", stateEndsAtMs: nowMs + 38_000,
+      greenStartsAtMs: nowMs + 38_000, greenEndsAtMs: nowMs + 78_000, uncertaintySec: 1,
+    } });
+    const guidance = liveSignalGuidance({ routeForecast: source, traveledM: 0, livePace: 360, nowMs });
+    expect(guidance?.waitSec).toBe(3);
+    expect(guidance?.current).toMatch(/적색/);
+    expect(guidance?.suggestedPace).toBe(400);
+    expect(liveSignalGuidance({ routeForecast: source, traveledM: 0, livePace: 360,
+      nowMs: nowMs + 10_001 })?.waitSec).toBeNull();
+  });
 });

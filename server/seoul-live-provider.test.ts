@@ -92,7 +92,46 @@ describe("Seoul live fixed-plan confirmation", () => {
     expect(status.signal.liveFeedConfigured).toBe(true);
     const result = await (await handleApi(request(), env, vi.fn(async () => Response.json(response())))).json();
     expect(result.forecasts.seoul.waitSec).not.toBeNull();
-    const failed = await (await handleApi(request(), env, vi.fn(async () => Response.json(response({ ntPdsgRmdrCs: 999 }))))).json();
+    const failed = await (await handleApi(request(), env, vi.fn(async () => Response.json(response({ trsmUtcTime: now - 11_000 }))))).json();
     expect(failed.forecasts.seoul.waitSec).toBeNull();
+  });
+  it("forecasts one verified live interval without a fixed cycle or epoch", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    const liveBundle = { ...bundle, plans: [], liveMappings: [{ ...mapping,
+      redEndsAtEntryStart: true, minimumGreenSec: 40 }] };
+    const env = { SIGNAL_PUBLIC_PREDICTION: "true", SIGNAL_PREDICTION_SCOPES: "tdata:1850",
+      SIGNAL_VERIFIED_JSON: JSON.stringify(liveBundle), SEOUL_TDATA_API_KEY: "test-key" };
+    const fetcher = vi.fn(async () => Response.json(response({ ntPdsgStatNm: "stop-And-Remain", ntPdsgRmdrCs: 1000 })));
+    const status = await (await handleApi(new Request("https://app.test/api/status"), env, fetcher)).json();
+    expect(status.signal).toMatchObject({ planReady: false, predictionReady: false, liveFeedConfigured: true });
+    const request = new Request("https://app.test/api/routes/evaluate", { method: "POST",
+      body: JSON.stringify({ pace: 360, candidates: [{ route }] }) });
+    const result = await (await handleApi(request, env, fetcher)).json();
+    expect(result.forecasts.seoul.crossings[0].plan).toBeNull();
+    expect(result.forecasts.seoul.crossings[0].liveWindow.state).toBe("red");
+    expect(result.forecasts.seoul.waitSec).toBeGreaterThan(0);
+    expect(result.forecasts.seoul.validUntilMs).toBe(now + 10_000);
+    expect(result.refreshAfterMs).toBe(5000);
+  });
+  it("returns unknown waits and tells the running client when the quota resets", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    const env = { SIGNAL_PUBLIC_PREDICTION: "true", SIGNAL_PREDICTION_SCOPES: "tdata:1850",
+      SIGNAL_VERIFIED_JSON: JSON.stringify(bundle), SEOUL_TDATA_API_KEY: "test-key" };
+    const request = () => new Request("https://app.test/api/routes/evaluate", { method: "POST",
+      body: JSON.stringify({ pace: 360, candidates: [{ route }] }) });
+    const fetcher = vi.fn(async () => Response.json({ responseCode: 429 }, { status: 429, headers: { "Retry-After": "120" } }));
+    const result = await (await handleApi(request(), env, fetcher)).json();
+    expect(result.forecasts.seoul.waitSec).toBeNull();
+    expect(result.refreshAfterMs).toBe(120_000);
+    await handleApi(request(), env, fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("does not request passed crossings or live windows beyond the reachable horizon", async () => {
+    const fetcher = vi.fn(async () => Response.json(response()));
+    const provider = createSeoulLiveProvider({ ...bundle, plans: [] },
+      [{ source: "tdata", sourceIntersectionId: "1850" }], "test-key", fetcher, () => now);
+    await provider.inspect(route, now, { paceSecPerKm: 360, traveledM: 300 });
+    await provider.inspect(route, now, { paceSecPerKm: 1800, traveledM: 0 });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
