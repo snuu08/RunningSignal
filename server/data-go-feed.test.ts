@@ -38,6 +38,28 @@ describe("documented public-data diagnostic services", () => {
     expect(result.rows[0]).toMatchObject({ X_COORD: "126775207" });
     expect(result.rows[0]).not.toHaveProperty("lat");
   });
+  it("reads a legacy XML response and preserves leading zeros, coordinate scale and entities", async () => {
+    const xml = '<?xml version="1.0"?><response><header><resultCode>00</resultCode><resultMsg>OK</resultMsg></header><body><totalCount>1</totalCount><items><item><REGION_CD>L01</REGION_CD><INT_NO>00030</INT_NO><INT_NM>시청 &amp; 광장</INT_NM><X_COORD>126775207</X_COORD></item></items></body></response>';
+    const feed = createDataGoFeedClient("test-secret", async () => new Response(xml));
+    expect(await feed.read("police-crossroad", "L01", "1")).toMatchObject({ class: "ok-data", responseFormat: "xml",
+      rows: [{ INT_NO: "00030", INT_NM: "시청 & 광장", X_COORD: "126775207" }] });
+  });
+  it.each([
+    '<OpenAPI_ServiceResponse><cmmMsgHeader><returnReasonCode>30</returnReasonCode><errMsg>test-secret</errMsg></cmmMsgHeader></OpenAPI_ServiceResponse>',
+    '<!DOCTYPE response [<!ENTITY secret SYSTEM "file:///etc/passwd">]><response><header><resultCode>00</resultCode></header></response>',
+    '<response><header><resultCode>00</header></response>',
+  ])("never treats an XML error or malformed payload as signal data", async (xml) => {
+    const result = await createDataGoFeedClient("test-secret", async () => new Response(xml))
+      .read("police-crossroad", "L01", "1");
+    expect(["auth", "spec-unknown"]).toContain(result.class);
+    expect(result.rows).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("test-secret");
+  });
+  it("accepts a numeric success code without treating missing codes as success", async () => {
+    const result = await createDataGoFeedClient("test-secret", async () => Response.json({ header: { resultCode: 0 },
+      body: { totalCount: 0, items: [] } })).read("current", "1100000000", "1");
+    expect(result).toMatchObject({ class: "ok-empty", resultCode: "0", responseFormat: "json" });
+  });
   it.each(["10", "20", "30", "31"])("classifies provider envelope %s without exposing upstream text or credentials", async (code) => {
     const fetcher = vi.fn(async () => Response.json({ OpenAPI_ServiceResponse: { cmmMsgHeader: {
       returnReasonCode: code, errMsg: "echoed-test-secret", returnAuthMsg: "echoed-test-secret",

@@ -7,7 +7,7 @@ if (!base || !/^https?:\/\//.test(base) || !/^\d{1,10}$/.test(itstId)) {
   console.error("Usage: npm run verify:release -- https://your-site.example [intersectionId]");
   process.exit(2);
 }
-const expected = "seoul-live-wait-20261017-r2";
+const expected = "seoul-live-wait-20261017-r3";
 const checks = [];
 async function get(path) {
   const response = await fetch(new URL(path, base), { signal: AbortSignal.timeout(25_000) });

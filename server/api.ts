@@ -907,7 +907,7 @@ export async function handleApi(
         throw new ApiError(429, "공공데이터 API 호출 한도를 초과했습니다.", result.retryAfterMs);
       if (result.class === "auth") throw new ApiError(503, "공공데이터 인증·활용 승인을 확인하세요.");
       if (result.class !== "ok-data" && result.class !== "ok-empty")
-        throw new ApiError(502, `공공데이터 제공기관 응답 오류 (HTTP ${result.httpStatus ?? "연결 실패"}${result.resultCode ? ` · 코드 ${result.resultCode}` : ""}).`);
+        throw new ApiError(502, `공공데이터 제공기관 응답 오류 (HTTP ${result.httpStatus ?? "연결 실패"}${result.resultCode ? ` · 코드 ${result.resultCode}` : ""}${result.responseFormat === "xml" ? " · XML" : ""}).`);
       return json({ source: police ? "경찰청 공공데이터포털" : "행정안전부 한국지역정보개발원",
         service, region, pageNo: Number(pageNo), ...result,
         predictionReady: false, capability: "diagnostic-snapshot",

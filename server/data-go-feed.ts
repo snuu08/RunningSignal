@@ -1,5 +1,6 @@
 import { parseRetryAfter, type LiveCallClass } from "../src/real/signals/tdata.ts";
 import { redactValue } from "../src/real/signals/redact.ts";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 
 // Paths and query names from data.go.kr's 15157604 Swagger and 15056721
 // operation table, checked 2026-10-17. IDs are provider-specific namespaces.
@@ -19,10 +20,20 @@ type DataGoResult = {
   totalCount: number | null;
   rows: Row[];
   retryAfterMs: number | null;
+  responseFormat?: "json" | "xml" | "unknown";
 };
 const record = (v: unknown): Row =>
   v && typeof v === "object" && !Array.isArray(v) ? v as Row : {};
 const ROW_FIELDS = /^(stdgCd|lclgvNm|crsrdId|crsrdNm|mapCtptIntLat|mapCtptIntLot|laneWdth|lmtSpdTypeNm|lmtSpd|crsrdEngNm|totDt|regDt|REGION_CD|INT_NO|INT_NM|X_COORD|Y_COORD|UPD_DTIME)$|^(nt|et|st|wt|ne|se|sw|nw)Pdsg(RmndCs|SttsNm)$/;
+
+function parseBody(text: string): { body: unknown; format: "json" | "xml" | "unknown" } {
+  try { return { body: JSON.parse(text), format: "json" }; } catch { /* some legacy services return XML */ }
+  if (text.length <= 2_000_000 && !/<!DOCTYPE|<!ENTITY/i.test(text) &&
+    XMLValidator.validate(text) === true) {
+    return { body: new XMLParser({ parseTagValue: false, ignoreAttributes: true }).parse(text), format: "xml" };
+  }
+  return { body: null, format: "unknown" };
+}
 
 export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, nowMs = () => Date.now()) {
   // This is a diagnostic snapshot, never the runner's live countdown. Sharing
@@ -51,13 +62,14 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
         const response = await fetcher(`https://apis.data.go.kr/${spec.path}?${query}`, {
           redirect: "error", signal: AbortSignal.timeout(12_000),
         });
-        const body: unknown = await response.json().catch(() => null);
-        const root = record(body);
-        const envelope = record(root.response ?? body);
-        const header = record(envelope.header);
+        const parsed = parseBody(await response.text());
+        const root = record(parsed.body);
+        const envelope = record(root.response ?? root.Response ?? root);
+        const header = record(envelope.header ?? envelope);
         const gateway = record(record(root.OpenAPI_ServiceResponse).cmmMsgHeader);
         const rawCode = gateway.returnReasonCode ?? header.resultCode;
-        const code = typeof rawCode === "string" && /^(K)?\d{1,3}$/.test(rawCode) ? rawCode : null;
+        const code = (typeof rawCode === "string" || typeof rawCode === "number") &&
+          /^(K)?\d{1,3}$/.test(String(rawCode)) ? String(rawCode) : null;
         const numeric = code?.replace(/^K/, "");
         const limited = response.status === 429 || numeric === "22" || numeric === "23";
         const delay = limited ? Math.max(60_000, parseRetryAfter(response.headers.get("retry-after"), nowMs()) ?? 0) : null;
@@ -65,7 +77,7 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
         const auth = response.status === 401 || response.status === 403 ||
           ["20", "21", "30", "31", "32", "33"].includes(numeric ?? "");
         const ok = response.ok && ["0", "00", "03"].includes(numeric ?? "");
-        const data = record(envelope.body);
+        const data = record(envelope.body ?? envelope);
         const items = record(data.items);
         const rawRows = items.item ?? (Array.isArray(data.items) ? data.items : []);
         const rows = (Array.isArray(rawRows) ? rawRows : [rawRows]).slice(0, 20).map(record)
@@ -76,7 +88,8 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
         return { class: limited ? "rate-limited" : auth ? "auth" : !ok ? "spec-unknown" : rows.length ? "ok-data" : "ok-empty",
           httpStatus: response.status, resultCode: code, fetchedAt: nowMs(),
           totalCount: ok && data.totalCount != null && Number.isSafeInteger(count) && count >= 0 ? count : null,
-          rows: ok ? redactValue(rows, [key, encodeURIComponent(key), secret]) as Row[] : [], retryAfterMs: delay };
+          rows: ok ? redactValue(rows, [key, encodeURIComponent(key), secret]) as Row[] : [],
+          retryAfterMs: delay, responseFormat: parsed.format };
       } catch { return { ...base, class: "connect" }; }
     })().then((result) => { entry.until = nowMs() + 60_000; return result; });
     calls.set(cacheKey, entry);
