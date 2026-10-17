@@ -4,6 +4,8 @@ import {
 } from "../src/real/signals/tdata.ts";
 import { LIVE_SIGNAL_MAX_AGE_MS } from "../src/real/signals/live-window.ts";
 
+import { seoulKeyFor, type SeoulCredentials } from "./seoul-keys.ts";
+
 const CACHE_MS = 2000;
 const DEFAULT_BACKOFF_MS = 60_000;
 const MAX_CACHE_ENTRIES = 128;
@@ -56,12 +58,15 @@ function hasPedestrianPair(row: Row | null): boolean {
     Number.isFinite(Number(row[`${d}PdsgRmdrCs`])) && Number(row[`${d}PdsgRmdrCs`]) >= 0);
 }
 
-export function createSeoulFeedClient(apiKey: string, fetcher: typeof fetch, nowMs = () => Date.now()) {
+export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: typeof fetch, nowMs = () => Date.now()) {
   const calls = new Map<string, { expiresAt: number; value: Promise<TdataFetchResult> }>();
   const serviceBlockedUntilMs = new Map<TdataCallId, number>();
-  let blockedUntilMs = 0;
+  // Account-wide cooldowns apply only to services using the same credential.
+  const credentialBlockedUntilMs = new Map<string, number>();
   const retryAfterMs = (service?: TdataCallId) => Math.max(0,
-    blockedUntilMs - nowMs(), (service ? serviceBlockedUntilMs.get(service) ?? 0 : 0) - nowMs()) || null;
+    ...(service ? [credentialBlockedUntilMs.get(seoulKeyFor(credentials, service)) ?? 0]
+      : [...credentialBlockedUntilMs.values()]).map((until) => until - nowMs()),
+    (service ? serviceBlockedUntilMs.get(service) ?? 0 : 0) - nowMs()) || null;
   const failureRetryAfterMs = (result: TdataFetchResult) => retryAfterMs(result.service) ??
     (result.class !== "ok-data" && result.class !== "ok-empty"
       ? Math.max(0, (calls.get(`${result.service}:${result.itstId}`)?.expiresAt ?? nowMs()) - nowMs()) || null
@@ -69,11 +74,17 @@ export function createSeoulFeedClient(apiKey: string, fetcher: typeof fetch, now
 
   async function read(service: TdataCallId, itstId: string): Promise<TdataFetchResult> {
     const at = nowMs();
+    const apiKey = seoulKeyFor(credentials, service);
+    if (!apiKey) return {
+      service, itstId, class: "auth", httpStatus: null, requestedAtMs: at,
+      respondedAtMs: at, lagMs: 0, error: "missing_api_key", retryAfterMs: null,
+      rowCount: 0, itstIds: [], pedestrianKeys: [], remainingKeys: [], requestUrlRedacted: "", body: null,
+    };
     const delay = retryAfterMs(service);
     if (delay !== null) return {
       service, itstId, class: "rate-limited", httpStatus: 429, requestedAtMs: at,
       respondedAtMs: at, lagMs: 0, error: "rate_limit_backoff", retryAfterMs: delay,
-      rateLimitScope: blockedUntilMs > at ? "account" : "service",
+      rateLimitScope: (credentialBlockedUntilMs.get(apiKey) ?? 0) > at ? "account" : "service",
       rowCount: 0, itstIds: [], pedestrianKeys: [], remainingKeys: [], requestUrlRedacted: "", body: null,
     };
     const cacheKey = `${service}:${itstId}`;
@@ -88,7 +99,7 @@ export function createSeoulFeedClient(apiKey: string, fetcher: typeof fetch, now
         const until = nowMs() + Math.max(DEFAULT_BACKOFF_MS, result.retryAfterMs ?? 0);
         if (result.rateLimitScope === "service")
           serviceBlockedUntilMs.set(service, Math.max(serviceBlockedUntilMs.get(service) ?? 0, until));
-        else blockedUntilMs = Math.max(blockedUntilMs, until);
+        else credentialBlockedUntilMs.set(apiKey, Math.max(credentialBlockedUntilMs.get(apiKey) ?? 0, until));
       }
       entry.expiresAt = nowMs() + (result.httpStatus === 404 || result.class === "auth"
         ? DEFAULT_BACKOFF_MS : result.class === "ok-data" || result.class === "ok-empty" ? CACHE_MS : 10_000);
@@ -114,14 +125,14 @@ export function createSeoulFeedClient(apiKey: string, fetcher: typeof fetch, now
   }
 
   async function snapshot(itstId: string): Promise<SeoulObservation> {
-    const current = await read("current", itstId);
-    const row = newestUnique(current.body, itstId);
-    if (current.class === "ok-data" && hasPedestrianPair(row))
+    const current = seoulKeyFor(credentials, "current") ? await read("current", itstId) : null;
+    const row = current ? newestUnique(current.body, itstId) : null;
+    if (current?.class === "ok-data" && hasPedestrianPair(row))
       return observation("fusion", current, row, [row]);
     // A missing/empty fusion service may use the two current-only endpoints.
     // Historical phase/timing are diagnostic services, never an automatic live fallback.
     // Never fan out after authentication, quota or connection failures.
-    if (!(current.httpStatus === 404 || current.class === "ok-empty" || current.class === "ok-data"))
+    if (current && !(current.httpStatus === 404 || current.class === "ok-empty" || current.class === "ok-data"))
       return observation("fusion", current, null, null);
     const [phase, timing] = await Promise.all([read("phase-current", itstId), read("timing-current", itstId)]);
     const failure = [phase, timing].find((r) => r.class === "rate-limited") ??
@@ -135,11 +146,12 @@ export function createSeoulFeedClient(apiKey: string, fetcher: typeof fetch, now
 }
 
 // Coalescing/backoff survives warm requests. It is not a distributed quota guarantee.
-let clients = new WeakMap<typeof fetch, { apiKey: string; client: ReturnType<typeof createSeoulFeedClient> }>();
-export function seoulFeedClient(apiKey: string, fetcher: typeof fetch) {
+let clients = new WeakMap<typeof fetch, { signature: string; client: ReturnType<typeof createSeoulFeedClient> }>();
+export function seoulFeedClient(credentials: SeoulCredentials, fetcher: typeof fetch) {
+  const signature = JSON.stringify(credentials);
   let saved = clients.get(fetcher);
-  if (!saved || saved.apiKey !== apiKey) {
-    saved = { apiKey, client: createSeoulFeedClient(apiKey, fetcher) };
+  if (!saved || saved.signature !== signature) {
+    saved = { signature, client: createSeoulFeedClient(credentials, fetcher) };
     clients.set(fetcher, saved);
   }
   return saved.client;

@@ -11,6 +11,7 @@ import type { OperatingPlanRecord } from "../src/real/signals/schema.ts";
 import { latestTdataRow, sourceTimeOf } from "../src/real/signals/tdata.ts";
 import { LIVE_SIGNAL_MAX_HORIZON_SEC, seoulLiveWindow, tdataMappingIsVerified, type LiveSignalWindow } from "../src/real/signals/live-window.ts";
 import { toRuntimeCrossing } from "../src/real/signals/to-engine.ts";
+import type { SeoulCredentials } from "./seoul-keys.ts";
 import { createSeoulFeedClient } from "./seoul-feed.ts";
 import type { RouteSignalProvider } from "./signal-service.ts";
 
@@ -68,7 +69,7 @@ export function hasSeoulLiveMappings(bundle: VerifiedBundle, scopes: PredictionS
 export function createSeoulLiveProvider(
   bundle: VerifiedBundle,
   scopes: PredictionScope[],
-  apiKey: string,
+  apiKey: SeoulCredentials,
   fetcher: typeof fetch,
   nowMs: () => number = () => Date.now(),
   feed = createSeoulFeedClient(apiKey, fetcher, nowMs),

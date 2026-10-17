@@ -1,3 +1,4 @@
+import { seoulCredentialsFrom, seoulServiceConfiguration } from "./seoul-keys.ts";
 import {
   planReturnedRoutes,
   evaluateSignalCandidates,
@@ -44,6 +45,7 @@ import {
   TDATA_FILE_ONLY,
   interpretCurrentState,
   type TdataCallId,
+  type TdataFetchResult,
 } from "../src/real/signals/tdata.ts";
 import {
   parseUticBody,
@@ -59,11 +61,17 @@ type Fetch = typeof fetch;
 class ApiError extends Error {
   status: number;
   retryAfterMs: number | null;
-  constructor(status: number, message: string, retryAfterMs: number | null = null) {
+  providerResponse?: Record<string, unknown>;
+  constructor(status: number, message: string, retryAfterMs: number | null = null, providerResponse?: Record<string, unknown>) {
     super(message);
     this.status = status;
     this.retryAfterMs = retryAfterMs;
+    this.providerResponse = providerResponse;
   }
+}
+function seoulDiagnostic(result: TdataFetchResult) {
+  return { provider: "tdata", service: result.service, httpStatus: result.httpStatus,
+    resultClass: result.class, errorType: result.error, elapsedMs: result.lagMs };
 }
 /** Instance-local only. Status GET does not probe providers. */
 const seoulReach = { okAt: 0, failAt: 0 };
@@ -91,9 +99,10 @@ export function signalProviderFromEnv(
   const bundle = loadVerifiedBundle(env);
   const scopes = parsePredictionScopes(env.SIGNAL_PREDICTION_SCOPES);
   if (!bundle.crossings.length) return unavailableSignals;
-  if (env.SEOUL_TDATA_API_KEY?.trim() && bundle.liveMappings?.length)
-    return createSeoulLiveProvider(bundle, scopes, env.SEOUL_TDATA_API_KEY.trim(), fetcher,
-      undefined, seoulFeedClient(env.SEOUL_TDATA_API_KEY.trim(), fetcher));
+  const credentials = seoulCredentialsFrom(env);
+  if (Object.values(credentials).some(Boolean) && bundle.liveMappings?.length)
+    return createSeoulLiveProvider(bundle, scopes, credentials, fetcher,
+      undefined, seoulFeedClient(credentials, fetcher));
   return createVerifiedProvider(bundle, scopes);
 }
 
@@ -434,7 +443,8 @@ export async function handleApi(
         ? (signalProvider ?? signalProviderFromEnv(env, fetcher))
         : unavailableSignals;
     if (request.method === "GET" && path === "/api/status") {
-      const seoulConfigured = !!env.SEOUL_TDATA_API_KEY;
+      const seoulServicesConfigured = seoulServiceConfiguration(seoulCredentialsFrom(env));
+      const seoulConfigured = Object.values(seoulServicesConfigured).some(Boolean);
       const {
         mappingReady,
         planReady,
@@ -450,6 +460,7 @@ export async function handleApi(
       } = prediction;
       return json({
         release: { id: RELEASE_ID, seoulServices: Object.keys(TDATA_CALLABLE) },
+        seoulServicesConfigured,
         places: !!env.KAKAO_REST_API_KEY,
         routes: !!env.TMAP_APP_KEY,
         seoulSignals: seoulConfigured,
@@ -798,22 +809,25 @@ export async function handleApi(
         );
       if (!Object.hasOwn(TDATA_CALLABLE, service))
         throw new ApiError(400, "지원하지 않는 신호 서비스입니다.");
-      const apiKey = key(env, "SEOUL_TDATA_API_KEY");
+      const credentials = seoulCredentialsFrom(env);
+      if (!Object.values(credentials).some(Boolean)) key(env, "SEOUL_TDATA_API_KEY");
       try {
-        const feed = seoulFeedClient(apiKey, fetcher);
+        const feed = seoulFeedClient(credentials, fetcher);
         const observation = service === "current" ? await feed.snapshot(itstId) : null;
         const result = observation?.result ?? await feed.read(service as TdataCallId, itstId);
         if (result.class === "auth")
-          throw new ApiError(503, "서울 신호 인증에 실패했습니다. 서버 인증키와 해당 API 활용 승인을 확인하세요.");
+          throw new ApiError(503, result.error === "missing_api_key" ? "요청한 서울 신호 서비스의 서버 인증키가 설정되지 않았습니다." :
+            "서울 신호 인증에 실패했습니다. 서버 인증키와 해당 API 활용 승인을 확인하세요.", null, seoulDiagnostic(result));
         if (result.class === "rate-limited")
-          throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.", feed.retryAfterMs(result.service));
+          throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.", feed.retryAfterMs(result.service), seoulDiagnostic(result));
         if (result.class === "connect")
-          throw new ApiError(502, "제공기관 연결에 실패했습니다. 잠시 뒤 다시 시도하세요.");
+          throw new ApiError(502, result.error === "TimeoutError" ? "서울 신호 제공기관 응답 대기시간을 초과했습니다." :
+            "제공기관 연결에 실패했습니다. 잠시 뒤 다시 시도하세요.", null, seoulDiagnostic(result));
         if (result.httpStatus === 404)
           throw new ApiError(503, "서울 실시간 API가 제공기관에서 404를 반환했습니다. T-DATA 실시간 서비스의 활용 승인·서비스 상태를 확인하세요.",
-            observation?.retryAfterMs ?? null);
+            observation?.retryAfterMs ?? null, seoulDiagnostic(result));
         if (result.class !== "ok-data" && result.class !== "ok-empty")
-          throw new ApiError(502, "서울 신호 응답 형식을 확인하지 못했습니다. API 서비스 경로와 활용 승인을 확인하세요.");
+          throw new ApiError(502, "서울 신호 응답 형식을 확인하지 못했습니다. API 서비스 경로와 활용 승인을 확인하세요.", null, seoulDiagnostic(result));
         const data = observation?.data ?? result.body;
         noteSeoulReachable(true);
         const fetchedAt = Date.now();
@@ -909,7 +923,9 @@ export async function handleApi(
       if (result.class !== "ok-data" && result.class !== "ok-empty")
         return json({ error: `공공데이터 제공기관 응답 오류 (HTTP ${result.httpStatus ?? "연결 실패"}${result.resultCode ? ` · 코드 ${result.resultCode}` : ""}${result.responseFormat === "xml" ? " · XML" : ""}).`,
           providerResponse: { httpStatus: result.httpStatus, format: result.responseFormat ?? "unknown",
-            contentType: result.responseType ?? "unknown", fieldNames: result.responseKeys ?? [] } }, 502);
+            contentType: result.responseType ?? "unknown", fieldNames: result.responseKeys ?? [],
+            rootType: result.rootType ?? "unknown", ...(result.arrayLength !== undefined ? { arrayLength: result.arrayLength } : {}),
+            elapsedMs: result.elapsedMs ?? null, transportError: result.transportError ?? null } }, 502);
       return json({ source: police ? "경찰청 공공데이터포털" : "행정안전부 한국지역정보개발원",
         service, region, pageNo: Number(pageNo), ...result,
         predictionReady: false, capability: "diagnostic-snapshot",
@@ -924,6 +940,7 @@ export async function handleApi(
             ? error.message
             : "요청 처리에 실패했습니다.",
         ...(error instanceof ApiError && error.retryAfterMs !== null ? { retryAfterMs: error.retryAfterMs } : {}),
+        ...(error instanceof ApiError && error.providerResponse ? { providerResponse: error.providerResponse } : {}),
       },
       error instanceof ApiError ? error.status : 500,
       error instanceof ApiError && error.retryAfterMs !== null

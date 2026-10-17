@@ -20,6 +20,10 @@ type DataGoResult = {
   totalCount: number | null;
   rows: Row[];
   retryAfterMs: number | null;
+  elapsedMs?: number;
+  transportError?: "timeout" | "aborted" | "network-or-redirect" | "unknown";
+  rootType?: "object" | "array" | "null" | "string" | "number" | "boolean" | "unknown";
+  arrayLength?: number;
   responseFormat?: "json" | "xml" | "unknown";
   responseType?: string;
   responseKeys?: string[];
@@ -59,13 +63,18 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
       } catch { return { ...base, class: "auth" }; }
       const spec = DATA_GO_SERVICES[service];
       const query = new URLSearchParams({ [spec.keyParam]: key, [spec.regionParam]: region,
-        pageNo, numOfRows: "20", type: "json" });
+        pageNo, numOfRows: "20", type: service === "police-crossroad" ? "xml" : "json" });
+      const startedAt = nowMs();
       try {
         const response = await fetcher(`https://apis.data.go.kr/${spec.path}?${query}`, {
           redirect: "error", signal: AbortSignal.timeout(12_000),
         });
         const parsed = parseBody(await response.text());
-        const root = record(parsed.body);
+        const raw = parsed.body;
+        const rootType = raw === null ? "null" : Array.isArray(raw) ? "array" :
+          typeof raw === "object" ? "object" : typeof raw === "string" ? "string" :
+          typeof raw === "number" ? "number" : typeof raw === "boolean" ? "boolean" : "unknown";
+        const root = record(raw);
         const envelope = record(root.response ?? root.Response ?? root);
         const header = record(envelope.header ?? envelope);
         const gateway = record(record(root.OpenAPI_ServiceResponse).cmmMsgHeader);
@@ -91,7 +100,8 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
           httpStatus: response.status, resultCode: code, fetchedAt: nowMs(),
           totalCount: numeric === 3 ? 0 : ok && data.totalCount != null && Number.isSafeInteger(count) && count >= 0 ? count : null,
           rows: ok && numeric !== 3 ? redactValue(rows, [key, encodeURIComponent(key), secret]) as Row[] : [],
-          retryAfterMs: delay, responseFormat: parsed.format,
+          retryAfterMs: delay, elapsedMs: nowMs() - startedAt, rootType,
+          ...(Array.isArray(raw) ? { arrayLength: raw.length } : {}), responseFormat: parsed.format,
           responseType: ["application/json", "application/xml", "text/xml", "text/html", "text/plain", "application/octet-stream"]
             .find((type) => response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() === type) ?? "unknown",
           // Only field names, never values or provider error bodies, help
@@ -99,7 +109,12 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
           responseKeys: (redactValue(Object.keys(root).filter((k) => /^[A-Za-z_]{1,40}$/.test(k)).slice(0,10),
             [key, encodeURIComponent(key), secret]) as string[]),
         };
-      } catch { return { ...base, class: "connect" }; }
+      } catch (error) {
+        const name = error instanceof Error ? error.name : "";
+        return { ...base, class: "connect", elapsedMs: nowMs() - startedAt,
+          transportError: name === "TimeoutError" ? "timeout" : name === "AbortError" ? "aborted" :
+            name === "TypeError" ? "network-or-redirect" : "unknown" };
+      }
     })().then((result) => { entry.until = nowMs() + 60_000; return result; });
     calls.set(cacheKey, entry);
     return entry.value;

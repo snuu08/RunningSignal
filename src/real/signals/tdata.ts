@@ -260,8 +260,8 @@ export async function fetchTdataService(
       redirect: "error",
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15000),
     });
-    const respondedAtMs = Date.now();
     const text = await response.text();
+    const respondedAtMs = Date.now();
     let body: unknown = text;
     try {
       body = JSON.parse(text);
@@ -333,13 +333,14 @@ export async function fetchTdataService(
       body,
     };
   } catch (e) {
-    const name = e instanceof Error ? e.name : "Error";
+    const candidateName = e instanceof Error ? e.name : "Error";
+    const name = ["TimeoutError", "AbortError", "TypeError"].includes(candidateName) ? candidateName : "Error";
     return {
       ...base,
       class: "connect",
       httpStatus: null,
       respondedAtMs: null,
-      lagMs: null,
+      lagMs: Date.now() - requestedAtMs,
       error: name,
       retryAfterMs: null,
       rowCount: 0,
