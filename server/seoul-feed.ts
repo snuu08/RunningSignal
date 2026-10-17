@@ -61,12 +61,11 @@ function hasPedestrianPair(row: Row | null): boolean {
 export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: typeof fetch, nowMs = () => Date.now()) {
   const calls = new Map<string, { expiresAt: number; value: Promise<TdataFetchResult> }>();
   const serviceBlockedUntilMs = new Map<TdataCallId, number>();
-  // Account-wide cooldowns apply only to services using the same credential.
-  const credentialBlockedUntilMs = new Map<string, number>();
+  // Different dataset keys may still belong to one provider account.
+  // Unknown limits stay account-wide; only explicit API limits are isolated.
+  let blockedUntilMs = 0;
   const retryAfterMs = (service?: TdataCallId) => Math.max(0,
-    ...(service ? [credentialBlockedUntilMs.get(seoulKeyFor(credentials, service)) ?? 0]
-      : [...credentialBlockedUntilMs.values()]).map((until) => until - nowMs()),
-    (service ? serviceBlockedUntilMs.get(service) ?? 0 : 0) - nowMs()) || null;
+    blockedUntilMs - nowMs(), (service ? serviceBlockedUntilMs.get(service) ?? 0 : 0) - nowMs()) || null;
   const failureRetryAfterMs = (result: TdataFetchResult) => retryAfterMs(result.service) ??
     (result.class !== "ok-data" && result.class !== "ok-empty"
       ? Math.max(0, (calls.get(`${result.service}:${result.itstId}`)?.expiresAt ?? nowMs()) - nowMs()) || null
@@ -84,7 +83,7 @@ export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: ty
     if (delay !== null) return {
       service, itstId, class: "rate-limited", httpStatus: 429, requestedAtMs: at,
       respondedAtMs: at, lagMs: 0, error: "rate_limit_backoff", retryAfterMs: delay,
-      rateLimitScope: (credentialBlockedUntilMs.get(apiKey) ?? 0) > at ? "account" : "service",
+      rateLimitScope: blockedUntilMs > at ? "account" : "service",
       rowCount: 0, itstIds: [], pedestrianKeys: [], remainingKeys: [], requestUrlRedacted: "", body: null,
     };
     const cacheKey = `${service}:${itstId}`;
@@ -99,7 +98,7 @@ export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: ty
         const until = nowMs() + Math.max(DEFAULT_BACKOFF_MS, result.retryAfterMs ?? 0);
         if (result.rateLimitScope === "service")
           serviceBlockedUntilMs.set(service, Math.max(serviceBlockedUntilMs.get(service) ?? 0, until));
-        else credentialBlockedUntilMs.set(apiKey, Math.max(credentialBlockedUntilMs.get(apiKey) ?? 0, until));
+        else blockedUntilMs = Math.max(blockedUntilMs, until);
       }
       entry.expiresAt = nowMs() + (result.httpStatus === 404 || result.class === "auth"
         ? DEFAULT_BACKOFF_MS : result.class === "ok-data" || result.class === "ok-empty" ? CACHE_MS : 10_000);

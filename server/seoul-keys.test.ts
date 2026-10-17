@@ -21,12 +21,13 @@ describe("dataset-specific Seoul credentials", () => {
     expect(vitePrefixedSecretNames({ VITE_SEOUL_TDATA_CURRENT_API_KEY: "bad" }))
       .toEqual(["VITE_SEOUL_TDATA_CURRENT_API_KEY"]);
   });
-  it("uses the matching key and keeps account cooldowns separate for distinct keys", async () => {
+  it("uses the matching key and isolates only explicitly service-scoped cooldowns", async () => {
     let clock = 1_000;
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
       const key = url.searchParams.get("apikey") ?? url.searchParams.get("apiKey");
-      if (key === "limited-key") return Response.json({ responseCode: 429 },
+      if (key === "limited-key") return Response.json({ code: "V2X_REPEAT_CALL_LIMIT",
+        api: "v2xSignalPhaseInformation", retryAfterSeconds: 120 },
         { status: 429, headers: { "Retry-After": "120" } });
       expect(key).toBe("other-key");
       return Response.json([]);
@@ -35,9 +36,17 @@ describe("dataset-specific Seoul credentials", () => {
       current: "other-key" }, fetcher, () => clock);
     expect((await feed.read("phase", "20386")).class).toBe("rate-limited");
     clock += 1_000;
-    expect((await feed.read("timing", "9999")).retryAfterMs).toBe(119_000);
+    expect((await feed.read("phase", "9999")).retryAfterMs).toBe(119_000);
     expect((await feed.read("current", "20386")).class).toBe("ok-empty");
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it("keeps an unknown quota limit account-wide even when dataset keys differ", async () => {
+    const fetcher = vi.fn(async () => Response.json({ responseCode: 429 },
+      { status: 429, headers: { "Retry-After": "120" } }));
+    const feed = createSeoulFeedClient({ phase: "key-a", current: "key-b" }, fetcher);
+    await feed.read("phase", "20386");
+    expect((await feed.read("current", "20386")).class).toBe("rate-limited");
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it("can join the current-only pair when only those two dataset keys are configured", async () => {
     const at = Date.now();
