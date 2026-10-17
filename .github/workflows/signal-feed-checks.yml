@@ -1,7 +1,7 @@
 name: Signal feed checks
 on:
   push:
-    branches: [fix/signal-feed-diagnostics-20261017, feat/seoul-live-pilot-20261017]
+    branches: [fix/signal-feed-diagnostics-20261017, feat/seoul-live-pilot-20261017, feat/shared-tdata-crossings-20261017]
   pull_request:
     branches: [fix/seoul-live-gps-release-20261015]
 permissions:

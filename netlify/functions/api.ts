@@ -13,8 +13,14 @@ function netlifyGet(name: string): string | undefined {
   }
 }
 
-export default (request: Request) =>
-  handleApi(request, functionEnvFrom(process.env, netlifyGet));
+export default (request: Request, context: { deploy?: { context?: string; published?: boolean } }) =>
+  handleApi(request, {
+    ...functionEnvFrom(process.env, netlifyGet),
+    // Runtime deploy metadata is authoritative; CONTEXT is otherwise build-only.
+    SIGNAL_CALL_COORDINATION: "required",
+    CONTEXT: context.deploy?.context ?? "unknown",
+    SIGNAL_DEPLOY_PUBLISHED: context.deploy?.published === true ? "true" : "false",
+  });
 
 export const config = {
   path: ["/api/*", "/.netlify/functions/api/*"],

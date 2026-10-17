@@ -178,6 +178,12 @@ export type LiveCallClass =
   | "region-unavailable";
 
 export type TdataFetchResult = {
+  coordination?: {
+    mode: "shared-database";
+    source: "upstream" | "cache" | "blocked" | "unavailable";
+    instanceId: string;
+    callId?: string;
+  };
   service: TdataCallId;
   itstId: string | null;
   class: LiveCallClass;

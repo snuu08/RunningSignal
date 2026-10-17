@@ -48,6 +48,8 @@ export type SignalReadiness = {
 
 export type StatusResponse = {
   release?: { id: string; seoulServices: string[] };
+  seoulCallCoordination?: { mode: string; previewLiveCalls: boolean };
+  seoulPhysicalMapping?: { liveMappingReady: boolean; predictionReady: boolean };
   places: boolean;
   routes: boolean;
   seoulSignals: boolean;

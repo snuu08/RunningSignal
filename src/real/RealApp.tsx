@@ -80,6 +80,7 @@ import {
 } from "./signal-demo.ts";
 import { CurrentStatePanel } from "./features/signals/CurrentStatePanel.tsx";
 import { SignalUnitCheck } from "./features/signals/SignalUnitCheck.tsx";
+import { CrossingFieldCheck } from "./features/signals/CrossingFieldCheck.tsx";
 import { GpsFieldCheck } from "./GpsFieldCheck.tsx";
 import { liveSignalGuidance } from "./features/signals/liveSignalGuidance.ts";
 import { evaluationCandidate, useLiveRouteForecast } from "./useLiveRouteForecast.ts";
@@ -2707,8 +2708,9 @@ export function RealApp() {
                 : "아직 호출하지 않음"}
           </p>
           <p>
-            횡단 매핑: {status?.signal?.mappingReady ? "준비됨" : "미완료"}
+            서울 보행 필드 대응: {status?.seoulPhysicalMapping?.liveMappingReady ? "검증된 범위 있음" : "현장 대조 필요"}
           </p>
+          <p>서버 공통 호출 제한: {status?.seoulCallCoordination?.mode === "shared-database-required" ? "공유 DB 사용 필수 · 실제 수신으로 확인" : "이전 배포 또는 로컬 개발"}</p>
           <p>
             경로 예측:{" "}
             {status?.signal?.predictionReady || status?.signalPrediction
@@ -2779,6 +2781,7 @@ export function RealApp() {
           {signalResult !== null && <CurrentStatePanel payload={signalResult} />}
           <SignalUnitCheck key={signalId} itstId={signalId}
             disabled={busy || !(status?.signal?.configured.seoul || status?.seoulSignals)} />
+          <CrossingFieldCheck key={`crossing:${owner}:${signalId}`} itstId={signalId} owner={owner} />
           {signalResult !== null && (
             <details>
               <summary>현재 상태 원문 · 통행 안내 아님</summary>

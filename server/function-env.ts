@@ -12,6 +12,7 @@ export const SECRET_ENV = [
   "UTIC_SERVICE_KEY",
   "DATA_GO_KR_SERVICE_KEY",
   "SIGNAL_VERIFIED_JSON",
+  "NETLIFY_DB_URL",
 ] as const;
 
 export const FUNCTION_ENV = [
@@ -19,6 +20,8 @@ export const FUNCTION_ENV = [
   "SIGNAL_PREDICTION_SCOPES",
   "SIGNAL_PUBLIC_PREDICTION",
   "SIGNAL_VERIFIED_PATH",
+  "CONTEXT",
+  "NETLIFY",
 ] as const;
 
 export type FunctionEnv = Record<string, string | undefined>;

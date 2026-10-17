@@ -1,4 +1,5 @@
 import { seoulCredentialsFrom, seoulServiceConfiguration } from "./seoul-keys.ts";
+import { sharedSeoulCallsFromEnv } from "./seoul-shared-calls.ts";
 import {
   planReturnedRoutes,
   evaluateSignalCandidates,
@@ -71,7 +72,8 @@ class ApiError extends Error {
 }
 function seoulDiagnostic(result: TdataFetchResult) {
   return { provider: "tdata", service: result.service, httpStatus: result.httpStatus,
-    resultClass: result.class, errorType: result.error, elapsedMs: result.lagMs };
+    resultClass: result.class, errorType: result.error, elapsedMs: result.lagMs,
+    coordination: result.coordination };
 }
 /** Instance-local only. Status GET does not probe providers. */
 const seoulReach = { okAt: 0, failAt: 0 };
@@ -102,7 +104,7 @@ export function signalProviderFromEnv(
   const credentials = seoulCredentialsFrom(env);
   if (Object.values(credentials).some(Boolean) && bundle.liveMappings?.length)
     return createSeoulLiveProvider(bundle, scopes, credentials, fetcher,
-      undefined, seoulFeedClient(credentials, fetcher));
+      undefined, seoulFeedClient(credentials, fetcher, sharedSeoulCallsFromEnv(env, credentials)));
   return createVerifiedProvider(bundle, scopes);
 }
 
@@ -461,6 +463,11 @@ export async function handleApi(
       return json({
         release: { id: RELEASE_ID, seoulServices: Object.keys(TDATA_CALLABLE) },
         seoulServicesConfigured,
+        seoulCallCoordination: {
+          mode: env.SIGNAL_CALL_COORDINATION === "required" || env.NETLIFY === "true" || env.CONTEXT || env.NETLIFY_DB_URL ? "shared-database-required" : "local-development",
+          previewLiveCalls: false,
+        },
+        seoulPhysicalMapping: { liveMappingReady: prediction.liveMappingReady, predictionReady: false },
         places: !!env.KAKAO_REST_API_KEY,
         routes: !!env.TMAP_APP_KEY,
         seoulSignals: seoulConfigured,
@@ -812,7 +819,7 @@ export async function handleApi(
       const credentials = seoulCredentialsFrom(env);
       if (!Object.values(credentials).some(Boolean)) key(env, "SEOUL_TDATA_API_KEY");
       try {
-        const feed = seoulFeedClient(credentials, fetcher);
+        const feed = seoulFeedClient(credentials, fetcher, sharedSeoulCallsFromEnv(env, credentials));
         const observation = service === "current" ? await feed.snapshot(itstId) : null;
         const result = observation?.result ?? await feed.read(service as TdataCallId, itstId);
         if (result.class === "auth")
@@ -821,7 +828,10 @@ export async function handleApi(
         if (result.class === "rate-limited")
           throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.", feed.retryAfterMs(result.service), seoulDiagnostic(result));
         if (result.class === "connect")
-          throw new ApiError(502, result.error === "TimeoutError" ? "서울 신호 제공기관 응답 대기시간을 초과했습니다." :
+          throw new ApiError(result.error === "coordination_unavailable" || result.error === "live_calls_disabled_in_preview" ? 503 : 502,
+            result.error === "coordination_unavailable" ? "서버 공통 호출 제한 저장소를 확인할 수 없어 신호 조회를 잠시 중단했습니다." :
+            result.error === "live_calls_disabled_in_preview" ? "미리보기에서는 운영 API 호출을 중단합니다. 운영 앱에서 조회해 주세요." :
+            result.error === "TimeoutError" ? "서울 신호 제공기관 응답 대기시간을 초과했습니다." :
             "제공기관 연결에 실패했습니다. 잠시 뒤 다시 시도하세요.", null, seoulDiagnostic(result));
         if (result.httpStatus === 404)
           throw new ApiError(503, "서울 실시간 API가 제공기관에서 404를 반환했습니다. T-DATA 실시간 서비스의 활용 승인·서비스 상태를 확인하세요.",
@@ -837,6 +847,7 @@ export async function handleApi(
           source: "서울특별시 T-DATA",
           service,
           resultClass: result.class,
+          coordination: result.coordination,
           fetchedAt,
           capability: "current-state-only",
           predictionReady: false,

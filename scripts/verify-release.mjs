@@ -7,7 +7,7 @@ if (!base || !/^https?:\/\//.test(base) || !/^\d{1,10}$/.test(itstId)) {
   console.error("Usage: npm run verify:release -- https://your-site.example [intersectionId]");
   process.exit(2);
 }
-const expected = "seoul-live-check-20261017-r5";
+const expected = "seoul-shared-crossings-20261017-r6";
 const checks = [];
 async function get(path) {
   const response = await fetch(new URL(path, base), { signal: AbortSignal.timeout(25_000) });
@@ -20,6 +20,9 @@ try {
   const signal = await get(`/api/signals/seoul?service=current&itstId=${itstId}`);
   const current = signal.body.current;
   checks.push({ name: "provider-response", ok: signal.status === 200 && signal.body.resultClass === "ok-data", httpStatus: signal.status, resultClass: signal.body.resultClass ?? null, error: signal.body.error ?? null });
+  checks.push({ name: "shared-call-coordination", ok: signal.body.coordination?.mode === "shared-database" &&
+    ["upstream", "cache"].includes(signal.body.coordination?.source), mode: signal.body.coordination?.mode ?? null,
+    source: signal.body.coordination?.source ?? null });
   checks.push({ name: "fresh-pedestrian-signal", ok: signal.body.observation?.synchronized === true && signal.body.observation?.fresh === true && current?.pedestrianPresent === true && current?.remainingPresent === true && current.sourceAgeMs !== null && current.sourceAgeMs >= -1000 && current.sourceAgeMs <= 10_000, sourceAgeMs: current?.sourceAgeMs ?? null, observation: signal.body.observation ?? null });
 } catch (error) {
   checks.push({ name: "connection", ok: false, error: error instanceof Error ? error.name : "UnknownError" });

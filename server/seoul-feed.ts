@@ -5,6 +5,7 @@ import {
 import { LIVE_SIGNAL_MAX_AGE_MS } from "../src/real/signals/live-window.ts";
 
 import { seoulKeyFor, type SeoulCredentials } from "./seoul-keys.ts";
+import type { SeoulSharedCalls } from "./seoul-shared-calls.ts";
 
 const CACHE_MS = 2000;
 const DEFAULT_BACKOFF_MS = 60_000;
@@ -58,7 +59,7 @@ function hasPedestrianPair(row: Row | null): boolean {
     Number.isFinite(Number(row[`${d}PdsgRmdrCs`])) && Number(row[`${d}PdsgRmdrCs`]) >= 0);
 }
 
-export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: typeof fetch, nowMs = () => Date.now()) {
+export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: typeof fetch, nowMs = () => Date.now(), shared?: SeoulSharedCalls) {
   const calls = new Map<string, { expiresAt: number; value: Promise<TdataFetchResult> }>();
   const serviceBlockedUntilMs = new Map<TdataCallId, number>();
   // Different dataset keys may still belong to one provider account.
@@ -79,6 +80,18 @@ export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: ty
       respondedAtMs: at, lagMs: 0, error: "missing_api_key", retryAfterMs: null,
       rowCount: 0, itstIds: [], pedestrianKeys: [], remainingKeys: [], requestUrlRedacted: "", body: null,
     };
+    if (shared) {
+      // Never return a warm success without checking the shared account backoff.
+      const result = await shared.read(service, itstId, () => fetchTdataService(service, apiKey, fetcher, {
+        itstId, numOfRows: "20", timeoutMs: 6000,
+      }));
+      if (result.class === "rate-limited") {
+        const until = nowMs() + (result.retryAfterMs ?? DEFAULT_BACKOFF_MS);
+        if (result.rateLimitScope === "service") serviceBlockedUntilMs.set(service, until);
+        else blockedUntilMs = until;
+      }
+      return result;
+    }
     const delay = retryAfterMs(service);
     if (delay !== null) return {
       service, itstId, class: "rate-limited", httpStatus: 429, requestedAtMs: at,
@@ -133,7 +146,11 @@ export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: ty
     // Never fan out after authentication, quota or connection failures.
     if (current && !(current.httpStatus === 404 || current.class === "ok-empty" || current.class === "ok-data"))
       return observation("fusion", current, null, null);
-    const [phase, timing] = await Promise.all([read("phase-current", itstId), read("timing-current", itstId)]);
+    const phase = await read("phase-current", itstId);
+    // Stop before a second call when the first call spends a shared quota.
+    if (phase.class !== "ok-data" && phase.class !== "ok-empty")
+      return observation("current-phase+timing", phase, null, null, ["fusion-unavailable"]);
+    const timing = await read("timing-current", itstId);
     const failure = [phase, timing].find((r) => r.class === "rate-limited") ??
       [phase, timing].find((r) => r.class !== "ok-data" && r.class !== "ok-empty");
     if (failure) return observation("current-phase+timing", failure, null, null, ["fusion-unavailable"]);
@@ -144,13 +161,13 @@ export function createSeoulFeedClient(credentials: SeoulCredentials, fetcher: ty
   return { read, snapshot, retryAfterMs };
 }
 
-// Coalescing/backoff survives warm requests. It is not a distributed quota guarantee.
-let clients = new WeakMap<typeof fetch, { signature: string; client: ReturnType<typeof createSeoulFeedClient> }>();
-export function seoulFeedClient(credentials: SeoulCredentials, fetcher: typeof fetch) {
+// Local development retains warm coalescing. Hosted calls require the shared gate.
+let clients = new WeakMap<typeof fetch, { signature: string; shared?: SeoulSharedCalls; client: ReturnType<typeof createSeoulFeedClient> }>();
+export function seoulFeedClient(credentials: SeoulCredentials, fetcher: typeof fetch, shared?: SeoulSharedCalls) {
   const signature = JSON.stringify(credentials);
   let saved = clients.get(fetcher);
-  if (!saved || saved.signature !== signature) {
-    saved = { signature, client: createSeoulFeedClient(credentials, fetcher) };
+  if (!saved || saved.signature !== signature || saved.shared !== shared) {
+    saved = { signature, shared, client: createSeoulFeedClient(credentials, fetcher, undefined, shared) };
     clients.set(fetcher, saved);
   }
   return saved.client;
