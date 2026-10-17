@@ -60,6 +60,12 @@ describe("documented public-data diagnostic services", () => {
       body: { totalCount: 0, items: [] } })).read("current", "1100000000", "1");
     expect(result).toMatchObject({ class: "ok-empty", resultCode: "0", responseFormat: "json" });
   });
+  it.each(["K3", "K03"])("treats the provider's %s as no data even if an old row is present", async (code) => {
+    const result = await createDataGoFeedClient("test-secret", async () =>
+      Response.json(reply({ crsrdId: "old-row", ntPdsgRmndCs: "90" }, code)))
+      .read("current", "1100000000", "1");
+    expect(result).toMatchObject({ class: "ok-empty", totalCount: 0, rows: [], resultCode: code });
+  });
   it.each(["10", "20", "30", "31"])("classifies provider envelope %s without exposing upstream text or credentials", async (code) => {
     const fetcher = vi.fn(async () => Response.json({ OpenAPI_ServiceResponse: { cmmMsgHeader: {
       returnReasonCode: code, errMsg: "echoed-test-secret", returnAuthMsg: "echoed-test-secret",
@@ -104,7 +110,8 @@ describe("documented public-data diagnostic services", () => {
     expect(fetcher).not.toHaveBeenCalled();
     const failed = await handleApi(new Request("https://app.test/api/signals/national"), env, fetcher);
     expect(failed.status).toBe(502);
-    expect(await failed.json()).toEqual({ error: "공공데이터 제공기관 응답 오류 (HTTP 400 · 코드 10)." });
+    expect(await failed.json()).toMatchObject({ error: "공공데이터 제공기관 응답 오류 (HTTP 400 · 코드 10).",
+      providerResponse: { httpStatus: 400, format: "json", fieldNames: ["OpenAPI_ServiceResponse"] } });
     const okFetcher = vi.fn(async () => Response.json(reply({ crsrdId: "20035", ntPdsgRmndCs: "352" })));
     const ok = await handleApi(new Request("https://app.test/api/signals/national"), env, okFetcher);
     expect(ok.status).toBe(200);

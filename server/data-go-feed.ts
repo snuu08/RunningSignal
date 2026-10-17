@@ -21,6 +21,8 @@ type DataGoResult = {
   rows: Row[];
   retryAfterMs: number | null;
   responseFormat?: "json" | "xml" | "unknown";
+  responseType?: string;
+  responseKeys?: string[];
 };
 const record = (v: unknown): Row =>
   v && typeof v === "object" && !Array.isArray(v) ? v as Row : {};
@@ -70,13 +72,13 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
         const rawCode = gateway.returnReasonCode ?? header.resultCode;
         const code = (typeof rawCode === "string" || typeof rawCode === "number") &&
           /^(K)?\d{1,3}$/.test(String(rawCode)) ? String(rawCode) : null;
-        const numeric = code?.replace(/^K/, "");
-        const limited = response.status === 429 || numeric === "22" || numeric === "23";
+        const numeric = code === null ? null : Number(code.replace(/^K/, ""));
+        const limited = response.status === 429 || numeric === 22 || numeric === 23;
         const delay = limited ? Math.max(60_000, parseRetryAfter(response.headers.get("retry-after"), nowMs()) ?? 0) : null;
         if (delay !== null) blockedUntil = nowMs() + delay;
         const auth = response.status === 401 || response.status === 403 ||
-          ["20", "21", "30", "31", "32", "33"].includes(numeric ?? "");
-        const ok = response.ok && ["0", "00", "03"].includes(numeric ?? "");
+          [20, 21, 30, 31, 32, 33].includes(numeric ?? -1);
+        const ok = response.ok && (numeric === 0 || numeric === 3);
         const data = record(envelope.body ?? envelope);
         const items = record(data.items);
         const rawRows = items.item ?? (Array.isArray(data.items) ? data.items : []);
@@ -85,11 +87,18 @@ export function createDataGoFeedClient(secret: string, fetcher: typeof fetch, no
             (typeof v === "string" || typeof v === "number" || v === null))))
           .filter((r) => Object.keys(r).length > 0);
         const count = Number(data.totalCount);
-        return { class: limited ? "rate-limited" : auth ? "auth" : !ok ? "spec-unknown" : rows.length ? "ok-data" : "ok-empty",
+        return { class: limited ? "rate-limited" : auth ? "auth" : !ok ? "spec-unknown" : numeric !== 3 && rows.length ? "ok-data" : "ok-empty",
           httpStatus: response.status, resultCode: code, fetchedAt: nowMs(),
-          totalCount: ok && data.totalCount != null && Number.isSafeInteger(count) && count >= 0 ? count : null,
-          rows: ok ? redactValue(rows, [key, encodeURIComponent(key), secret]) as Row[] : [],
-          retryAfterMs: delay, responseFormat: parsed.format };
+          totalCount: numeric === 3 ? 0 : ok && data.totalCount != null && Number.isSafeInteger(count) && count >= 0 ? count : null,
+          rows: ok && numeric !== 3 ? redactValue(rows, [key, encodeURIComponent(key), secret]) as Row[] : [],
+          retryAfterMs: delay, responseFormat: parsed.format,
+          responseType: ["application/json", "application/xml", "text/xml", "text/html", "text/plain", "application/octet-stream"]
+            .find((type) => response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() === type) ?? "unknown",
+          // Only field names, never values or provider error bodies, help
+          // distinguish a legacy envelope from a non-API response.
+          responseKeys: (redactValue(Object.keys(root).filter((k) => /^[A-Za-z_]{1,40}$/.test(k)).slice(0,10),
+            [key, encodeURIComponent(key), secret]) as string[]),
+        };
       } catch { return { ...base, class: "connect" }; }
     })().then((result) => { entry.until = nowMs() + 60_000; return result; });
     calls.set(cacheKey, entry);
