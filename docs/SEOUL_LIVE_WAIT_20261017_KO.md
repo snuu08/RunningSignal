@@ -1,6 +1,6 @@
 # 서울 실시간 대기 구현 기록 — 2026-10-17
 
-릴리스 ID: `seoul-live-wait-20261017`.
+릴리스 ID: `seoul-live-wait-20261017-r2`.
 
 ## 구현 결과
 
@@ -27,6 +27,18 @@
 기존 현시 `phase`는 운영 서버에서 HTTP 200을 반환했지만 `sourceTimestampMs=1792191609797`, `fetchedAtMs=1792192669968`, 지연 `1,060,171ms`로 확인됐다. 후속 호출에서는 429도 받았다. 이 과거 이력을 현재 신호로 표시하거나 대기 초로 환산하지 않는다.
 
 통합 서비스가 없거나 비었을 때만 현재 전용 현시·잔여 API를 결합한다. 두 응답의 최신 교차로·원천 시각이 같아야 하며 장비·데이터 ID 충돌이나 서로 다른 최신 패킷은 거절한다. 인증 실패·호출 제한·연결 오류 뒤에 다른 서비스를 추가 조회하지 않는다. 기존 이력 API는 수동 진단에만 남겼다.
+
+## 재호출 제한과 공공데이터 키 재점검
+
+2026-10-17 재점검에서 기존 현시 API의 429 본문에 `code=V2X_REPEAT_CALL_LIMIT`, `api=v2xSignalPhaseInformation`, `limitSeconds=300`, `retryAfterSeconds=232`가 왔다. HTTP `Retry-After` 헤더는 없었다. 일 한도 소진으로 단정하지 않는다. 서버는 본문의 상대 재시도 시간도 읽고, 헤더와 본문 중 더 긴 시간을 지킨다. 이 명시적 API별 제한은 다른 교차로에도 적용하지만 현재 전용 API를 막지 않는다. 범위가 불명확한 한도는 기존처럼 계정 전체에 적용한다. 시간대 없는 `nextCallAvailableAt`는 UTC로 추측하지 않는다. 진단 스크립트도 현시 목록을 재사용해 같은 API를 연속 재호출하지 않는다.
+
+공공데이터포털의 두 서비스는 T-DATA와 별도 인증이다. 제공받은 화면은 승인 및 활용기간 `2026-09-06 ~ 2028-09-06`을 표시한다. [행안부·한국지역정보개발원 공식 페이지](https://www.data.go.kr/data/15157604/openapi.do)의 내장 Swagger에서 `B551982/rti/crsrd_map_info`, `B551982/rti/tl_drct_info`와 서울 코드 `stdgCd=1100000000`을 확인했다. [경찰청 공식 요청 표](https://www.data.go.kr/data/15056721/openapi.do)는 `1320000/CrossRoadInfoService/getCrossRoadInfoList`, `ServiceKey`, `srchCTid=L01`을 명시한다.
+
+공공데이터 키는 서버 환경변수 `DATA_GO_KR_SERVICE_KEY`로만 읽는다. Encoding/Decoding 양식을 한 번 정규화한 뒤 쿼리 인코딩한다. `/api/signals/national?service=current`, `service=map`, `service=police-crossroad`로 각각 실제 공식 경로를 조회한다. 진단 결과는 같은 프로세스에서 60초 공유하고, 429 및 게이트웨이 22·23 코드는 재시도 제한을 적용한다. 임의 URL·오퍼레이션은 받지 않으며 원천 오류 본문과 인증키는 반환하지 않는다.
+
+개발 실행 환경의 실제 응답은 세 경로 모두 HTTP 400, `returnReasonCode=10` 파라미터 오류였다. 인증키를 빼도 같은 오류가 나왔다. 따라서 승인 화면만으로 데이터 수신 성공을 보고하거나, 이 오류를 키 미등록·만료라고 단정하지 않는다. 운영 서버의 결과는 배포 후 별도 점검한다.
+
+공공데이터의 `crsrdId`, 경찰청의 `INT_NO`, T-DATA의 `itstId`를 임의로 동일시하지 않는다. RTI의 보행 필드는 `*PdsgSttsNm`·`*PdsgRmndCs`이며 T-DATA와 철자가 다르다. 단위는 Swagger에 센티초로 설명되지만 실제 감소율·종료 의미를 확인하지 않았다. 시간대 없는 `totDt`도 그대로 보존한다. 진단 응답은 `predictionReady=false`이며 러닝 대기 계산에 연결하지 않는다.
 
 ## 아직 필요한 실제 자료
 

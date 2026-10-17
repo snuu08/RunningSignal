@@ -99,4 +99,54 @@ describe("Seoul observation acquisition", () => {
     await handleApi(request(), env, fetcher);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it("honors the provider's JSON repeat-call cooldown for one API across intersections", async () => {
+    let clock = now;
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(Response.json({ status: 429, code: "V2X_REPEAT_CALL_LIMIT",
+        api: "v2xSignalPhaseInformation", limitSeconds: 300, retryAfterSeconds: 232,
+        nextCallAvailableAt: "2026-10-17 09:22:39" }, { status: 429 }))
+      .mockResolvedValue(Response.json([{ ...phase(), ...timing() }]));
+    const feed = createSeoulFeedClient("test-secret", fetcher, () => clock);
+    expect(await feed.read("phase", "1850")).toMatchObject({ class: "rate-limited",
+      retryAfterMs: 232_000, rateLimitScope: "service" });
+    expect(feed.retryAfterMs("phase")).toBe(232_000);
+    expect(feed.retryAfterMs("current")).toBeNull();
+    expect((await feed.read("phase", "9999")).class).toBe("rate-limited");
+    expect((await feed.snapshot("1850")).fresh).toBe(true);
+    clock += 231_999;
+    expect((await feed.read("phase", "9999")).retryAfterMs).toBe(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    clock += 1;
+    await feed.read("phase", "9999");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+  it.each([
+    [{ status: 429, retryAfterSeconds: "232.0001" }, null, 232_001, "account"],
+    [{ status: 429, retryAfterSeconds: 232 }, "300", 300_000, "account"],
+    [{ code: "V2X_REPEAT_CALL_LIMIT", api: "v2xSignalPhaseInformation", limitSeconds: 300 }, null, 300_000, "service"],
+    [{ code: "V2X_REPEAT_CALL_LIMIT", api: "another-service", limitSeconds: 300 }, null, 300_000, "account"],
+    [{ status: 429, retryAfterSeconds: -1, nextCallAvailableAt: "2026-10-17 09:22:39" }, null, null, "account"],
+    [{ status: 429, retryAfterSeconds: "", limitSeconds: 300 }, null, null, "account"],
+    [{ status: 429, retryAfterSeconds: true }, null, null, "account"],
+  ])("parses quota envelopes without guessing timestamp zones: %j", async (body, header, delay, scope) => {
+    const result = await fetchTdataService("phase", "test-secret", async () =>
+      Response.json(body, { headers: header ? { "Retry-After": header as string } : {} }));
+    expect(result).toMatchObject({ class: "rate-limited", retryAfterMs: delay, rateLimitScope: scope });
+  });
+  it("returns the JSON service cooldown through the API without blocking current data", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(Response.json({ status: 429, code: "V2X_REPEAT_CALL_LIMIT",
+        api: "v2xSignalPhaseInformation", retryAfterSeconds: 232 }, { status: 429 }))
+      .mockResolvedValue(Response.json([{ ...phase(), ...timing() }]));
+    const env = { SEOUL_TDATA_API_KEY: "test-secret" };
+    const request = (service: string, id = "1850") => new Request(`https://app.test/api/signals/seoul?service=${service}&itstId=${id}`);
+    const limited = await handleApi(request("phase"), env, fetcher);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("232");
+    expect(await limited.json()).toMatchObject({ retryAfterMs: 232_000 });
+    await handleApi(request("phase", "9999"), env, fetcher);
+    expect((await handleApi(request("current"), env, fetcher)).status).toBe(200);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
 });

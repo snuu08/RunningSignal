@@ -187,6 +187,7 @@ export type TdataFetchResult = {
   lagMs: number | null;
   error: string | null;
   retryAfterMs: number | null;
+  rateLimitScope?: "service" | "account";
   rowCount: number;
   itstIds: string[];
   pedestrianKeys: string[];
@@ -211,7 +212,8 @@ function classifyHttp(
     return "connect";
   if (httpStatus === 401 || httpStatus === 403) return "auth";
   const rec = asRecord(body);
-  if (httpStatus === 429 || Number(rec?.responseCode ?? rec?.statusCode) === 429)
+  if (httpStatus === 429 || Number(rec?.responseCode ?? rec?.statusCode ?? rec?.status) === 429 ||
+    rec?.code === "V2X_REPEAT_CALL_LIMIT")
     return "rate-limited";
   const msg = JSON.stringify(body ?? "").toLowerCase();
   if (
@@ -304,6 +306,13 @@ export async function fetchTdataService(
       body !== null &&
       "nonJson" in body &&
       response.status === 200;
+    const rec = asRecord(body);
+    const repeatLimit = rec?.code === "V2X_REPEAT_CALL_LIMIT";
+    const retryAfterMs = Math.max(
+      parseRetryAfter(response.headers.get("retry-after"), respondedAtMs) ?? 0,
+      relativeSecondsMs(rec?.retryAfterSeconds) ??
+        (repeatLimit ? relativeSecondsMs(rec?.limitSeconds) : null) ?? 0,
+    ) || null;
     return {
       ...base,
       class: htmlAuth
@@ -313,7 +322,10 @@ export async function fetchTdataService(
       respondedAtMs,
       lagMs: respondedAtMs - requestedAtMs,
       error: htmlAuth ? "non_json_body" : null,
-      retryAfterMs: parseRetryAfter(response.headers.get("retry-after"), respondedAtMs),
+      retryAfterMs,
+      // The repeat-call response explicitly names one API. Unknown quota limits
+      // remain account-wide; an unlabelled KST timestamp is never parsed as UTC.
+      rateLimitScope: repeatLimit && rec?.api === spec.path ? "service" : "account",
       rowCount: rows.length,
       itstIds,
       pedestrianKeys,
@@ -431,6 +443,13 @@ export function parseRetryAfter(value: string | null, nowMs: number): number | n
   const delay = /^\d+(\.\d+)?$/.test(value.trim())
     ? Number(value) * 1000 : Date.parse(value) - nowMs;
   return Number.isFinite(delay) && delay >= 0 ? Math.ceil(delay) : null;
+}
+
+function relativeSecondsMs(value: unknown): number | null {
+  if (typeof value !== "number" &&
+    !(typeof value === "string" && /^\d+(\.\d+)?$/.test(value.trim()))) return null;
+  const ms = Number(value) * 1000;
+  return Number.isFinite(ms) && ms >= 0 ? Math.ceil(ms) : null;
 }
 
 export function sourceTimeOf(row: Record<string, unknown>): number | null {

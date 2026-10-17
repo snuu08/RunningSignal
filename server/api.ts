@@ -11,6 +11,7 @@ import {
 import { auditVerifiedBundle } from "../src/real/signals/audit.ts";
 import { createSeoulLiveProvider, hasSeoulLiveMappings } from "./seoul-live-provider.ts";
 import { resetSeoulFeedClientsForTests, seoulFeedClient } from "./seoul-feed.ts";
+import { DATA_GO_SERVICES, dataGoFeedClient, resetDataGoFeedClientsForTests, type DataGoService } from "./data-go-feed.ts";
 import { loadVerifiedBundle } from "../src/real/signals/verified-store.ts";
 import {
   continuity,
@@ -79,6 +80,7 @@ export function resetApiRuntimeForTests() {
   seoulReach.okAt = 0;
   seoulReach.failAt = 0;
   resetSeoulFeedClientsForTests();
+  resetDataGoFeedClientsForTests();
 }
 
 export function signalProviderFromEnv(
@@ -497,7 +499,7 @@ export async function handleApi(
           configured: !!env.DATA_GO_KR_SERVICE_KEY,
           ready: false,
           detail:
-            "행안부 베이스 URL은 B551982/rti. 오퍼레이션 경로가 없어 호출하지 않음.",
+            "공공데이터 공식 경로의 신호·교차로 조회를 지원합니다. 원천 지연·단위·보행 방향 검증 전이며 대기 예측에는 사용하지 않습니다.",
         },
       });
     }
@@ -804,7 +806,7 @@ export async function handleApi(
         if (result.class === "auth")
           throw new ApiError(503, "서울 신호 인증에 실패했습니다. 서버 인증키와 해당 API 활용 승인을 확인하세요.");
         if (result.class === "rate-limited")
-          throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.", feed.retryAfterMs());
+          throw new ApiError(429, "서울 신호 API 호출 한도를 초과했습니다. 잠시 뒤 다시 시도하세요.", feed.retryAfterMs(result.service));
         if (result.class === "connect")
           throw new ApiError(502, "제공기관 연결에 실패했습니다. 잠시 뒤 다시 시도하세요.");
         if (result.httpStatus === 404)
@@ -891,11 +893,26 @@ export async function handleApi(
         data,
       });
     }
-    if (request.method === "GET" && path === "/api/signals/national")
-      throw new ApiError(
-        503,
-        "공공데이터 신호등 데이터셋 엔드포인트를 검증한 뒤에만 연결합니다.",
-      );
+    if (request.method === "GET" && path === "/api/signals/national") {
+      const service = url.searchParams.get("service") ?? "current";
+      if (!Object.hasOwn(DATA_GO_SERVICES, service)) throw new ApiError(400, "지원하지 않는 공공데이터 서비스입니다.");
+      const police = service === "police-crossroad";
+      const region = url.searchParams.get(police ? "srchCTid" : "stdgCd") ?? (police ? "L01" : "1100000000");
+      const pageNo = url.searchParams.get("pageNo") ?? "1";
+      if (!(police ? /^L\d{2}$/ : /^\d{10}$/).test(region) || !/^[1-9]\d{0,2}$/.test(pageNo))
+        throw new ApiError(400, "유효한 지역 코드와 페이지 번호가 필요합니다.");
+      const result = await dataGoFeedClient(key(env, "DATA_GO_KR_SERVICE_KEY"), fetcher)
+        .read(service as DataGoService, region, pageNo);
+      if (result.class === "rate-limited")
+        throw new ApiError(429, "공공데이터 API 호출 한도를 초과했습니다.", result.retryAfterMs);
+      if (result.class === "auth") throw new ApiError(503, "공공데이터 인증·활용 승인을 확인하세요.");
+      if (result.class !== "ok-data" && result.class !== "ok-empty")
+        throw new ApiError(502, `공공데이터 제공기관 응답 오류 (HTTP ${result.httpStatus ?? "연결 실패"}${result.resultCode ? ` · 코드 ${result.resultCode}` : ""}).`);
+      return json({ source: police ? "경찰청 공공데이터포털" : "행정안전부 한국지역정보개발원",
+        service, region, pageNo: Number(pageNo), ...result,
+        predictionReady: false, capability: "diagnostic-snapshot",
+        detail: "제공기관 원천 시각·잔여 단위·보행 방향 검증 전입니다. 이 응답은 대기 예측이 아닙니다." });
+    }
     return json({ error: "지원하지 않는 API 요청입니다." }, 404);
   } catch (error) {
     return json(
