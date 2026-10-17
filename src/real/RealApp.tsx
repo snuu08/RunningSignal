@@ -79,6 +79,7 @@ import {
   demoSignalPredictions,
 } from "./signal-demo.ts";
 import { CurrentStatePanel } from "./features/signals/CurrentStatePanel.tsx";
+import { SignalUnitCheck } from "./features/signals/SignalUnitCheck.tsx";
 import { GpsFieldCheck } from "./GpsFieldCheck.tsx";
 import { liveSignalGuidance } from "./features/signals/liveSignalGuidance.ts";
 import { evaluationCandidate, useLiveRouteForecast } from "./useLiveRouteForecast.ts";
@@ -2776,6 +2777,8 @@ export function RealApp() {
             </button>
           </div>
           {signalResult !== null && <CurrentStatePanel payload={signalResult} />}
+          <SignalUnitCheck key={signalId} itstId={signalId}
+            disabled={busy || !(status?.signal?.configured.seoul || status?.seoulSignals)} />
           {signalResult !== null && (
             <details>
               <summary>현재 상태 원문 · 통행 안내 아님</summary>
